@@ -1,0 +1,33 @@
+ PS C:\Users\IKIO\Downloads\Spec-Extractor\Spec-Extractor> cd .\artifacts\
+(venv) PS C:\Users\IKIO\Downloads\Spec-Extractor\Spec-Extractor\artifacts> npm install
+npm warn Unknown project config "auto-install-peers". This will stop working in the next major version of npm.
+npm warn Unknown project config "strict-peer-dependencies". This will stop working in the next major version of npm.
+
+> workspace@0.0.0 preinstall
+> sh -c 'rm -f package-lock.json yarn.lock; case "$npm_config_user_agent" in pnpm/*) ;; *) echo "Use pnpm instead" >&2; exit 1 ;; esac'
+
+'sh' is not recognized as an internal or external command,
+operable program or batch file.
+npm error code 1
+npm error path C:\Users\IKIO\Downloads\Spec-Extractor\Spec-Extractor
+npm error command failed
+npm error command C:\Windows\system32\cmd.exe /d /s /c sh -c 'rm -f package-lock.json yarn.lock; case "$npm_config_user_agent" in pnpm/*) ;; *) echo "Use pnpm instead" >&2; exit 1 ;; esac'
+npm error A complete log of this run can be found in: C:\Users\IKIO\AppData\Local\npm-cache\_logs\2026-03-24T17_17_35_279Z-debug-0.log
+(venv) PS C:\Users\IKIO\Downloads\Spec-Extractor\Spec-Extractor\artifacts> pnpm install
+Scope: all 9 workspace projects
+Lockfile is up to date, resolution step is skipped
+Packages: +513
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 513, reused 499, downloaded 14, added 513, done
+node_modules/.pnpm/esbuild@0.27.3/node_modules/esbuild: Running postinstall script, done in 1.9s
+
+devDependencies:
++ prettier 3.8.1
++ typescript 5.9.3
+
+. preinstall$ sh -c 'rm -f package-lock.json yarn.lock; case "$npm_config_user_agent" in pnpm/*) ;; *) echo "Use pnpm instead" >&2; exit 1 ;; esac'
+│ 'sh' is not recognized as an internal or external command,
+│ operable program or batch file.
+└─ Failed in 40ms at C:\Users\IKIO\Downloads\Spec-Extractor\Spec-Extractor
+ ELIFECYCLE  Command failed with exit code 1.
+(venv) PS C:\Users\IKIO\Downloads\Spec-Extractor\Spec-Extractor\artifacts> 
