@@ -1,0 +1,61 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Outfit:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: 'DM Sans', sans-serif;
+  --font-display: 'Outfit', sans-serif;
+
+  /* Deep professional dark theme with vibrant cyan/blue accents */
+  --color-background: hsl(240 10% 4%);
+  --color-foreground: hsl(0 0% 98%);
+  
+  --color-card: hsl(240 10% 6%);
+  --color-card-foreground: hsl(0 0% 98%);
+  
+  --color-popover: hsl(240 10% 4%);
+  --color-popover-foreground: hsl(0 0% 98%);
+  
+  /* Bright Cyan Accent */
+  --color-primary: hsl(190 90% 50%);
+  --color-primary-foreground: hsl(240 10% 4%);
+  
+  --color-secondary: hsl(240 10% 12%);
+  --color-secondary-foreground: hsl(0 0% 98%);
+  
+  --color-muted: hsl(240 10% 12%);
+  --color-muted-foreground: hsl(240 5% 65%);
+  
+  --color-accent: hsl(190 90% 50%);
+  --color-accent-foreground: hsl(240 10% 4%);
+  
+  --color-destructive: hsl(0 84% 60%);
+  --color-destructive-foreground: hsl(0 0% 98%);
+  
+  --color-border: hsl(240 10% 16%);
+  --color-ring: hsl(190 90% 50%);
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground antialiased font-sans min-h-screen selection:bg-primary/30;
+    /* Subtle radial gradient to add depth to the dark background */
+    background-image: radial-gradient(circle at 50% 0%, hsl(240 10% 8%) 0%, transparent 70%);
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    @apply font-bold tracking-tight;
+  }
+}
+
+/* Custom premium scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-border rounded-full hover:bg-muted-foreground/50 transition-colors;
+}

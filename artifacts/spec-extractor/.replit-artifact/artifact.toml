@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Lighting Spec Extractor"
+version = "1.0.0"
+id = "artifacts/spec-extractor"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21774
+
+[services.development]
+run = "pnpm --filter @workspace/spec-extractor run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/spec-extractor", "run", "build" ]
+publicDir = "artifacts/spec-extractor/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21774"
+BASE_PATH = "/"

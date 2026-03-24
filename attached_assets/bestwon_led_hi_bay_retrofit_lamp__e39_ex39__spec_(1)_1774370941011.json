@@ -1,0 +1,120 @@
+{
+  "productName": "Bestwon LED Hi-Bay Retrofit Lamp (E39/EX39)",
+  "alternateName": "Bestwon HID-to-LED Hi-Bay Retrofit Series",
+  "productDescription": "Bestwon LED Hi-Bay Retrofits provide a high-efficacy, ballast-bypass solution for replacing HID lamps up to 600W. Built with Samsung 2835 LED chips and a directional optical design, these retrofit lamps deliver up to 20,000 lumens with integral 4kV surge protection for reliable high-bay performance in dry or damp locations.",
+  "productFeatures": [
+    "Replaces 250W–600W HID lamps (up to 600W)",
+    "Direct line voltage 100–277V (ballast bypass required)",
+    "Samsung 2835 LED chips",
+    "Integral 4kV surge protection",
+    "Directional optical design",
+    "Unique structure design to minimize dust intrusion",
+    "Double cooling (cold forging kit + Sunon fan)",
+    "Triple temperature control against overheating",
+    "Plug & play safety cable included",
+    "UL listed for damp locations",
+    "5-year warranty"
+  ],
+  "applicationAreas": [
+    "Warehouses",
+    "Industrial facilities",
+    "Manufacturing areas",
+    "Gymnasiums",
+    "High-bay retail",
+    "Distribution centers"
+  ],
+  "technicalSpecs": [
+    {
+      "parameter": "Product Type",
+      "specification": "LED hi-bay retrofit lamp (HID replacement)"
+    },
+    {
+      "parameter": "Wattage",
+      "specification": "100W / 120W / 150W"
+    },
+    {
+      "parameter": "Wattage Selectable",
+      "specification": "No"
+    },
+    {
+      "parameter": "Lumen Output",
+      "specification": "13,000 lm (100W); 16,000 lm (120W); 20,000 lm (150W)"
+    },
+    {
+      "parameter": "Efficacy",
+      "specification": "Up to 122.38 lm/W (varies by model/CCT)"
+    },
+    {
+      "parameter": "Input Voltage",
+      "specification": "100–277V (direct line voltage; bypass ballast)"
+    },
+    {
+      "parameter": "CCT",
+      "specification": "2700K–5700K (options by model)"
+    },
+    {
+      "parameter": "CCT Selectable",
+      "specification": "No"
+    },
+    {
+      "parameter": "CRI",
+      "specification": ">80"
+    },
+    {
+      "parameter": "Beam Angle",
+      "specification": "120°"
+    },
+    {
+      "parameter": "Dimming",
+      "specification": "Not intended for use with dimmers or remote controls"
+    },
+    {
+      "parameter": "LED Type",
+      "specification": "Samsung 2835"
+    },
+    {
+      "parameter": "Mounting Type",
+      "specification": "Lamp retrofit into existing HID luminaire (E39/EX39 mogul base)"
+    },
+    {
+      "parameter": "Operating Temperature",
+      "specification": "-40°F to +113°F (-40°C to +45°C)"
+    },
+    {
+      "parameter": "Lifespan",
+      "specification": "50,000 hours"
+    },
+    {
+      "parameter": "Warranty",
+      "specification": "5-year"
+    },
+    {
+      "parameter": "Certifications",
+      "specification": "UL listed (damp locations)"
+    },
+    {
+      "parameter": "Controls",
+      "specification": "None; not for use with emergency exits, dimmers, or remote controls"
+    },
+    {
+      "parameter": "Packaging",
+      "specification": "100W–150W: 4 pcs/carton; carton 22.25\"×22.25\"×12\" (565×565×305mm); G.W. 10.84 kg (23.9 lb); N.W. 6.64 kg (14.64 lb). Also listed: 2 pcs/carton; carton 16.81\"×10.83\"×10.83\" (427×275×275mm); G.W. 4.4 kg (9.7 lb); N.W. 3.2 kg (7.05 lb)."
+    }
+  ],
+  "dimensions": [
+    {
+      "size": "Minimum enclosed luminaire lamp compartment",
+      "dimensions": "11.81\" (L) × 11.81\" (W) × 15.75\" (H)"
+    }
+  ],
+  "notes": [
+    "Per notes: all ballasts, capacitors, and starters must be bypassed/removed (ballast-bypass retrofit).",
+    "Per notes: suitable for dry or damp locations; do not use where directly exposed to liquid, vapor, or rain.",
+    "Efficacy and lumen output vary by model and CCT; table shows maxima up to 122.38 lm/W and up to 20,000 lm.",
+    "DLC testing is referenced but specific DLC listing numbers are not provided in the text."
+  ],
+  "vendorInfo": {
+    "vendorName": "Bestwon",
+    "vendorContact": ""
+  }
+}

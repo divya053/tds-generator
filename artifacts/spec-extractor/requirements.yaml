@@ -1,0 +1,16 @@
+packages:
+  "framer-motion": "For premium page transitions, scanning animations, and layout effects"
+  "react-dropzone": "For handling drag-and-drop PDF file uploads elegantly"
+  "date-fns": "For formatting human readable dates in the history sidebar"
+  "clsx": "For conditional class merging in UI components"
+  "tailwind-merge": "For merging tailwind classes without conflicts"
+  "sonner": "For premium toast notifications that match the dark aesthetic"
+
+images:
+  - path: "artifacts/spec-extractor/public/images/bg-glow.png"
+    description: "Abstract subtle dark background with a very soft deep blue and cyan gradient mesh glow, minimal, professional, 8k resolution"
+    aspect_ratio: "16:9"
+
+notes:
+  - Using @workspace/api-client-react for TanStack Query hooks as requested
+  - Utilizing Sonner for toasts as it provides a premium look out of the box

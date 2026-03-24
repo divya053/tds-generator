@@ -1,15 +1,16 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Lighting Spec Extractor API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: extract
+    description: Spec extraction operations
 paths:
   /healthz:
     get:
@@ -24,6 +25,107 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /extract:
+    post:
+      operationId: extractSpec
+      tags: [extract]
+      summary: Extract lighting spec from PDF
+      description: Upload a vendor PDF and extract structured lighting specifications
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The vendor PDF file to extract specs from
+              required:
+                - file
+      responses:
+        "200":
+          description: Extraction successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractedSpec"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /extract/history:
+    get:
+      operationId: getExtractionHistory
+      tags: [extract]
+      summary: Get extraction history
+      description: Returns a list of all previous extractions
+      responses:
+        "200":
+          description: List of extractions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ExtractionSummary"
+  /extract/{id}:
+    get:
+      operationId: getExtraction
+      tags: [extract]
+      summary: Get a specific extraction
+      description: Returns a specific extraction by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Extraction found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractedSpec"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteExtraction
+      tags: [extract]
+      summary: Delete an extraction
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +135,95 @@ components:
           type: string
       required:
         - status
-
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        detail:
+          type: string
+      required:
+        - error
+    SuccessResponse:
+      type: object
+      properties:
+        message:
+          type: string
+      required:
+        - message
+    TechnicalSpec:
+      type: object
+      properties:
+        parameter:
+          type: string
+        specification:
+          type: string
+      required:
+        - parameter
+        - specification
+    ExtractedSpec:
+      type: object
+      properties:
+        id:
+          type: integer
+        filename:
+          type: string
+        productName:
+          type: string
+        alternateName:
+          type: string
+        productDescription:
+          type: string
+        productFeatures:
+          type: array
+          items:
+            type: string
+        applicationAreas:
+          type: array
+          items:
+            type: string
+        technicalSpecs:
+          type: array
+          items:
+            $ref: "#/components/schemas/TechnicalSpec"
+        notes:
+          type: array
+          items:
+            type: string
+        vendorInfo:
+          type: object
+          properties:
+            vendorName:
+              type: string
+            vendorContact:
+              type: string
+        createdAt:
+          type: string
+      required:
+        - id
+        - filename
+        - productName
+        - alternateName
+        - productDescription
+        - productFeatures
+        - applicationAreas
+        - technicalSpecs
+        - notes
+        - vendorInfo
+        - createdAt
+    ExtractionSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        filename:
+          type: string
+        productName:
+          type: string
+        createdAt:
+          type: string
+      required:
+        - id
+        - filename
+        - productName
+        - createdAt
