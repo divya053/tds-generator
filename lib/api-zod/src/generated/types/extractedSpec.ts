@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { ExtractedSpecVendorInfo } from "./extractedSpecVendorInfo";
+import type { SourceImage } from "./sourceImage";
 import type { TechnicalSpec } from "./technicalSpec";
 
 export interface ExtractedSpec {
@@ -16,8 +17,18 @@ export interface ExtractedSpec {
   productDescription: string;
   productFeatures: string[];
   applicationAreas: string[];
+  productCategory?: string;
+  isProductFamily?: boolean;
+  variantOverview?: {
+    parameters: string[];
+    matrix: string[][];
+  };
+  variants?: Record<string, unknown>[];
   technicalSpecs: TechnicalSpec[];
+  categorySpecificSpecs?: TechnicalSpec[];
   notes: string[];
   vendorInfo: ExtractedSpecVendorInfo;
+  sourceImages: SourceImage[];
+  sourcePages: SourceImage[];
   createdAt: string;
 }

@@ -59,3 +59,47 @@
 ::-webkit-scrollbar-thumb {
   @apply bg-border rounded-full hover:bg-muted-foreground/50 transition-colors;
 }
+
+@page {
+  size: letter;
+  margin: 0;
+}
+
+@media print {
+  html, body {
+    background: white !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .sheet-print-root,
+  .sheet-print-root * {
+    visibility: visible !important;
+  }
+
+  .sheet-print-root {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 8.5in !important;
+    height: 11in !important;
+    min-height: 11in !important;
+    max-height: 11in !important;
+    margin: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    overflow: hidden !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .sheet-editor-controls,
+  .sheet-preview-shell {
+    box-shadow: none !important;
+    border: none !important;
+    background: transparent !important;
+  }
+}

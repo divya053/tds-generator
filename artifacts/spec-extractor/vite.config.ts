@@ -3,32 +3,16 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 
-const rawPort = process.env.PORT ?? "3000";
+const rawPort = (process.env.PORT ?? "4173").trim();
 const port = Number(rawPort);
-const basePath = process.env.BASE_PATH ?? "/";
+const basePath = (process.env.BASE_PATH ?? "/").trim();
+const apiPort = (process.env.API_PORT ?? "8787").trim();
 
 export default defineConfig({
   base: basePath,
   plugins: [
     react(),
     tailwindcss(),
-    ...(process.env.REPL_ID !== undefined
-      ? [
-          (await import("@replit/vite-plugin-runtime-error-modal")).default(),
-          ...(process.env.NODE_ENV !== "production"
-            ? [
-                await import("@replit/vite-plugin-cartographer").then((m) =>
-                  m.cartographer({
-                    root: path.resolve(import.meta.dirname, ".."),
-                  }),
-                ),
-                await import("@replit/vite-plugin-dev-banner").then((m) =>
-                  m.devBanner(),
-                ),
-              ]
-            : []),
-        ]
-      : []),
   ],
   resolve: {
     alias: {
@@ -52,7 +36,7 @@ export default defineConfig({
     },
     proxy: {
       "/api": {
-        target: `http://localhost:${process.env.API_PORT ?? "8080"}`,
+        target: `http://localhost:${apiPort}`,
         changeOrigin: true,
       },
     },

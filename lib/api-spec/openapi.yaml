@@ -161,6 +161,25 @@ components:
       required:
         - parameter
         - specification
+    SourceImage:
+      type: object
+      properties:
+        id:
+          type: string
+        page:
+          type: integer
+        width:
+          type: integer
+        height:
+          type: integer
+        dataUrl:
+          type: string
+      required:
+        - id
+        - page
+        - width
+        - height
+        - dataUrl
     ExtractedSpec:
       type: object
       properties:
@@ -182,7 +201,32 @@ components:
           type: array
           items:
             type: string
+        productCategory:
+          type: string
+        isProductFamily:
+          type: boolean
+        variantOverview:
+          type: object
+          properties:
+            parameters:
+              type: array
+              items:
+                type: string
+            matrix:
+              type: array
+              items:
+                type: array
+                items:
+                  type: string
+        variants:
+          type: array
+          items:
+            type: object
         technicalSpecs:
+          type: array
+          items:
+            $ref: "#/components/schemas/TechnicalSpec"
+        categorySpecificSpecs:
           type: array
           items:
             $ref: "#/components/schemas/TechnicalSpec"
@@ -197,6 +241,14 @@ components:
               type: string
             vendorContact:
               type: string
+        sourceImages:
+          type: array
+          items:
+            $ref: "#/components/schemas/SourceImage"
+        sourcePages:
+          type: array
+          items:
+            $ref: "#/components/schemas/SourceImage"
         createdAt:
           type: string
       required:
@@ -210,6 +262,8 @@ components:
         - technicalSpecs
         - notes
         - vendorInfo
+        - sourceImages
+        - sourcePages
         - createdAt
     ExtractionSummary:
       type: object

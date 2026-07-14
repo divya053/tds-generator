@@ -2,16 +2,20 @@ import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { motion, AnimatePresence } from "framer-motion";
 import { UploadCloud, FileType, CheckCircle2, Sparkles } from "lucide-react";
-import { useExtractSpec, getGetExtractionHistoryQueryKey } from "@workspace/api-client-react";
+import { getGetExtractionHistoryQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { Button } from "@/components/ui";
+import { Progress } from "@/components/ui/progress";
+import { uploadSpecExtraction, type ExtractionProgress, formatEta } from "@/lib/extract-upload";
+import { HttpError } from "@/lib/http";
 import { cn } from "@/lib/utils";
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
-  const { mutate: extract, isPending } = useExtractSpec();
+  const [isPending, setIsPending] = useState(false);
+  const [progress, setProgress] = useState<ExtractionProgress | null>(null);
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
 
@@ -33,17 +37,29 @@ export default function Home() {
   const handleExtract = () => {
     if (!file) return;
 
-    extract({ data: { file } }, {
-      onSuccess: (data) => {
+    setIsPending(true);
+    setProgress({
+      percent: 1,
+      stage: "Preparing upload",
+      etaMs: null,
+      elapsedMs: 0,
+    });
+
+    void uploadSpecExtraction(file, setProgress)
+      .then((data) => {
         toast.success("Spec sheet processed successfully!");
         queryClient.invalidateQueries({ queryKey: getGetExtractionHistoryQueryKey() });
         setLocation(`/spec/${data.id}`);
-      },
-      onError: (err) => {
-        toast.error(err.error?.error || "Failed to extract specifications");
+      })
+      .catch((err) => {
+        const message = err instanceof HttpError ? err.message : err instanceof Error ? err.message : "Failed to extract specifications";
+        toast.error(message || "Failed to extract specifications");
         setFile(null); // Reset on error so they can try again
-      }
-    });
+      })
+      .finally(() => {
+        setIsPending(false);
+        setProgress(null);
+      });
   };
 
   return (
@@ -63,17 +79,17 @@ export default function Home() {
           className="inline-flex items-center justify-center px-4 py-1.5 rounded-full bg-primary/10 text-primary text-sm font-bold tracking-wide mb-8 border border-primary/20 shadow-[0_0_15px_rgba(6,182,212,0.15)]"
         >
           <Sparkles className="w-4 h-4 mr-2" />
-          GLM-4.6 AI ENGINE ACTIVE
+           Vendor-to-IKIO TDS
         </motion.div>
         
         <h1 className="text-5xl md:text-7xl font-display font-bold text-foreground mb-6 leading-[1.1]">
-          Automate Your <br className="hidden md:block" />
+          IKIO<br className="hidden md:block" />
           <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary via-blue-400 to-indigo-500 filter drop-shadow-lg">
-            Lighting Specs
+            TDS Generator
           </span>
         </h1>
         <p className="text-xl text-muted-foreground max-w-2xl mx-auto font-medium leading-relaxed">
-          Upload any vendor specification sheet. Our AI instantly extracts product details, technical parameters, and application areas into structured data.
+          Upload a vendor specification sheet, review the extracted template beside the original PDF, and cross-check every detail before exporting the final IKIO TDS.
         </p>
       </div>
 
@@ -124,8 +140,19 @@ export default function Home() {
                   <div className="absolute inset-4 rounded-full border-b-2 border-indigo-400 animate-spin" style={{ animationDuration: '1s' }} />
                   <FileType className="w-8 h-8 text-primary absolute inset-0 m-auto animate-pulse" />
                 </div>
-                <h3 className="text-2xl font-bold text-foreground mb-2">Analyzing Document...</h3>
-                <p className="text-primary font-medium">Extracting complex technical parameters</p>
+                <h3 className="text-2xl font-bold text-foreground mb-2">
+                  Analyzing {progress?.percent ?? 1}%
+                </h3>
+                <p className="text-primary font-medium">
+                  {progress?.stage ?? "Analyzing document"}
+                </p>
+                <div className="mt-6 w-full max-w-md space-y-3">
+                  <Progress value={progress?.percent ?? 1} className="h-2.5 bg-primary/15" />
+                  <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    <span>{progress?.percent ?? 1}% complete</span>
+                    <span>{formatEta(progress?.etaMs ?? null)}</span>
+                  </div>
+                </div>
               </motion.div>
             ) : file ? (
               <motion.div 

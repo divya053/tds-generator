@@ -1,0 +1,4562 @@
+import { useEffect, useRef, useState } from "react";
+import {
+  Crop,
+  ExternalLink,
+  FileImage,
+  FileText,
+  GripVertical,
+  Plus,
+  RotateCcw,
+  Sparkles,
+  Trash2,
+  Upload,
+} from "lucide-react";
+import type {
+  ExtractedSpec,
+  SourceImage,
+  TechnicalSpec,
+} from "@workspace/api-client-react";
+import { Card, Badge, Button } from "@/components/ui";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import { Textarea } from "@/components/ui/textarea";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
+import { draftKey, loadDraft, saveDraft } from "@/lib/draft-store";
+import { toast } from "sonner";
+
+type OverviewRow = {
+  id: string;
+  label: string;
+  value: string;
+};
+
+// ---- Page 2: Product Specifications ----
+type SpecOption = { power: string; lumen: string };
+type SpecGroup = {
+  id: string;
+  partNumber: string;
+  options: SpecOption[];
+  voltage: string;
+  efficacy: string;
+  cri: string;
+  current: string;
+  cct: string;
+  thd: string;
+  lightDistribution: string;
+};
+
+// ---- Page 3: Product Ordering Information (part-number decoder) ----
+type OrderingGroupId = "family" | "performance" | "construction";
+type OrderingEntry = { code: string; description: string };
+type OrderingColumn = {
+  id: string;
+  group: OrderingGroupId;
+  header: string;
+  unit: string;
+  entries: OrderingEntry[];
+};
+
+// ---- Page 3: Accessories Ordering Information ----
+type AccessoryRow = {
+  id: string;
+  code: string;
+  description: string;
+  imageId: string | null;
+  downloadUrl: string;
+};
+
+// ---- Page 4: Dimensions ----
+type DimensionItem = {
+  id: string;
+  label: string;
+  imageId: string | null;
+  width: string;
+  height: string;
+  depth: string;
+};
+
+const ORDERING_GROUP_LABELS: Record<OrderingGroupId, string> = {
+  family: "Luminaire Family",
+  performance: "Electrical / Lighting Performance",
+  construction: "Construction",
+};
+
+function createDefaultOrderingColumns(): OrderingColumn[] {
+  const columns: Array<Omit<OrderingColumn, "id" | "entries">> = [
+    { group: "family", header: "Brand", unit: "" },
+    { group: "family", header: "Family/Version", unit: "" },
+    { group: "family", header: "Size", unit: "" },
+    { group: "performance", header: "Power", unit: "W" },
+    { group: "performance", header: "Voltage", unit: "V" },
+    { group: "performance", header: "Dimming", unit: "" },
+    { group: "performance", header: "CCT", unit: "K" },
+    { group: "performance", header: "Distribution", unit: "" },
+    { group: "performance", header: "Driver", unit: "" },
+    { group: "construction", header: "Finish", unit: "" },
+    { group: "construction", header: "Manufacturer", unit: "" },
+  ];
+  return columns.map((column, index) => ({
+    ...column,
+    id: `ordering-col-${index}`,
+    entries: [{ code: "", description: "" }],
+  }));
+}
+
+type SourcePage = {
+  id: string;
+  page: number;
+  width: number;
+  height: number;
+  dataUrl: string;
+};
+
+type ExtendedExtractedSpec = ExtractedSpec & {
+  productCategory?: string;
+  isProductFamily?: boolean;
+  categorySpecificSpecs?: TechnicalSpec[];
+  variantOverview?: {
+    parameters: string[];
+    matrix: string[][];
+  };
+  variants?: Record<string, unknown>[];
+  sourcePages?: SourcePage[];
+};
+
+type QualificationBadgeId =
+  | "dlc_premium"
+  | "dlc_listed"
+  | "energy_star"
+  | "etl"
+  | "c_ulus"
+  | "wet_location"
+  | "dimmable"
+  | "sensors"
+  | "power_selectable"
+  | "cct_selectable"
+  | "rohs";
+
+type EditorDraft = {
+  headerProjectName: string;
+  headerCatNumber: string;
+  headerFixtureSchedule: string;
+  headerNote: string;
+  title: string;
+  subtitle: string;
+  categoryLabel: string;
+  overviewRows: OverviewRow[];
+  description: string;
+  featuresText: string;
+  applicationAreasText: string;
+  certificationsText: string;
+  warrantyLabel: string;
+  warrantyCopy: string;
+  manualSourceImages: SourceImage[];
+  selectedImageId: string | null;
+  editedImageDataUrls: Record<string, string>;
+  selectedQualificationIds: QualificationBadgeId[];
+  // Page 2 — Product Specifications
+  specGroups: SpecGroup[];
+  specsNote: string;
+  // Page 3 — Product Ordering Information + Accessories
+  orderingExample: string;
+  orderingColumns: OrderingColumn[];
+  orderingNote: string;
+  accessoryRows: AccessoryRow[];
+  // Page 4 — Dimensions
+  dimensionItems: DimensionItem[];
+};
+
+type CropSelection = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type ImageTextLayer = {
+  id: string;
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  size: number;
+};
+
+type ImageEraseLayer = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+};
+
+type ImageEditorMode = "text" | "erase";
+
+type ImageEditorState = {
+  backgroundColor: string;
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  textLayers: ImageTextLayer[];
+  eraseLayers: ImageEraseLayer[];
+};
+
+type OverviewTemplateRow = { label: string; keys: string[] };
+
+function createOverviewTemplateRow(label: string, ...keys: string[]): OverviewTemplateRow {
+  return { label, keys: [label, ...keys] };
+}
+
+const TEMPLATE_OVERVIEW_ROWS: OverviewTemplateRow[] = [
+  { label: "Product Type", keys: ["Product Type", "Product Category"] },
+  { label: "Power", keys: ["Power", "Wattage"] },
+  { label: "Lumen Output", keys: ["Lumen Output", "Lumens"] },
+  { label: "Efficacy", keys: ["Efficacy (lm/W)", "Efficacy"] },
+  { label: "Voltage", keys: ["Voltage", "Input Voltage"] },
+  { label: "Current", keys: ["Current"] },
+  { label: "Frequency", keys: ["Frequency"] },
+  { label: "Power Factor", keys: ["Power Factor"] },
+  { label: "THD", keys: ["THD", "Total Harmonic Distortion"] },
+  { label: "CCT", keys: ["CCT", "Color Temperature (Selectable)", "Color Temperature"] },
+  { label: "CRI", keys: ["CRI", "Color Rendering Index"] },
+  { label: "R9 (Red Value)", keys: ["R9 (Red Value)", "R9"] },
+  { label: "R13 (Skin Tones)", keys: ["R13 (Skin Tones)", "R13"] },
+  { label: "Beam Angle", keys: ["Beam Angle"] },
+  { label: "Light Distribution", keys: ["Light Distribution"] },
+  { label: "BUG Rating", keys: ["BUG Rating", "Backlight Uplight Glare"] },
+  { label: "Dimming", keys: ["Dimming"] },
+  { label: "Driver", keys: ["Driver", "Power Supply"] },
+  { label: "LED Source", keys: ["LED Source", "LED Type"] },
+  { label: "Sensor Compatibility", keys: ["Sensor Compatibility"] },
+  { label: "Control", keys: ["Control"] },
+  { label: "Lifespan", keys: ["Lifespan", "Lifespan (Hours)"] },
+  { label: "Warranty", keys: ["Warranty", "Warranty (Years)"] },
+  { label: "Operating Temperature", keys: ["Operating Temperature"] },
+  { label: "Storage Temperature", keys: ["Storage Temperature"] },
+  { label: "Suitable Location", keys: ["Suitable Location"] },
+  { label: "IP Rating", keys: ["IP Rating"] },
+  { label: "IK Rating", keys: ["IK Rating"] },
+  { label: "Housing", keys: ["Housing", "Housing Material"] },
+  { label: "Lens", keys: ["Lens", "Cover Material / Lens"] },
+  { label: "Mounting", keys: ["Mounting", "Mounting Type", "Installation"] },
+  { label: "Fixture Sizes", keys: ["Fixture Sizes", "Fixture Size"] },
+  { label: "Thickness", keys: ["Thickness", "Depth"] },
+  { label: "Certifications", keys: ["Certifications"] },
+  { label: "EPA", keys: ["EPA", "Effective Projected Area"] },
+  { label: "Wind Shear Rating", keys: ["Wind Shear Rating"] },
+  { label: "Emergency Backup", keys: ["Emergency Backup"] },
+  { label: "Surge Protection", keys: ["Surge Protection"] },
+  { label: "Finish", keys: ["Finish"] },
+];
+
+const CATEGORY_OVERVIEW_TEMPLATES: Record<string, OverviewTemplateRow[]> = {
+  panel: [
+    createOverviewTemplateRow("Power (Selectable)", "Power", "Wattage"),
+    createOverviewTemplateRow("Voltage", "Input Voltage"),
+    createOverviewTemplateRow("Current"),
+    createOverviewTemplateRow("Power Factor"),
+    createOverviewTemplateRow("THD"),
+    createOverviewTemplateRow("Surge Protection"),
+    createOverviewTemplateRow("Lumens", "Lumen Output"),
+    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
+    createOverviewTemplateRow("Color Temperature (Selectable)", "CCT", "Color Temperature"),
+    createOverviewTemplateRow("Color Rendering (CRI)", "CRI", "Color Rendering Index"),
+    createOverviewTemplateRow("R9 (Red Value)", "R9"),
+    createOverviewTemplateRow("R13 (Skin Tones)", "R13"),
+    createOverviewTemplateRow("Beam Angle"),
+    createOverviewTemplateRow("Light Distribution"),
+    createOverviewTemplateRow("BUG Rating (Backlight, Uplight, Glare)", "BUG Rating", "Backlight Uplight Glare"),
+    createOverviewTemplateRow("Dimmable Lighting Control", "Dimming"),
+    createOverviewTemplateRow("Operating Temperature (°F)", "Operating Temperature"),
+    createOverviewTemplateRow("Suitable Location"),
+    createOverviewTemplateRow("Ingress Protection Rating (IP)", "IP Rating"),
+    createOverviewTemplateRow("Lifespan (Avg Life Hours)", "Lifespan", "Lifespan (Hours)"),
+    createOverviewTemplateRow("Warranty (Years)", "Warranty"),
+    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
+    createOverviewTemplateRow("Driver", "Power Supply"),
+    createOverviewTemplateRow("Housing", "Housing Material"),
+    createOverviewTemplateRow("Cover Material / Lens", "Lens"),
+    createOverviewTemplateRow("Diffuser"),
+    createOverviewTemplateRow("Base / Power Supply", "Driver", "Power Supply"),
+    createOverviewTemplateRow("Finish"),
+    createOverviewTemplateRow("EPA (Effective Projected Area)", "EPA", "Effective Projected Area"),
+    createOverviewTemplateRow("Wind Shear Rating"),
+  ],
+  downlight: [
+    createOverviewTemplateRow("Power (Selectable)", "Power", "Wattage"),
+    createOverviewTemplateRow("Voltage", "Input Voltage"),
+    createOverviewTemplateRow("Current"),
+    createOverviewTemplateRow("Power factor", "Power Factor"),
+    createOverviewTemplateRow("THD"),
+    createOverviewTemplateRow("Lumens", "Lumen Output"),
+    createOverviewTemplateRow("Color Temp (Selectable)", "CCT", "Color Temperature"),
+    createOverviewTemplateRow("CRI", "Color Rendering (CRI)", "Color Rendering Index"),
+    createOverviewTemplateRow("R9", "R9 (Red Value)"),
+    createOverviewTemplateRow("R13", "R13 (Skin Tones)"),
+    createOverviewTemplateRow("Beam Angle"),
+    createOverviewTemplateRow("Light Distribution"),
+    createOverviewTemplateRow("BUG Rating", "BUG Rating (Backlight, Uplight, Glare)", "Backlight Uplight Glare"),
+    createOverviewTemplateRow("Dimmable Lighting Control", "Dimming"),
+    createOverviewTemplateRow("Suitable Location"),
+    createOverviewTemplateRow("Ingress Protection (IP)", "IP Rating"),
+    createOverviewTemplateRow("Lifespan (Avg Life, Warranty)", "Lifespan", "Warranty"),
+    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
+    createOverviewTemplateRow("Driver", "Power Supply"),
+    createOverviewTemplateRow("Housing", "Housing Material"),
+    createOverviewTemplateRow("Cover Material / Lens", "Lens"),
+    createOverviewTemplateRow("Diffuser"),
+    createOverviewTemplateRow("Base / Power Supply", "Driver", "Power Supply"),
+    createOverviewTemplateRow("Finish"),
+  ],
+  low_bay: [
+    createOverviewTemplateRow("Max Power", "Power", "Wattage"),
+    createOverviewTemplateRow("Voltage", "Input Voltage"),
+    createOverviewTemplateRow("Current"),
+    createOverviewTemplateRow("Power Factor"),
+    createOverviewTemplateRow("THD"),
+    createOverviewTemplateRow("Surge Protection"),
+    createOverviewTemplateRow("Lumens", "Lumen Output"),
+    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
+    createOverviewTemplateRow("Color Temperature", "CCT"),
+    createOverviewTemplateRow("CRI", "Color Rendering (CRI)", "Color Rendering Index"),
+    createOverviewTemplateRow("R9", "R9 (Red Value)"),
+    createOverviewTemplateRow("R13", "R13 (Skin Tones)"),
+    createOverviewTemplateRow("Beam Angle"),
+    createOverviewTemplateRow("Light Distribution"),
+    createOverviewTemplateRow("Operating Temperature"),
+    createOverviewTemplateRow("Dimmable Lighting Control", "Dimming"),
+    createOverviewTemplateRow("Suitable Location"),
+    createOverviewTemplateRow("Ingress Protection (IP)", "IP Rating"),
+    createOverviewTemplateRow("Lifespan (Avg Life, Warranty)", "Lifespan", "Warranty"),
+    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
+    createOverviewTemplateRow("Driver", "Power Supply"),
+    createOverviewTemplateRow("Housing", "Housing Material"),
+    createOverviewTemplateRow("Cover Material / Lens", "Lens"),
+    createOverviewTemplateRow("Diffuser"),
+    createOverviewTemplateRow("Base / Power Supply", "Driver", "Power Supply"),
+    createOverviewTemplateRow("Finish"),
+  ],
+  high_bay: [
+    createOverviewTemplateRow("Max Power", "Power", "Wattage"),
+    createOverviewTemplateRow("Voltage", "Input Voltage"),
+    createOverviewTemplateRow("Current"),
+    createOverviewTemplateRow("Power Factor"),
+    createOverviewTemplateRow("THD"),
+    createOverviewTemplateRow("Lumens", "Lumen Output"),
+    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
+    createOverviewTemplateRow("Color Temperature", "CCT"),
+    createOverviewTemplateRow("CRI", "Color Rendering (CRI)", "Color Rendering Index"),
+    createOverviewTemplateRow("R9", "R9 (Red Value)"),
+    createOverviewTemplateRow("R13", "R13 (Skin Tones)"),
+    createOverviewTemplateRow("Beam Angle"),
+    createOverviewTemplateRow("Light Distribution"),
+    createOverviewTemplateRow("Dimmable Lighting Control", "Dimming"),
+    createOverviewTemplateRow("Operating Temperature"),
+    createOverviewTemplateRow("Suitable Location"),
+    createOverviewTemplateRow("Ingress Protection (IP)", "IP Rating"),
+    createOverviewTemplateRow("Lifespan (Avg Life, Warranty)", "Lifespan", "Warranty"),
+    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
+    createOverviewTemplateRow("Driver", "Power Supply"),
+    createOverviewTemplateRow("Housing", "Housing Material"),
+    createOverviewTemplateRow("Cover Material / Lens", "Lens"),
+    createOverviewTemplateRow("Diffuser"),
+    createOverviewTemplateRow("Base / Power Supply", "Driver", "Power Supply"),
+    createOverviewTemplateRow("Finish"),
+  ],
+  flood: [
+    createOverviewTemplateRow("Power", "Wattage"),
+    createOverviewTemplateRow("Voltage", "Input Voltage"),
+    createOverviewTemplateRow("Current"),
+    createOverviewTemplateRow("Power Factor"),
+    createOverviewTemplateRow("THD"),
+    createOverviewTemplateRow("Percent Flicker (%)", "Flicker"),
+    createOverviewTemplateRow("Surge Protection"),
+    createOverviewTemplateRow("Lumens", "Lumen Output"),
+    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
+    createOverviewTemplateRow("Color Temperature", "CCT"),
+    createOverviewTemplateRow("CRI", "Color Rendering (CRI)", "Color Rendering Index"),
+    createOverviewTemplateRow("R9", "R9 (Red Value)"),
+    createOverviewTemplateRow("R13", "R13 (Skin Tones)"),
+    createOverviewTemplateRow("Beam Angle"),
+    createOverviewTemplateRow("Dimmable Lighting Control", "Dimming"),
+    createOverviewTemplateRow("BUG Rating (Backlight, Uplight, Glare)", "BUG Rating", "Backlight Uplight Glare"),
+    createOverviewTemplateRow("Diffuser"),
+    createOverviewTemplateRow("Protection Against Electric", "Protection Class"),
+    createOverviewTemplateRow("Intelligent Control", "Control", "Control Type", "Sensor Compatibility"),
+    createOverviewTemplateRow("Operating Temperature"),
+    createOverviewTemplateRow("Suitable Location"),
+    createOverviewTemplateRow("Ingress Protection (IP)", "IP Rating"),
+    createOverviewTemplateRow("Impact Protection Rating (IK)", "IK Rating"),
+    createOverviewTemplateRow("Lifespan (Avg Life, Warranty)", "Lifespan", "Warranty"),
+    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
+    createOverviewTemplateRow("Driver", "Power Supply"),
+    createOverviewTemplateRow("Housing", "Housing Material"),
+    createOverviewTemplateRow("Finish"),
+    createOverviewTemplateRow("Lens", "Cover Material / Lens"),
+    createOverviewTemplateRow("Structure"),
+    createOverviewTemplateRow("Glare Rating"),
+    createOverviewTemplateRow("Qualified Part Number"),
+    createOverviewTemplateRow("Effective Projected Area (EPA)", "EPA", "Effective Projected Area"),
+  ],
+  street: [
+    createOverviewTemplateRow("Max Power", "Power", "Wattage"),
+    createOverviewTemplateRow("Voltage", "Input Voltage"),
+    createOverviewTemplateRow("Current"),
+    createOverviewTemplateRow("Power Factor"),
+    createOverviewTemplateRow("THD"),
+    createOverviewTemplateRow("Surge Protection"),
+    createOverviewTemplateRow("Lumens", "Lumen Output"),
+    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
+    createOverviewTemplateRow("Color Temperature", "CCT"),
+    createOverviewTemplateRow("CRI", "Color Rendering (CRI)", "Color Rendering Index"),
+    createOverviewTemplateRow("R9", "R9 (Red Value)"),
+    createOverviewTemplateRow("R13", "R13 (Skin Tones)"),
+    createOverviewTemplateRow("Beam Angle"),
+    createOverviewTemplateRow("Light Distribution"),
+    createOverviewTemplateRow("BUG Rating (Backlight, Uplight, Glare)", "BUG Rating", "Backlight Uplight Glare"),
+    createOverviewTemplateRow("Dimmable Lighting Control", "Dimming"),
+    createOverviewTemplateRow("Operating Temperature"),
+    createOverviewTemplateRow("Suitable Location"),
+    createOverviewTemplateRow("Ingress Protection (IP)", "IP Rating"),
+    createOverviewTemplateRow("Lifespan (Avg Life, Warranty)", "Lifespan", "Warranty"),
+    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
+    createOverviewTemplateRow("Driver", "Power Supply"),
+    createOverviewTemplateRow("Housing", "Housing Material"),
+    createOverviewTemplateRow("Cover Material / Lens", "Lens"),
+    createOverviewTemplateRow("Diffuser"),
+    createOverviewTemplateRow("Base / Power Supply", "Driver", "Power Supply"),
+    createOverviewTemplateRow("Finish"),
+    createOverviewTemplateRow("Effective Projected Area (EPA)", "EPA", "Effective Projected Area"),
+  ],
+};
+
+const OVERVIEW_EXCLUDED_PARAMETERS = new Set([
+  "product category",
+  "product type",
+]);
+
+function buildWarrantyStatement(years: number) {
+  return `This product is backed by a limited ${years}-year manufacturer's warranty covering defects in materials and workmanship under normal use and service from the date of purchase. Warranty coverage is subject to published terms, conditions, exclusions, and proper installation, operation, and maintenance.`;
+}
+
+const WARRANTY_COPY_5_YEARS = buildWarrantyStatement(5);
+const WARRANTY_COPY_7_YEARS = buildWarrantyStatement(7);
+const WARRANTY_COPY_10_YEARS = buildWarrantyStatement(10);
+
+const QUALIFICATION_BADGES: Array<{
+  id: QualificationBadgeId;
+  label: string;
+  imageFile: string;
+  keywords: string[];
+}> = [
+  { id: "dlc_premium", label: "DLC Premium", imageFile: "DLC-Premium.png", keywords: ["dlc premium"] },
+  { id: "dlc_listed", label: "DLC Listed", imageFile: "DLC-Standred.png", keywords: ["dlc listed", "dlc"] },
+  { id: "energy_star", label: "Energy Star", imageFile: "Energy-Star.png", keywords: ["energy star"] },
+  { id: "etl", label: "ETL", imageFile: "ETL.png", keywords: ["etl"] },
+  { id: "c_ulus", label: "UL Listed", imageFile: "UL.png", keywords: ["culus", "ul listed", "ul", "culus listed"] },
+  { id: "wet_location", label: "IP65", imageFile: "IP65.png", keywords: ["wet", "ip65", "ip66", "damp"] },
+  { id: "dimmable", label: "Dimmable", imageFile: "Dimmable.png", keywords: ["dimmable", "0-10v", "0 10v", "dimming"] },
+  { id: "sensors", label: "Sensors", imageFile: "Sensors.png", keywords: ["sensor", "occupancy", "daylight"] },
+  { id: "power_selectable", label: "Power Selectable", imageFile: "Power-Selectable.png", keywords: ["power selectable", "wattage selectable", "selectable wattage"] },
+  { id: "cct_selectable", label: "CCT Selectable", imageFile: "CCT-Selectable.png", keywords: ["cct selectable", "selectable cct"] },
+  { id: "rohs", label: "RoHS", imageFile: "RoHS.png", keywords: ["rohs"] },
+];
+
+const SHEET_PREVIEW_WIDTH = 816;
+const SHEET_PREVIEW_HEIGHT = 1056;
+// Vertical gap between stacked pages in the preview (matches gap-8 in SheetPreview).
+const PREVIEW_PAGE_GAP = 32;
+const PRODUCT_NAME_REGISTRY_KEY = "ikio-product-name-registry-v1";
+const CONSTELLATION_CODENAMES = [
+  "Orion",
+  "Lyra",
+  "Cygnus",
+  "Aquila",
+  "Phoenix",
+  "Draco",
+  "Hydra",
+  "Vela",
+  "Carina",
+  "Cassiopeia",
+  "Perseus",
+  "Andromeda",
+  "Centauri",
+  "Pegasus",
+  "Auriga",
+  "Delphinus",
+  "Volans",
+  "Lacerta",
+  "Argo",
+  "Altair",
+];
+
+type ProductNameRegistry = {
+  assigned: Record<string, string[]>;
+  used: string[];
+};
+
+function normalizeText(value: string | undefined) {
+  return (value ?? "")
+    .replace(/\u00c2\u00b0|Â°/g, "°")
+    .replace(/\u00e2\u20ac\u201c|\u00e2\u20ac\u201d|â€“|â€”/g, "-")
+    .trim();
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function createImageEditorState(): ImageEditorState {
+  return {
+    backgroundColor: "#ffffff",
+    brightness: 100,
+    contrast: 100,
+    saturation: 100,
+    textLayers: [],
+    eraseLayers: [],
+  };
+}
+
+function resolveSourceImage(image: SourceImage, editedImageDataUrls: Record<string, string>): SourceImage {
+  return {
+    ...image,
+    dataUrl: editedImageDataUrls[image.id] ?? image.dataUrl,
+  };
+}
+
+function getDraftSourceImages(spec: ExtendedExtractedSpec, draft: EditorDraft) {
+  return [...spec.sourceImages, ...draft.manualSourceImages].map((image) =>
+    resolveSourceImage(image, draft.editedImageDataUrls),
+  );
+}
+
+function slugifyName(value: string) {
+  return normalizeText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function hashString(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+const SPEC_LABEL_ALIASES: Record<string, string> = {
+  "power (selectable)": "Power",
+  "max power": "Power",
+  power: "Power",
+  wattage: "Power",
+  voltage: "Voltage",
+  "input voltage": "Voltage",
+  lumens: "Lumen Output",
+  "lumen output": "Lumen Output",
+  efficiency: "Efficacy",
+  efficacy: "Efficacy",
+  "efficacy (lm/w)": "Efficacy",
+  "color temperature (selectable)": "CCT",
+  "color temp (selectable)": "CCT",
+  "color temperature": "CCT",
+  cct: "CCT",
+  "color rendering (cri)": "CRI",
+  "color rendering index": "CRI",
+  cri: "CRI",
+  "lighting angle": "Beam Angle",
+  "beam spread": "Beam Angle",
+  "bug rating (backlight, uplight, glare)": "BUG Rating",
+  "light distribution type": "Light Distribution",
+  "distribution type": "Light Distribution",
+  distribution: "Light Distribution",
+  "dimmable lighting control": "Dimming",
+  "operating temperature (°f)": "Operating Temperature",
+  "operating temperature (â°f)": "Operating Temperature",
+  "operating temperature (å°f)": "Operating Temperature",
+  "operating temperature (ã¢â°f)": "Operating Temperature",
+  "ingress protection rating (ip)": "IP Rating",
+  "ingress protection (ip)": "IP Rating",
+  ip: "IP Rating",
+  "impact protection rating (ik)": "IK Rating",
+  "impact protection (ik)": "IK Rating",
+  ik: "IK Rating",
+  "lifespan (avg life hours)": "Lifespan",
+  "lifespan (avg life, warranty)": "Lifespan",
+  "lifespan (hours)": "Lifespan",
+  certification: "Certifications",
+  certifications: "Certifications",
+  listing: "Certifications",
+  "warranty (years)": "Warranty",
+  "led light source": "LED Source",
+  "housing material": "Housing",
+  housing: "Housing",
+  "cover material / lens": "Lens",
+  lens: "Lens",
+  "mounting type": "Mounting",
+  mounting: "Mounting",
+  installation: "Mounting",
+  "led type": "LED Source",
+  "base / power supply": "Driver",
+  "power supply": "Driver",
+  "driver type": "Driver",
+  "led driver": "Driver",
+  driver: "Driver",
+  "product category": "Product Type",
+  "product type": "Product Type",
+  "fixture type": "Product Type",
+  r9: "R9 (Red Value)",
+  "r9 (red value)": "R9 (Red Value)",
+  r13: "R13 (Skin Tones)",
+  "r13 (skin tones)": "R13 (Skin Tones)",
+  "percent flicker (%)": "Percent Flicker (%)",
+  flicker: "Percent Flicker (%)",
+  epa: "EPA",
+  "effective projected area": "EPA",
+  "effective projected area (epa)": "EPA",
+  "wind shear rating": "Wind Shear Rating",
+  "bug rating": "BUG Rating",
+  control: "Control",
+  "control output": "Control",
+  "control module": "Control",
+  "intelligent control": "Control",
+  sensor: "Sensor Compatibility",
+  "sensor compatibility": "Sensor Compatibility",
+  structure: "Structure",
+  "qualified part number": "Qualified Part Number",
+  diffuser: "Diffuser",
+  "protection against electric": "Protection Class",
+  "fixture size": "Fixture Sizes",
+  "fixture sizes": "Fixture Sizes",
+  thickness: "Thickness",
+  depth: "Thickness",
+  "emergency back-up": "Emergency Backup",
+  "emergency backup": "Emergency Backup",
+  "suitable location": "Suitable Location",
+};
+
+function normalizeSpecAliasKey(value: string) {
+  return normalizeText(value)
+    .toLowerCase()
+    .replace(/â°|å°|ã¢â°|Â°/g, "°")
+    .replace(/\(deg f\)/g, "(°f)")
+    .replace(/\(f\)/g, "(°f)");
+}
+
+function canonicalizeSpecLabel(value: string) {
+  const normalized = normalizeSpecAliasKey(value);
+  return SPEC_LABEL_ALIASES[normalized] ?? normalizeText(value);
+}
+
+function uniquePreserveOrder(values: string[]) {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const normalized = normalizeText(value);
+    if (!normalized) return false;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function sortOptionValues(values: string[]) {
+  return [...values].sort((left, right) => {
+    const leftMatch = left.match(/-?\d+(?:\.\d+)?/);
+    const rightMatch = right.match(/-?\d+(?:\.\d+)?/);
+
+    if (leftMatch && rightMatch) {
+      const numericDifference = Number(leftMatch[0]) - Number(rightMatch[0]);
+      if (numericDifference !== 0) return numericDifference;
+    }
+
+    return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+  });
+}
+
+const SELECTABLE_MARKERS = new Set([
+  "yes",
+  "no",
+  "yes/no",
+  "yes / no",
+  "true",
+  "false",
+  "y",
+  "n",
+]);
+
+function isSelectableMarker(value: string) {
+  return SELECTABLE_MARKERS.has(normalizeText(value).toLowerCase());
+}
+
+function normalizeOptionList(value: string, tokenPattern: RegExp, separator = " | ", strict = false) {
+  const normalized = normalizeText(value);
+  if (!normalized) return normalized;
+
+  const matchedTokens = sortOptionValues(uniquePreserveOrder(
+    Array.from(normalized.matchAll(new RegExp(tokenPattern.source, `${tokenPattern.flags.replace(/g/g, "")}g`)))
+      .map((match) => normalizeText(match[0])),
+  ));
+
+  if (matchedTokens.length >= 1) {
+    return matchedTokens.join(separator);
+  }
+
+  if (strict) {
+    return "";
+  }
+
+  return sortOptionValues(uniquePreserveOrder(
+    normalized
+      .split(/\s*(?:\||\/|,|;|\r?\n)\s*/)
+      .map((token) => token.trim())
+      .filter(Boolean),
+  )).join(separator);
+}
+
+function compactSelectableValue(label: string, value: string) {
+  const normalizedLabel = normalizeSpecKey(label);
+  const normalizedValue = normalizeText(value);
+  if (!normalizedValue) return normalizedValue;
+
+  if (normalizedLabel === "power" || normalizedLabel === "power selectable" || normalizedLabel === "max power") {
+    return normalizeOptionList(normalizedValue, /\d(?:[\d.\s-])*(?:w|watt|watts)\b/i, " - ", true);
+  }
+
+  if (normalizedLabel === "cct" || normalizedLabel.includes("color temperature")) {
+    return normalizeOptionList(normalizedValue, /\d{3,5}\s*k\b/i, " - ", true);
+  }
+
+  if (normalizedLabel === "lumens" || normalizedLabel === "lumen output") {
+    const withoutTaggedCct = normalizedValue.replace(/\([^)]*?\d{3,5}\s*k[^)]*\)/gi, "");
+    return normalizeOptionList(withoutTaggedCct, /\d[\d,]*(?:\.\d+)?\s*lm\b/i, " - ", true);
+  }
+
+  if (normalizedLabel === "efficacy") {
+    return normalizeOptionList(normalizedValue, /\d[\d,]*(?:\.\d+)?\s*(?:lm\s*\/\s*w|lm\s*\/\s*ft)\b/i, " - ", true);
+  }
+
+  return normalizedValue
+    .split(/\r?\n/)
+    .map((item) => item.replace(/\s*(?:\||\/)\s*/g, " - ").trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatOverviewValue(label: string, value: string) {
+  if (!value) return value;
+  const normalizedLabel = normalizeSpecKey(label);
+
+  if (normalizedLabel === "power") {
+    return compactSelectableValue(label, value);
+  }
+
+  if (normalizedLabel === "cct") {
+    return compactSelectableValue(label, value);
+  }
+
+  if (normalizedLabel === "lumen output") {
+    return compactSelectableValue(label, value);
+  }
+
+  if (normalizedLabel === "voltage") {
+    return normalizeOptionList(value, /\d[\d.\s-]*(?:v|vac|vdc)\b/i);
+  }
+
+  if (normalizedLabel === "efficacy") {
+    return compactSelectableValue(label, value);
+  }
+
+  if (normalizedLabel.includes("dimension")) {
+    const normalized = normalizeText(value);
+    const inchMatch = normalized.match(/\(([^)"]*(?:\d+(?:\.\d+)?\s*"\s*(?:x|×)\s*)+\d+(?:\.\d+)?\s*")\)/i);
+    if (inchMatch?.[1]) {
+      return normalizeText(inchMatch[1]).replace(/\s*[x×]\s*/g, ' x ');
+    }
+
+    const allQuotedValues = Array.from(normalized.matchAll(/\d+(?:\.\d+)?\s*"/g)).map((match) => match[0].replace(/\s+/g, ""));
+    if (allQuotedValues.length >= 2) {
+      return allQuotedValues.join(" x ");
+    }
+  }
+
+  if (normalizedLabel.includes("weight")) {
+    const normalized = normalizeText(value);
+    const lbMatches = Array.from(normalized.matchAll(/\d+(?:\.\d+)?\s*lbs?\b/gi)).map((match) => normalizeText(match[0]));
+    if (lbMatches.length > 0) {
+      return lbMatches.join(" / ");
+    }
+  }
+
+  if (normalizedLabel === "warranty") {
+    const matches = sortOptionValues(uniquePreserveOrder(
+      Array.from(value.matchAll(/\d+(?:\.\d+)?/g)).map((match) => `${match[0]} Years`),
+    ));
+    return matches.join(" | ") || normalizeText(value);
+  }
+
+  if (normalizedLabel === "lifespan") {
+    return normalizeLifespanValue(value);
+  }
+
+  if (normalizedLabel.includes("operating temp")) {
+    return normalizeOperatingTemperatureClean(value);
+  }
+
+  return normalizeText(value);
+}
+
+function summarizeSensorTypeValue(value: string) {
+  const normalized = normalizeText(value);
+  if (!normalized) return "";
+
+  const matches = uniquePreserveOrder([
+    ...(/microwave/i.test(normalized) ? ["Microwave Sensor"] : []),
+    ...(/pir|passive infrared/i.test(normalized) ? ["PIR Sensor"] : []),
+    ...(/daylight/i.test(normalized) ? ["Daylight Sensor"] : []),
+    ...(/occupancy|motion/i.test(normalized) ? ["Motion Sensor"] : []),
+    ...(/bluetooth/i.test(normalized) ? ["Bluetooth Control"] : []),
+    ...(/remote/i.test(normalized) ? ["Remote Control"] : []),
+  ]);
+
+  if (matches.length > 0) {
+    return matches.slice(0, 3).join(", ");
+  }
+
+  return trimWords(normalized, 8);
+}
+
+function formatFahrenheitValue(value: number) {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1).replace(/\.0$/, "");
+}
+
+function convertCelsiusToFahrenheit(value: number) {
+  return (value * 9) / 5 + 32;
+}
+
+function normalizeOperatingTemperature(value: string) {
+  const normalized = normalizeText(value);
+  if (!normalized) return normalized;
+
+  const fahrenheitRangeMatch = normalized.match(
+    /\(?\s*(-?\d+(?:\.\d+)?)\s*°?\s*F\s*(?:to|TO|~|–|—|-)\s*(-?\d+(?:\.\d+)?)\s*°?\s*F\s*\)?/i,
+  );
+
+  if (fahrenheitRangeMatch) {
+    return `${formatFahrenheitValue(Number(fahrenheitRangeMatch[1]))}°F ~ ${formatFahrenheitValue(Number(fahrenheitRangeMatch[2]))}°F`;
+  }
+
+  if (/°?\s*f\b|fahrenheit/i.test(normalized) && !/°?\s*c\b|celsius/i.test(normalized)) {
+    return normalized.replace(/\s+/g, " ").trim();
+  }
+
+  const rangeMatch = normalized.match(
+    /(-?\d+(?:\.\d+)?)\s*°?\s*C?\s*(?:to|TO|~|–|—|-)\s*(-?\d+(?:\.\d+)?)\s*°?\s*C\b/i,
+  );
+
+  if (rangeMatch) {
+    const minimum = formatFahrenheitValue(convertCelsiusToFahrenheit(Number(rangeMatch[1])));
+    const maximum = formatFahrenheitValue(convertCelsiusToFahrenheit(Number(rangeMatch[2])));
+    return `${minimum}°F ~ ${maximum}°F`;
+  }
+
+  const converted = normalized.replace(/(-?\d+(?:\.\d+)?)\s*°?\s*C\b/gi, (_, rawValue: string) => {
+    const fahrenheitValue = formatFahrenheitValue(convertCelsiusToFahrenheit(Number(rawValue)));
+    return `${fahrenheitValue}°F`;
+  });
+
+  const convertedFahrenheitRangeMatch = converted.match(
+    /(-?\d+(?:\.\d+)?)\s*°?\s*F\s*(?:to|TO|~|–|—|-)\s*(-?\d+(?:\.\d+)?)\s*°?\s*F/i,
+  );
+
+  if (convertedFahrenheitRangeMatch) {
+    return `${formatFahrenheitValue(Number(convertedFahrenheitRangeMatch[1]))}°F ~ ${formatFahrenheitValue(Number(convertedFahrenheitRangeMatch[2]))}°F`;
+  }
+
+  return converted.replace(/\s+/g, " ").trim();
+}
+
+function normalizeOperatingTemperatureClean(value: string) {
+  const normalized = normalizeText(value);
+  if (!normalized) return normalized;
+
+  const fahrenheitRangeMatch = normalized.match(
+    /\(?\s*(-?\d+(?:\.\d+)?)\s*°?\s*F\s*(?:to|TO|~|-)\s*(-?\d+(?:\.\d+)?)\s*°?\s*F\s*\)?/i,
+  );
+
+  if (fahrenheitRangeMatch) {
+    return `${formatFahrenheitValue(Number(fahrenheitRangeMatch[1]))}°F ~ ${formatFahrenheitValue(Number(fahrenheitRangeMatch[2]))}°F`;
+  }
+
+  if (/°?\s*f\b|fahrenheit/i.test(normalized) && !/°?\s*c\b|celsius/i.test(normalized)) {
+    return normalized.replace(/\s+/g, " ").trim();
+  }
+
+  const rangeMatch = normalized.match(
+    /(-?\d+(?:\.\d+)?)\s*°?\s*C?\s*(?:to|TO|~|-)\s*(-?\d+(?:\.\d+)?)\s*°?\s*C\b/i,
+  );
+
+  if (rangeMatch) {
+    const minimum = formatFahrenheitValue(convertCelsiusToFahrenheit(Number(rangeMatch[1])));
+    const maximum = formatFahrenheitValue(convertCelsiusToFahrenheit(Number(rangeMatch[2])));
+    return `${minimum}°F ~ ${maximum}°F`;
+  }
+
+  const converted = normalized.replace(/(-?\d+(?:\.\d+)?)\s*°?\s*C\b/gi, (_, rawValue: string) => {
+    const fahrenheitValue = formatFahrenheitValue(convertCelsiusToFahrenheit(Number(rawValue)));
+    return `${fahrenheitValue}°F`;
+  });
+
+  const convertedFahrenheitRangeMatch = converted.match(
+    /(-?\d+(?:\.\d+)?)\s*°?\s*F\s*(?:to|TO|~|-)\s*(-?\d+(?:\.\d+)?)\s*°?\s*F/i,
+  );
+
+  if (convertedFahrenheitRangeMatch) {
+    return `${formatFahrenheitValue(Number(convertedFahrenheitRangeMatch[1]))}°F ~ ${formatFahrenheitValue(Number(convertedFahrenheitRangeMatch[2]))}°F`;
+  }
+
+  return converted.replace(/\s+/g, " ").trim();
+}
+
+function normalizeLifespanValue(value: string) {
+  const normalized = normalizeText(value);
+  if (!normalized) return normalized;
+
+  const hourMatches = uniquePreserveOrder(
+    Array.from(normalized.matchAll(/(\d[\d,]*(?:\.\d+)?)\s*(?:hours?|hrs?)\b/gi))
+      .map((match) => normalizeText(match[1]).replace(/,/g, ""))
+      .filter(Boolean),
+  );
+
+  if (hourMatches.length > 0) {
+    return sortOptionValues(hourMatches.map((match) => `${match} Hours`)).join(" | ");
+  }
+
+  const largeNumberMatches = uniquePreserveOrder(
+    Array.from(normalized.matchAll(/\d[\d,]*(?:\.\d+)?/g))
+      .map((match) => normalizeText(match[0]).replace(/,/g, ""))
+      .filter((match) => Number(match) >= 1000),
+  );
+
+  if (largeNumberMatches.length > 0) {
+    return sortOptionValues(largeNumberMatches.map((match) => `${match} Hours`)).join(" | ");
+  }
+
+  return normalized;
+}
+
+function getSpecValue(specs: TechnicalSpec[], keys: string[]) {
+  const normalizedKeys = new Set(keys.map((key) => normalizeSpecKey(key)));
+  const matches = specs.filter((spec) =>
+    normalizedKeys.has(normalizeSpecKey(spec.parameter)),
+  );
+
+  if (matches.length === 0) return "";
+
+  const rawValues = uniquePreserveOrder(matches
+    .map((match) => normalizeText(match.specification))
+    .filter((value) => value && value !== "Not Specified"));
+
+  const values =
+    rawValues.length > 1
+      ? rawValues.filter((value) => !isSelectableMarker(value))
+      : rawValues;
+
+  return values.join(" | ");
+}
+
+function getAllSpecs(spec: ExtendedExtractedSpec) {
+  return [...spec.technicalSpecs, ...(spec.categorySpecificSpecs ?? [])];
+}
+
+function getVariantOverviewValue(spec: ExtendedExtractedSpec, keys: string[]) {
+  const parameters = spec.variantOverview?.parameters ?? [];
+  const matrix = spec.variantOverview?.matrix ?? [];
+  if (parameters.length === 0 || matrix.length === 0) return "";
+
+  const normalizedKeys = new Set(keys.map((key) => normalizeSpecKey(key)));
+  const matchingIndexes = parameters.reduce<number[]>((indexes, parameter, index) => {
+    if (normalizedKeys.has(normalizeSpecKey(parameter))) {
+      indexes.push(index);
+    }
+    return indexes;
+  }, []);
+
+  if (matchingIndexes.length === 0) return "";
+
+  const values = uniquePreserveOrder(
+    matrix.flatMap((row) =>
+      matchingIndexes.map((index) => normalizeText(row[index] ?? "")).filter((value) => value && value !== "Not Specified"),
+    ),
+  );
+
+  return values.join(" | ");
+}
+
+function getSpecValueFromSpec(spec: ExtendedExtractedSpec, keys: string[]) {
+  return getSpecValue(getAllSpecs(spec), keys);
+}
+
+function getOverviewValue(spec: ExtendedExtractedSpec, keys: string[]) {
+  return getVariantOverviewValue(spec, keys) || getSpecValueFromSpec(spec, keys);
+}
+
+function extractNumericValues(value: string, pattern: RegExp) {
+  return uniquePreserveOrder(
+    Array.from(value.matchAll(new RegExp(pattern.source, `${pattern.flags.replace(/g/g, "")}g`)))
+      .map((match) => match[1] ?? match[0])
+      .map((match) => normalizeText(match).replace(/,/g, "")),
+  )
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item));
+}
+
+function formatEstimatedNumber(value: number, decimals = 2) {
+  if (!Number.isFinite(value)) return "";
+  if (Number.isInteger(value)) return String(value);
+  return value.toFixed(decimals).replace(/\.?0+$/, "");
+}
+
+function parseWattages(spec: ExtendedExtractedSpec) {
+  return extractNumericValues(
+    getOverviewValue(spec, ["Wattage", "Power"]),
+    /(\d+(?:\.\d+)?)\s*(?:w|watt|watts)\b/gi,
+  );
+}
+
+function parseLumens(spec: ExtendedExtractedSpec) {
+  return extractNumericValues(
+    getOverviewValue(spec, ["Lumen Output", "Lumens"]),
+    /(\d[\d,]*(?:\.\d+)?)\s*lm\b/gi,
+  );
+}
+
+function parseEfficacies(spec: ExtendedExtractedSpec) {
+  return extractNumericValues(
+    getOverviewValue(spec, ["Efficacy", "Efficacy (lm/W)"]),
+    /(\d[\d,]*(?:\.\d+)?)\s*(?:lm\/w|lm\s*\/\s*w)\b/gi,
+  );
+}
+
+function parseVoltages(spec: ExtendedExtractedSpec) {
+  return extractNumericValues(
+    getOverviewValue(spec, ["Input Voltage", "Voltage"]),
+    /(\d+(?:\.\d+)?)\s*(?:v|vac|vdc)\b/gi,
+  );
+}
+
+function formatEstimatedSeries(values: number[], unit: string, decimals = 2) {
+  if (values.length === 0) return "";
+  return values.map((value) => `${formatEstimatedNumber(value, decimals)} ${unit}`).join(" | ");
+}
+
+function deriveEstimatedOverviewValue(spec: ExtendedExtractedSpec, label: string) {
+  const normalizedLabel = normalizeSpecKey(label);
+  const wattages = parseWattages(spec);
+  const lumens = parseLumens(spec);
+  const efficacies = parseEfficacies(spec);
+  const voltages = parseVoltages(spec);
+
+  if (normalizedLabel === "current" && wattages.length > 0 && voltages.length > 0) {
+    const estimatedCurrents = uniquePreserveOrder(
+      wattages.flatMap((wattage) =>
+        voltages.map((voltage) => formatEstimatedNumber(wattage / voltage, 2)),
+      ),
+    )
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value));
+
+    return formatEstimatedSeries(estimatedCurrents, "A", 2)
+      ? `${formatEstimatedSeries(estimatedCurrents, "A", 2)} (Estimated)`
+      : "";
+  }
+
+  if (normalizedLabel === "efficacy" && lumens.length > 0 && wattages.length > 0 && lumens.length === wattages.length) {
+    const estimatedEfficacies = lumens.map((lumen, index) => lumen / wattages[index]);
+    return `${formatEstimatedSeries(estimatedEfficacies, "lm/W", 2)} (Estimated)`;
+  }
+
+  if (normalizedLabel === "lumen output" && wattages.length > 0 && efficacies.length > 0) {
+    const pairedLength = Math.min(wattages.length, efficacies.length);
+    if (pairedLength > 0) {
+      const estimatedLumens = Array.from({ length: pairedLength }, (_, index) => wattages[index] * efficacies[index]);
+      return `${formatEstimatedSeries(estimatedLumens, "lm", 0)} (Estimated)`;
+    }
+  }
+
+  if (normalizedLabel === "power" && lumens.length > 0 && efficacies.length > 0) {
+    const pairedLength = Math.min(lumens.length, efficacies.length);
+    if (pairedLength > 0) {
+      const estimatedWattages = Array.from({ length: pairedLength }, (_, index) => lumens[index] / efficacies[index]);
+      return `${formatEstimatedSeries(estimatedWattages, "W", 0)} (Estimated)`;
+    }
+  }
+
+  return "";
+}
+
+function getCategoryLabel(spec: ExtendedExtractedSpec) {
+  return normalizeText(spec.productCategory) || normalizeText(getSpecValueFromSpec(spec, ["Product Type"]));
+}
+
+function normalizeSpecKey(value: string) {
+  return normalizeText(canonicalizeSpecLabel(value)).toLowerCase();
+}
+
+function getOverviewTemplateRows(spec: ExtendedExtractedSpec) {
+  const source = `${getCategoryLabel(spec)} ${spec.productName}`.toLowerCase();
+
+  if (source.includes("downlight")) return CATEGORY_OVERVIEW_TEMPLATES.downlight;
+  if (source.includes("low bay")) return CATEGORY_OVERVIEW_TEMPLATES.low_bay;
+  if (source.includes("high bay")) return CATEGORY_OVERVIEW_TEMPLATES.high_bay;
+  if (source.includes("flood")) return CATEGORY_OVERVIEW_TEMPLATES.flood;
+  if (source.includes("street")) return CATEGORY_OVERVIEW_TEMPLATES.street;
+  if (source.includes("panel") || source.includes("troffer")) return CATEGORY_OVERVIEW_TEMPLATES.panel;
+
+  return TEMPLATE_OVERVIEW_ROWS;
+}
+
+function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
+  const allSpecs = getAllSpecs(spec);
+  const template = getOverviewTemplateRows(spec).filter(
+    (row) => !OVERVIEW_EXCLUDED_PARAMETERS.has(normalizeSpecKey(row.label)),
+  );
+  const variantRows = buildPreviewVariantRows(spec);
+  const buildVariantOverviewValue = (label: string) => {
+    const normalizedLabel = normalizeSpecKey(label);
+    if (variantRows.length < 2) return "";
+
+    const isPowerSelectableLabel =
+      normalizedLabel === "power"
+      || normalizedLabel === "power selectable"
+      || normalizedLabel === "max power";
+    const isLumenLabel = normalizedLabel === "lumens" || normalizedLabel === "lumen output";
+    const isCctLabel =
+      normalizedLabel === "cct"
+      || normalizedLabel === "color temperature"
+      || normalizedLabel === "color temperature (selectable)"
+      || normalizedLabel === "color temp (selectable)";
+
+    const pickValue = (row: (typeof variantRows)[number]) => {
+      if (isPowerSelectableLabel) return row.power;
+      if (isLumenLabel) return row.lumens;
+      if (isCctLabel) return row.cct;
+      return "";
+    };
+
+    if (isPowerSelectableLabel) {
+      return variantRows
+        .map((row) => {
+          const powerValue = compactSelectableValue(label, normalizeText(row.power));
+          if (!isSpecified(powerValue)) return "";
+          return isSpecified(row.fixture) ? `${row.fixture} - ${powerValue}` : powerValue;
+        })
+        .filter(Boolean)
+        .join("\n");
+    }
+
+    if (isCctLabel) {
+      const grouped = new Map<string, string[]>();
+
+      variantRows.forEach((row) => {
+        const cctValue = compactSelectableValue(label, normalizeText(row.cct));
+        if (!isSpecified(cctValue)) return;
+        const fixturePower = [normalizeText(row.fixture), normalizeText(row.power)]
+          .filter((value) => isSpecified(value))
+          .join(" - ");
+        const existing = grouped.get(cctValue) ?? [];
+        if (fixturePower) existing.push(fixturePower);
+        grouped.set(cctValue, existing);
+      });
+
+      return Array.from(grouped.entries())
+        .map(([cctValue, fixturePowers]) => {
+          const uniqueFixturePowers = uniquePreserveOrder(fixturePowers);
+          if (uniqueFixturePowers.length === 0 || uniqueFixturePowers.length === variantRows.length) {
+            return cctValue;
+          }
+          return `${uniqueFixturePowers.join(" | ")}: ${cctValue}`;
+        })
+        .join("\n");
+    }
+
+    const values = variantRows
+      .map((row) => {
+        const itemValue = compactSelectableValue(label, normalizeText(pickValue(row)));
+        if (!isSpecified(itemValue)) return "";
+        return isSpecified(row.fixture) ? `${row.fixture}: ${itemValue}` : itemValue;
+      })
+      .filter(Boolean);
+
+    return values.join("\n");
+  };
+
+  const templateRows = template.map((row, index) => ({
+    id: `template-${index}-${normalizeSpecKey(row.label)}`,
+    label: row.label,
+    value:
+      buildVariantOverviewValue(row.label) ||
+      formatOverviewValue(row.label, getOverviewValue(spec, row.keys)) ||
+      deriveEstimatedOverviewValue(spec, row.label),
+  }));
+
+  const templateKeys = new Set(
+    template.flatMap((row) => row.keys.map((key) => normalizeSpecKey(key))),
+  );
+
+  const appendedRows = allSpecs
+    .map((specRow) => ({
+      label: canonicalizeSpecLabel(specRow.parameter),
+      value: normalizeText(specRow.specification),
+    }))
+    .filter((row) => row.label)
+    .filter((row) => isSpecified(row.value))
+    .filter((row) => !OVERVIEW_EXCLUDED_PARAMETERS.has(normalizeSpecKey(row.label)))
+    .filter((row) => !templateKeys.has(normalizeSpecKey(row.label)))
+    .filter((row, index, rows) => rows.findIndex((candidate) => normalizeSpecKey(candidate.label) === normalizeSpecKey(row.label)) === index)
+    .map((row, index) => ({
+      id: `spec-${index}-${normalizeSpecKey(row.label)}`,
+      label: row.label,
+      value: normalizeSpecKey(row.label) === "sensor type"
+        ? summarizeSensorTypeValue(row.value)
+        : formatOverviewValue(row.label, row.value),
+    }));
+
+  return [...templateRows, ...appendedRows].filter(
+    (row, index, rows) =>
+      isSpecified(row.label) &&
+      isSpecified(row.value) &&
+      rows.findIndex((candidate) => normalizeSpecKey(candidate.label) === normalizeSpecKey(row.label)) === index,
+  );
+}
+
+function buildCertifications(spec: ExtendedExtractedSpec) {
+  const values = new Set<string>();
+  const certifications = getSpecValueFromSpec(spec, ["Certifications"]);
+  const ipRating = getSpecValueFromSpec(spec, ["IP Rating"]);
+  const ikRating = getSpecValueFromSpec(spec, ["IK Rating"]);
+  const warranty = getSpecValueFromSpec(spec, ["Warranty (Years)", "Warranty"]);
+
+  certifications
+    .split(/[,/|]/)
+    .map((item) => normalizeText(item))
+    .filter(Boolean)
+    .forEach((item) => values.add(item));
+
+  if (ipRating && ipRating !== "Not Specified") values.add(ipRating);
+  if (ikRating && ikRating !== "Not Specified") values.add(ikRating);
+  if (warranty && warranty !== "Not Specified") values.add(warranty.replace(/\s+Years?/i, "YR"));
+
+  return Array.from(values).slice(0, 4).join(", ");
+}
+
+function buildWarrantyCopy(spec: ExtendedExtractedSpec) {
+  const rawWarranty = getSpecValueFromSpec(spec, ["Warranty (Years)", "Warranty"]);
+  if (!isSpecified(rawWarranty)) {
+    return "";
+  }
+  if (rawWarranty.includes("10")) return WARRANTY_COPY_10_YEARS;
+  if (rawWarranty.includes("7")) return WARRANTY_COPY_7_YEARS;
+  return WARRANTY_COPY_5_YEARS;
+}
+
+function normalizeWarrantyLabel(value: string) {
+  const normalized = normalizeText(value);
+  if (normalized.includes("10")) return "10 Years";
+  if (normalized.includes("7")) return "7 Years";
+  if (normalized.includes("5")) return "5 Years";
+  return "";
+}
+
+function toTitleCase(value: string) {
+  return value
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ")
+    .replace(/(\d+)w\b/g, "$1W");
+}
+
+function deriveTypeCore(spec: ExtendedExtractedSpec) {
+  const source = `${getCategoryLabel(spec)} ${spec.productName}`.toLowerCase();
+
+  if (source.includes("back-lit") || source.includes("back lit")) return "Back-Lit Panel";
+  if (source.includes("panel")) return "Panel Light";
+  if (source.includes("stadium") || source.includes("flood")) return "Stadium Flood Light";
+  if (source.includes("high bay")) return "High Bay Light";
+  if (source.includes("post top")) return "Post Top Light";
+  if (source.includes("wall pack")) return "Wall Pack";
+  if (source.includes("area light") || source.includes("area")) return "Area Light";
+  if (source.includes("street")) return "Street Light";
+  if (source.includes("canopy")) return "Canopy Light";
+  if (source.includes("troffer")) return "Troffer";
+  if (source.includes("downlight")) return "Downlight";
+  if (source.includes("bollard")) return "Bollard";
+  if (source.includes("retrofit")) return "Retrofit Lamp";
+
+  const fallback = getCategoryLabel(spec);
+  return toTitleCase(fallback.split(/[(),/]/)[0] ?? fallback);
+}
+
+function deriveNameDescriptor(spec: ExtendedExtractedSpec) {
+  const keywordSource = [
+    spec.productName,
+    spec.alternateName,
+    ...spec.productFeatures,
+    getSpecValueFromSpec(spec, ["Dimming"]),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  if (keywordSource.includes("sensor")) return "Sensor";
+  if (keywordSource.includes("emergency")) return "Emergency Ready";
+  if (keywordSource.includes("dimm")) return "Dimmable";
+  if (getSpecValueFromSpec(spec, ["Power", "Wattage"]).includes("|")) return "Selectable";
+  return "Performance";
+}
+
+function deriveWattageName(spec: ExtendedExtractedSpec) {
+  const wattage = getSpecValueFromSpec(spec, ["Power", "Wattage"]);
+  const matches = [...wattage.matchAll(/(\d+(?:\.\d+)?)\s*W/gi)].map((match) => Number(match[1]));
+  if (matches.length === 0) return "";
+  return `${Math.max(...matches)}W`;
+}
+
+function deriveProductNameFeatureToken(spec: ExtendedExtractedSpec) {
+  const keywordSource = [
+    spec.productName,
+    spec.alternateName,
+    ...spec.productFeatures,
+    ...spec.notes,
+    getSpecValueFromSpec(spec, ["Dimming"]),
+    getSpecValueFromSpec(spec, ["Sensor Type", "Sensor Compatibility"]),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  if (keywordSource.includes("sensor")) return "Sense";
+  if (keywordSource.includes("emergency")) return "Guard";
+  if (keywordSource.includes("dimm")) return "Flux";
+  if (keywordSource.includes("selectable")) return "Shift";
+  if (keywordSource.includes("wireless") || keywordSource.includes("bluetooth") || keywordSource.includes("mesh")) return "Mesh";
+  if (keywordSource.includes("back-lit") || keywordSource.includes("back lit")) return "Halo";
+  if (keywordSource.includes("high bay")) return "Forge";
+  return "Prime";
+}
+
+function buildProductNameRegistryKey(spec: ExtendedExtractedSpec) {
+  return [
+    deriveTypeCore(spec),
+    spec.productName,
+    spec.alternateName,
+    getSpecValueFromSpec(spec, ["Power", "Wattage"]),
+    getSpecValueFromSpec(spec, ["Voltage", "Input Voltage"]),
+    getSpecValueFromSpec(spec, ["Lumen Output", "Lumens"]),
+    getSpecValueFromSpec(spec, ["Color Temperature (Selectable)", "CCT"]),
+  ]
+    .map((item) => normalizeText(item))
+    .join("|");
+}
+
+function readProductNameRegistry(): ProductNameRegistry {
+  if (typeof window === "undefined") {
+    return { assigned: {}, used: [] };
+  }
+
+  try {
+    const raw = window.localStorage.getItem(PRODUCT_NAME_REGISTRY_KEY);
+    if (!raw) return { assigned: {}, used: [] };
+    const parsed = JSON.parse(raw) as Partial<ProductNameRegistry>;
+    return {
+      assigned: parsed.assigned && typeof parsed.assigned === "object" ? parsed.assigned : {},
+      used: Array.isArray(parsed.used) ? parsed.used.filter((item): item is string => typeof item === "string") : [],
+    };
+  } catch {
+    return { assigned: {}, used: [] };
+  }
+}
+
+function writeProductNameRegistry(registry: ProductNameRegistry) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(PRODUCT_NAME_REGISTRY_KEY, JSON.stringify(registry));
+}
+
+function buildProductNameRecommendations(spec: ExtendedExtractedSpec) {
+  const typeCore = deriveTypeCore(spec);
+  const descriptor = deriveNameDescriptor(spec);
+  const wattage = deriveWattageName(spec);
+  const featureToken = deriveProductNameFeatureToken(spec);
+  const registryKey = buildProductNameRegistryKey(spec);
+  const registry = readProductNameRegistry();
+  const existing = uniquePreserveOrder(registry.assigned[registryKey]?.filter(Boolean) ?? []);
+
+  if (existing.length >= 3) {
+    return existing.slice(0, 3);
+  }
+
+  const usedNames = new Set(registry.used.map((item) => item.toLowerCase()));
+  existing.forEach((name) => usedNames.add(name.toLowerCase()));
+  const baseIndex = hashString(registryKey) % CONSTELLATION_CODENAMES.length;
+  const recommendations = [
+    ...Array.from({ length: CONSTELLATION_CODENAMES.length }, (_, offset) => {
+      const codename = CONSTELLATION_CODENAMES[(baseIndex + offset) % CONSTELLATION_CODENAMES.length];
+      return [
+        `${codename} ${featureToken} ${typeCore}`,
+        wattage ? `${codename} ${wattage} ${featureToken}` : `${codename} ${descriptor}`,
+        `${codename} ${descriptor} ${typeCore}`,
+        wattage ? `${featureToken} ${wattage} ${typeCore}` : `${featureToken} ${typeCore}`,
+        `${descriptor} ${featureToken} ${typeCore}`,
+      ];
+    }).flat(),
+    `${featureToken} ${typeCore}`,
+    wattage ? `${wattage} ${featureToken} ${typeCore}` : `${typeCore} Prime`,
+    `${descriptor} ${typeCore}`,
+  ]
+    .map((value) => toTitleCase(normalizeText(value)))
+    .map((value) => value.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  const uniqueRecommendations: string[] = [];
+  const localSeen = new Set<string>();
+
+  for (const recommendation of recommendations) {
+    const normalized = recommendation.toLowerCase();
+    if (localSeen.has(normalized) || usedNames.has(normalized)) {
+      continue;
+    }
+    localSeen.add(normalized);
+    uniqueRecommendations.push(recommendation);
+    if (uniqueRecommendations.length >= 3) {
+      break;
+    }
+  }
+
+  if (uniqueRecommendations.length < 3) {
+    const fallbackBase = `${featureToken} ${typeCore}`.trim();
+    let suffix = 2;
+    while (uniqueRecommendations.length < 3) {
+      const fallbackName = `${fallbackBase} ${suffix}`;
+      const normalized = fallbackName.toLowerCase();
+      if (!usedNames.has(normalized) && !localSeen.has(normalized)) {
+        localSeen.add(normalized);
+        uniqueRecommendations.push(fallbackName);
+      }
+      suffix += 1;
+    }
+  }
+
+  const assigned = uniquePreserveOrder([...existing, ...uniqueRecommendations]).slice(0, 3);
+  registry.assigned[registryKey] = assigned;
+  registry.used = Array.from(new Set([...registry.used, ...assigned]));
+  writeProductNameRegistry(registry);
+
+  return assigned;
+}
+
+function inferQualificationBadgeIds(spec: ExtendedExtractedSpec) {
+  const keywordSource = [
+    buildCertifications(spec),
+    getSpecValueFromSpec(spec, ["Dimming"]),
+    getSpecValueFromSpec(spec, ["IP Rating"]),
+    getSpecValueFromSpec(spec, ["Certifications"]),
+    spec.productName,
+    spec.alternateName,
+    ...spec.productFeatures,
+    ...spec.notes,
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  const selected = QUALIFICATION_BADGES.filter((badge) =>
+    badge.keywords.some((keyword) => keywordSource.includes(keyword)),
+  ).map((badge) => badge.id);
+
+  const wattage = getSpecValueFromSpec(spec, ["Power", "Wattage"]);
+  const cct = getSpecValueFromSpec(spec, ["Color Temperature (Selectable)", "CCT"]);
+
+  if (wattage.includes("|") && !selected.includes("power_selectable")) {
+    selected.push("power_selectable");
+  }
+
+  if (cct.includes("|") && !selected.includes("cct_selectable")) {
+    selected.push("cct_selectable");
+  }
+
+  return selected;
+}
+
+function countWords(value: string) {
+  return normalizeText(value).split(/\s+/).filter(Boolean).length;
+}
+
+function trimWords(value: string, limit: number) {
+  return normalizeText(value).split(/\s+/).filter(Boolean).slice(0, limit).join(" ");
+}
+
+function compactInlineValue(value: string, fallback: string, maxWords: number) {
+  const summarized = summarizeOptionText(value, fallback)
+    .replace(/\s*\|\s*/g, "/")
+    .replace(/\s*\/\s*/g, "/")
+    .replace(/\s*,\s*/g, ", ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const clipped = trimWords(summarized, maxWords);
+  return clipped || fallback;
+}
+
+function joinNatural(items: string[]) {
+  if (items.length === 0) return "";
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(", ")}, and ${items.at(-1)}`;
+}
+
+function summarizeOptionText(value: string, fallbackLabel: string) {
+  const cleaned = normalizeText(value);
+  if (!isSpecified(cleaned)) return "";
+
+  const parts = cleaned.split("|").map((part) => part.trim()).filter(Boolean);
+  if (parts.length > 3) {
+    return `multiple ${fallbackLabel}`;
+  }
+
+  return cleaned;
+}
+
+function buildNormalizedDescription(spec: ExtendedExtractedSpec) {
+  const original = normalizeText(spec.productDescription);
+  if (countWords(original) >= 70) {
+    return trimWords(original, 80);
+  }
+
+  const productType = getCategoryLabel(spec) || "lighting fixture";
+  const recommendedName = buildProductNameRecommendations(spec)[0] ?? deriveTypeCore(spec);
+  const applications = spec.applicationAreas.map((area) => normalizeText(area)).filter(isSpecified);
+  const wattage = summarizeOptionText(getSpecValueFromSpec(spec, ["Power", "Wattage"]), "power options");
+  const lumens = summarizeOptionText(getSpecValueFromSpec(spec, ["Lumens", "Lumen Output"]), "lumen packages");
+  const cct = summarizeOptionText(getSpecValueFromSpec(spec, ["Color Temperature (Selectable)", "CCT"]), "CCT options");
+  const voltage = normalizeText(getSpecValueFromSpec(spec, ["Voltage", "Input Voltage"]));
+  const efficacy = normalizeText(getSpecValueFromSpec(spec, ["Efficacy (lm/W)", "Efficacy"]));
+  const driver = normalizeText(getSpecValueFromSpec(spec, ["Driver"]));
+  const housing = normalizeText(getSpecValueFromSpec(spec, ["Housing Material", "Housing"]));
+  const mounting = normalizeText(getSpecValueFromSpec(spec, ["Mounting Type", "Mounting"]));
+
+  const performanceBits = [
+    wattage ? (wattage.toLowerCase().includes("option") ? wattage : `${wattage} power options`) : "",
+    lumens ? (lumens.toLowerCase().includes("lumen") || lumens.toLowerCase().includes("output") ? lumens : `${lumens} luminous output`) : "",
+    cct ? (cct.toLowerCase().includes("option") ? cct : `${cct} CCT options`) : "",
+  ].filter(Boolean);
+
+  const electricalBits = [
+    isSpecified(voltage) ? `${voltage} input` : "",
+    isSpecified(efficacy) ? `${efficacy} efficacy` : "",
+  ].filter(Boolean);
+
+  const constructionBits = [
+    isSpecified(driver) ? `${driver} driver support` : "",
+    isSpecified(housing) ? `${housing} construction` : "",
+    isSpecified(mounting) ? `${mounting} mounting flexibility` : "",
+  ].filter(Boolean);
+
+  let description = `${recommendedName} is a ${productType.toLowerCase()} developed for ${joinNatural(applications.slice(0, 3)) || "commercial and industrial lighting projects"}.`;
+  if (performanceBits.length > 0) {
+    description += ` It combines ${joinNatural(performanceBits)} to deliver balanced, specification-ready illumination across demanding projects.`;
+  }
+  if (electricalBits.length > 0) {
+    description += ` The fixture operates with ${joinNatural(electricalBits)} for efficient, dependable day-to-day lighting performance.`;
+  }
+  if (constructionBits.length > 0) {
+    description += ` Its design uses ${joinNatural(constructionBits)} to support clean installation, durable field use, and reliable project integration.`;
+  }
+  description += " It fits retrofit and new-construction applications that need dependable output, practical coverage, and straightforward specification selection.";
+
+  while (countWords(description) < 70) {
+    description += " It offers dependable long-term value for professional lighting upgrades and new builds.";
+  }
+
+  return trimWords(description, 80);
+}
+
+function buildNormalizedFeatures(spec: ExtendedExtractedSpec) {
+  const existing = spec.productFeatures
+    .map((feature) => normalizeText(feature).replace(/^[-*•]\s*/, "").replace(/\.$/, ""))
+    .filter(isSpecified);
+
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+
+  for (const feature of existing) {
+    const key = feature.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(feature);
+    }
+    if (deduped.length >= 5) {
+      return deduped.slice(0, 5);
+    }
+  }
+
+  const derived = [
+    `Support ${summarizeOptionText(getSpecValueFromSpec(spec, ["Power", "Wattage"]), "power options") || "project-ready power options"}`,
+    `Provide ${summarizeOptionText(getSpecValueFromSpec(spec, ["Lumens", "Lumen Output"]), "lumen packages") || "dependable luminous output"}`,
+    `Offer ${summarizeOptionText(getSpecValueFromSpec(spec, ["Color Temperature (Selectable)", "CCT"]), "CCT options") || "application-appropriate CCT choices"}`,
+    `Operate on ${normalizeText(getSpecValueFromSpec(spec, ["Voltage", "Input Voltage"])) || "standard project voltage"} input`,
+    `Serve ${joinNatural(spec.applicationAreas.map((area) => normalizeText(area)).filter(isSpecified).slice(0, 3)) || "commercial, institutional, and industrial environments"}`,
+    !isSpecified(normalizeWarrantyLabel(getSpecValueFromSpec(spec, ["Warranty (Years)", "Warranty"])))
+      ? "Back the fixture with manufacturer-backed warranty coverage"
+      : `Back the fixture with a ${normalizeWarrantyLabel(getSpecValueFromSpec(spec, ["Warranty (Years)", "Warranty"]))} limited warranty`,
+  ];
+
+  for (const feature of derived) {
+    const cleaned = normalizeText(feature).replace(/\.$/, "");
+    const key = cleaned.toLowerCase();
+    if (!cleaned || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(cleaned);
+    if (deduped.length >= 5) {
+      break;
+    }
+  }
+
+  while (deduped.length < 5) {
+    deduped.push("Deliver dependable lighting performance for specification-driven applications");
+  }
+
+  return deduped.slice(0, 5);
+}
+
+function buildCompactFeatures(spec: ExtendedExtractedSpec) {
+  const applicationLabel =
+    spec.applicationAreas
+      .map((area) => trimWords(normalizeText(area).toLowerCase(), 1))
+      .filter(Boolean)
+      .slice(0, 2)
+      .join("/") || "commercial spaces";
+
+  const wattage = compactInlineValue(getSpecValueFromSpec(spec, ["Power", "Wattage"]), "flexible wattages", 2);
+  const lumens = compactInlineValue(getSpecValueFromSpec(spec, ["Lumens", "Lumen Output"]), "steady lumen packages", 2);
+  const cct = compactInlineValue(getSpecValueFromSpec(spec, ["Color Temperature (Selectable)", "CCT"]), "multiple CCT options", 3);
+  const voltage = compactInlineValue(getSpecValueFromSpec(spec, ["Voltage", "Input Voltage"]), "standard voltage", 2);
+  const warranty = normalizeWarrantyLabel(getSpecValueFromSpec(spec, ["Warranty (Years)", "Warranty"]));
+
+  return [
+    `Support ${wattage} configurations for flexible project lighting selection`,
+    `Deliver ${lumens} performance with efficient, even light output`,
+    `Offer ${cct} settings for adaptable visual comfort and control`,
+    `Operate on ${voltage} input with reliable driver control`,
+    !isSpecified(warranty)
+      ? `Cover ${applicationLabel} applications with reliable project support`
+      : `Cover ${applicationLabel} applications with ${warranty.toLowerCase()} limited warranty`,
+  ].map((feature) => trimWords(feature.replace(/\s+/g, " ").trim(), 10));
+}
+
+function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendations = buildProductNameRecommendations(spec)): EditorDraft {
+  const productType = getCategoryLabel(spec);
+  const warrantyLabel = normalizeWarrantyLabel(getSpecValueFromSpec(spec, ["Warranty (Years)", "Warranty"]));
+  const recommendedNames = productNameRecommendations;
+
+  return {
+    headerProjectName: "",
+    headerCatNumber: "",
+    headerFixtureSchedule: "",
+    headerNote: "",
+    title: recommendedNames[0] ?? deriveTypeCore(spec),
+    subtitle: spec.alternateName || productType || "Technical Data Sheet",
+    categoryLabel: isSpecified(productType) ? productType : "",
+    overviewRows: buildOverviewRows(spec),
+    description: buildNormalizedDescription(spec),
+    featuresText: buildCompactFeatures(spec).join("\n"),
+    applicationAreasText: spec.applicationAreas.join(", "),
+    certificationsText: buildCertifications(spec),
+    warrantyLabel,
+    warrantyCopy: buildWarrantyCopy(spec),
+    manualSourceImages: [],
+    selectedImageId: null,
+    editedImageDataUrls: {},
+    selectedQualificationIds: inferQualificationBadgeIds(spec as ExtendedExtractedSpec),
+    specGroups: [],
+    specsNote:
+      "Custom manufacturing options in CCT, wattage, voltage, light distribution, finish, and more are available upon request, subject to MOQ and lead time considerations.",
+    orderingExample: "",
+    orderingColumns: createDefaultOrderingColumns(),
+    orderingNote: "Please ensure power compatibility with this specific fixture size when selecting this option.",
+    accessoryRows: [],
+    dimensionItems: [],
+  };
+}
+
+function ImageEditorDialog({
+  image,
+  open,
+  onOpenChange,
+  onSave,
+  onReset,
+}: {
+  image: SourceImage | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSave: (dataUrl: string) => void;
+  onReset: () => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [editor, setEditor] = useState<ImageEditorState>(createImageEditorState);
+  const [mode, setMode] = useState<ImageEditorMode>("text");
+  const [textValue, setTextValue] = useState("");
+  const [textColor, setTextColor] = useState("#111827");
+  const [textSize, setTextSize] = useState(30);
+  const [eraseColor, setEraseColor] = useState("#ffffff");
+  const [eraseWidth, setEraseWidth] = useState(180);
+  const [eraseHeight, setEraseHeight] = useState(56);
+
+  useEffect(() => {
+    if (!open) return;
+
+    setEditor(createImageEditorState());
+    setMode("text");
+    setTextValue("");
+    setTextColor("#111827");
+    setTextSize(30);
+    setEraseColor("#ffffff");
+    setEraseWidth(180);
+    setEraseHeight(56);
+  }, [image?.id, open]);
+
+  useEffect(() => {
+    if (!open || !image) return undefined;
+
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+
+    const context = canvas.getContext("2d");
+    if (!context) return undefined;
+
+    let cancelled = false;
+    const source = new window.Image();
+
+    source.onload = () => {
+      if (cancelled) return;
+
+      canvas.width = source.naturalWidth || source.width;
+      canvas.height = source.naturalHeight || source.height;
+
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = editor.backgroundColor;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.filter = `brightness(${editor.brightness}%) contrast(${editor.contrast}%) saturate(${editor.saturation}%)`;
+      context.drawImage(source, 0, 0, canvas.width, canvas.height);
+      context.filter = "none";
+
+      editor.eraseLayers.forEach((layer) => {
+        context.fillStyle = layer.color;
+        context.fillRect(layer.x, layer.y, layer.width, layer.height);
+      });
+
+      editor.textLayers.forEach((layer) => {
+        context.fillStyle = layer.color;
+        context.font = `700 ${layer.size}px Arial`;
+        context.textBaseline = "top";
+        context.fillText(layer.text, layer.x, layer.y);
+      });
+    };
+
+    source.src = image.dataUrl;
+
+    return () => {
+      cancelled = true;
+    };
+  }, [editor, image, open]);
+
+  const updateEditor = <K extends keyof ImageEditorState>(key: K, value: ImageEditorState[K]) => {
+    setEditor((current) => ({ ...current, [key]: value }));
+  };
+
+  const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!image) return;
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const bounds = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / bounds.width;
+    const scaleY = canvas.height / bounds.height;
+    const clickX = (event.clientX - bounds.left) * scaleX;
+    const clickY = (event.clientY - bounds.top) * scaleY;
+
+    if (mode === "text") {
+      const trimmed = normalizeText(textValue);
+      if (!trimmed) return;
+
+      setEditor((current) => ({
+        ...current,
+        textLayers: [
+          ...current.textLayers,
+          {
+            id: `text-${Date.now()}-${current.textLayers.length}`,
+            x: clickX,
+            y: clickY,
+            text: trimmed,
+            color: textColor,
+            size: textSize,
+          },
+        ],
+      }));
+      return;
+    }
+
+    setEditor((current) => ({
+      ...current,
+      eraseLayers: [
+        ...current.eraseLayers,
+        {
+          id: `erase-${Date.now()}-${current.eraseLayers.length}`,
+          x: clamp(clickX - eraseWidth / 2, 0, Math.max(0, canvas.width - eraseWidth)),
+          y: clamp(clickY - eraseHeight / 2, 0, Math.max(0, canvas.height - eraseHeight)),
+          width: eraseWidth,
+          height: eraseHeight,
+          color: eraseColor,
+        },
+      ],
+    }));
+  };
+
+  const handleSave = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    onSave(canvas.toDataURL("image/png"));
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[92vh] w-[min(96vw,1200px)] max-w-none overflow-hidden p-0">
+        <div className="grid max-h-[92vh] min-h-0 grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)]">
+          <div className="border-b border-border/60 p-5 lg:border-b-0 lg:border-r">
+            <DialogHeader>
+              <DialogTitle>Vendor Image Editor</DialogTitle>
+              <DialogDescription>
+                Click the image to place text or cover old text before using it in the TDS preview.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="mt-5 space-y-5">
+              <div className="space-y-2">
+                <div className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Adjustments
+                </div>
+                <label className="block space-y-1 text-sm">
+                  <span>Background</span>
+                  <input
+                    type="color"
+                    value={editor.backgroundColor}
+                    onChange={(event) => updateEditor("backgroundColor", event.target.value)}
+                    className="h-10 w-full cursor-pointer rounded-lg border border-border bg-background p-1"
+                  />
+                </label>
+                <label className="block space-y-1 text-sm">
+                  <span>Brightness: {editor.brightness}%</span>
+                  <input
+                    type="range"
+                    min="40"
+                    max="180"
+                    value={editor.brightness}
+                    onChange={(event) => updateEditor("brightness", Number(event.target.value))}
+                    className="w-full"
+                  />
+                </label>
+                <label className="block space-y-1 text-sm">
+                  <span>Contrast: {editor.contrast}%</span>
+                  <input
+                    type="range"
+                    min="40"
+                    max="180"
+                    value={editor.contrast}
+                    onChange={(event) => updateEditor("contrast", Number(event.target.value))}
+                    className="w-full"
+                  />
+                </label>
+                <label className="block space-y-1 text-sm">
+                  <span>Saturation: {editor.saturation}%</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="200"
+                    value={editor.saturation}
+                    onChange={(event) => updateEditor("saturation", Number(event.target.value))}
+                    className="w-full"
+                  />
+                </label>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Tools
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button type="button" variant={mode === "text" ? "default" : "outline"} onClick={() => setMode("text")}>
+                    Add Text
+                  </Button>
+                  <Button type="button" variant={mode === "erase" ? "default" : "outline"} onClick={() => setMode("erase")}>
+                    Erase Area
+                  </Button>
+                </div>
+                {mode === "text" ? (
+                  <div className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
+                    <Input
+                      value={textValue}
+                      onChange={(event) => setTextValue(event.target.value)}
+                      placeholder="Text to place"
+                    />
+                    <label className="block space-y-1 text-sm">
+                      <span>Text color</span>
+                      <input
+                        type="color"
+                        value={textColor}
+                        onChange={(event) => setTextColor(event.target.value)}
+                        className="h-10 w-full cursor-pointer rounded-lg border border-border bg-background p-1"
+                      />
+                    </label>
+                    <label className="block space-y-1 text-sm">
+                      <span>Text size: {textSize}px</span>
+                      <input
+                        type="range"
+                        min="12"
+                        max="96"
+                        value={textSize}
+                        onChange={(event) => setTextSize(Number(event.target.value))}
+                        className="w-full"
+                      />
+                    </label>
+                    <div className="text-xs text-muted-foreground">
+                      Click on the image to place this text.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
+                    <label className="block space-y-1 text-sm">
+                      <span>Fill color</span>
+                      <input
+                        type="color"
+                        value={eraseColor}
+                        onChange={(event) => setEraseColor(event.target.value)}
+                        className="h-10 w-full cursor-pointer rounded-lg border border-border bg-background p-1"
+                      />
+                    </label>
+                    <label className="block space-y-1 text-sm">
+                      <span>Box width: {eraseWidth}px</span>
+                      <input
+                        type="range"
+                        min="40"
+                        max="500"
+                        value={eraseWidth}
+                        onChange={(event) => setEraseWidth(Number(event.target.value))}
+                        className="w-full"
+                      />
+                    </label>
+                    <label className="block space-y-1 text-sm">
+                      <span>Box height: {eraseHeight}px</span>
+                      <input
+                        type="range"
+                        min="20"
+                        max="240"
+                        value={eraseHeight}
+                        onChange={(event) => setEraseHeight(Number(event.target.value))}
+                        className="w-full"
+                      />
+                    </label>
+                    <div className="text-xs text-muted-foreground">
+                      Click on the image to cover old text or marks.
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Layers
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setEditor((current) => ({ ...current, textLayers: current.textLayers.slice(0, -1) }))}
+                    disabled={editor.textLayers.length === 0}
+                  >
+                    Remove Last Text
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setEditor((current) => ({ ...current, eraseLayers: current.eraseLayers.slice(0, -1) }))}
+                    disabled={editor.eraseLayers.length === 0}
+                  >
+                    Remove Last Erase
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setEditor((current) => ({ ...current, textLayers: [], eraseLayers: [] }))}
+                    disabled={editor.textLayers.length === 0 && editor.eraseLayers.length === 0}
+                  >
+                    Clear All Layers
+                  </Button>
+                  <Button type="button" variant="outline" onClick={onReset}>
+                    Revert To Extracted Image
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-col bg-slate-950/90">
+            <div className="border-b border-white/10 px-5 py-4 text-sm text-slate-300">
+              Page {image?.page ?? "-"} image. Click inside the preview to place the active tool.
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-5">
+              <div className="flex min-h-full items-start justify-center">
+                {image ? (
+                  <canvas
+                    ref={canvasRef}
+                    onClick={handleCanvasClick}
+                    className="max-h-[72vh] max-w-full cursor-crosshair rounded-2xl border border-white/10 bg-white shadow-2xl"
+                  />
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-white/10 px-6 py-10 text-sm text-slate-400">
+                    Select a vendor image to edit.
+                  </div>
+                )}
+              </div>
+            </div>
+            <DialogFooter className="border-t border-white/10 px-5 py-4">
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={handleSave} disabled={!image}>
+                Use In TDS
+              </Button>
+            </DialogFooter>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SourcePageCropDialog({
+  page,
+  pages,
+  onSelectPage,
+  open,
+  onOpenChange,
+  onSave,
+}: {
+  page: SourcePage | null;
+  pages: SourcePage[];
+  onSelectPage: (pageId: string) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSave: (image: SourceImage) => void;
+}) {
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const [selection, setSelection] = useState<CropSelection | null>(null);
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setSelection(null);
+    setDragStart(null);
+  }, [open, page?.id]);
+
+  const getLocalPoint = (clientX: number, clientY: number) => {
+    const image = imageRef.current;
+    if (!image) return null;
+    const bounds = image.getBoundingClientRect();
+    const x = clamp(clientX - bounds.left, 0, bounds.width);
+    const y = clamp(clientY - bounds.top, 0, bounds.height);
+    return { bounds, x, y };
+  };
+
+  const handlePointerDown = (event: React.MouseEvent<HTMLDivElement>) => {
+    const point = getLocalPoint(event.clientX, event.clientY);
+    if (!point) return;
+    setDragStart({ x: point.x, y: point.y });
+    setSelection({ x: point.x, y: point.y, width: 0, height: 0 });
+  };
+
+  const handlePointerMove = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!dragStart) return;
+    const point = getLocalPoint(event.clientX, event.clientY);
+    if (!point) return;
+
+    const nextX = Math.min(dragStart.x, point.x);
+    const nextY = Math.min(dragStart.y, point.y);
+    const nextWidth = Math.abs(point.x - dragStart.x);
+    const nextHeight = Math.abs(point.y - dragStart.y);
+    setSelection({ x: nextX, y: nextY, width: nextWidth, height: nextHeight });
+  };
+
+  const handlePointerUp = () => {
+    setDragStart(null);
+  };
+
+  const handleSave = () => {
+    if (!page || !selection) return;
+
+    const image = imageRef.current;
+    if (!image) return;
+
+    const bounds = image.getBoundingClientRect();
+    if (!bounds.width || !bounds.height || selection.width < 24 || selection.height < 24) return;
+
+    const scaleX = image.naturalWidth / bounds.width;
+    const scaleY = image.naturalHeight / bounds.height;
+    const sourceX = Math.round(selection.x * scaleX);
+    const sourceY = Math.round(selection.y * scaleY);
+    const sourceWidth = Math.round(selection.width * scaleX);
+    const sourceHeight = Math.round(selection.height * scaleY);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, sourceWidth);
+    canvas.height = Math.max(1, sourceHeight);
+
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    context.drawImage(
+      image,
+      sourceX,
+      sourceY,
+      sourceWidth,
+      sourceHeight,
+      0,
+      0,
+      canvas.width,
+      canvas.height,
+    );
+
+    onSave({
+      id: `crop-${page.page}-${Date.now()}`,
+      page: page.page,
+      width: canvas.width,
+      height: canvas.height,
+      dataUrl: canvas.toDataURL("image/png"),
+    });
+  };
+
+  const isValidSelection = Boolean(selection && selection.width >= 24 && selection.height >= 24);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[92vh] w-[min(96vw,1180px)] max-w-none overflow-hidden p-0">
+        <div className="grid max-h-[92vh] min-h-0 grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)]">
+          <div className="border-b border-border/60 p-5 lg:border-b-0 lg:border-r">
+            <DialogHeader>
+              <DialogTitle>Crop Vendor PDF</DialogTitle>
+              <DialogDescription>
+                Drag over the rendered vendor page to capture the product image. The crop will appear in the extracted image section for further editing.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="mt-5 space-y-4 text-sm text-muted-foreground">
+              {pages.length > 1 && (
+                <div>
+                  <div className="mb-2 text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                    PDF Page
+                  </div>
+                  <select
+                    value={page?.id ?? ""}
+                    onChange={(event) => onSelectPage(event.target.value)}
+                    className="h-10 w-full rounded-xl border border-border/70 bg-background px-3 text-sm text-foreground"
+                  >
+                    {pages.map((sourcePage) => (
+                      <option key={sourcePage.id} value={sourcePage.id}>
+                        Page {sourcePage.page}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <p>Select only the product visual. Tables, logos, and page backgrounds should stay out of the crop.</p>
+              <p>Minimum crop size is 24 x 24 pixels in the preview.</p>
+              <div className="rounded-2xl border border-border/70 bg-card/40 p-3">
+                <div className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Current Selection
+                </div>
+                <div className="mt-2 text-sm text-foreground">
+                  {selection
+                    ? `${Math.round(selection.width)} x ${Math.round(selection.height)}`
+                    : "No crop selected"}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-col bg-slate-950/90">
+            <div className="border-b border-white/10 px-5 py-4 text-sm text-slate-300">
+              Page {page?.page ?? "-"} preview. Click and drag to define the crop area.
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-5">
+              <div className="flex min-h-full items-start justify-center">
+                {page ? (
+                  <div
+                    className="relative inline-block cursor-crosshair overflow-hidden rounded-2xl border border-white/10"
+                    onMouseDown={handlePointerDown}
+                    onMouseMove={handlePointerMove}
+                    onMouseUp={handlePointerUp}
+                    onMouseLeave={handlePointerUp}
+                  >
+                    <img
+                      ref={imageRef}
+                      src={page.dataUrl}
+                      alt={`Vendor PDF page ${page.page}`}
+                      className="block max-h-[72vh] max-w-full select-none"
+                      draggable={false}
+                    />
+                    {selection ? (
+                      <div
+                        className="pointer-events-none absolute border-2 border-cyan-400 bg-cyan-400/15 shadow-[0_0_0_9999px_rgba(2,6,23,0.45)]"
+                        style={{
+                          left: selection.x,
+                          top: selection.y,
+                          width: selection.width,
+                          height: selection.height,
+                        }}
+                      />
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-white/10 px-6 py-10 text-sm text-slate-400">
+                    Select a vendor page to crop.
+                  </div>
+                )}
+              </div>
+            </div>
+            <DialogFooter className="border-t border-white/10 px-5 py-4">
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={handleSave} disabled={!page || !isValidSelection}>
+                Add Cropped Image
+              </Button>
+            </DialogFooter>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function splitLineList(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function splitCommaList(value: string) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizePreviewDescription(value: string) {
+  return trimWords(value, 80);
+}
+
+function normalizePreviewFeatures(value: string) {
+  const cleaned = splitLineList(value)
+    .map((feature) => normalizeText(feature).replace(/^[*-]\s*/, "").replace(/\.$/, ""))
+    .filter(isSpecified)
+    .slice(0, 5)
+    .map((feature) => trimWords(feature, 10));
+
+  while (cleaned.length < 5) {
+    cleaned.push("Deliver reliable lighting performance for specification-ready applications");
+  }
+
+  return cleaned.slice(0, 5);
+}
+
+function buildPreviewVariantRows(spec: ExtendedExtractedSpec) {
+  const parameters = spec.variantOverview?.parameters ?? [];
+  const matrix = spec.variantOverview?.matrix ?? [];
+  if (parameters.length === 0 || matrix.length === 0) return [];
+
+  const fixtureTypeIndex = parameters.findIndex((item) => normalizeSpecKey(item) === "fixture type");
+  const labelIndex = parameters.findIndex((item) => normalizeSpecKey(item) === "label");
+  const powerIndex = parameters.findIndex((item) => normalizeSpecKey(item) === "power");
+  const lumenIndex = parameters.findIndex((item) => normalizeSpecKey(item) === "lumen output");
+  const cctIndex = parameters.findIndex((item) => {
+    const normalized = normalizeSpecKey(item);
+    return normalized === "color temperature" || normalized === "cct";
+  });
+  const efficacyIndex = parameters.findIndex((item) => normalizeSpecKey(item) === "efficacy");
+
+  return matrix
+    .map((row, index) => {
+      const fullLabel = normalizeText(row[labelIndex] ?? `Variant ${index + 1}`);
+      const fixtureType = normalizeText(row[fixtureTypeIndex] ?? "");
+      const displaySource = fixtureType || fullLabel;
+      const sizeMatch = fullLabel.match(/\(([^)]+)\)/);
+      const compactLabel = normalizeText(sizeMatch?.[1] ?? displaySource);
+      const fixtureDisplay = compactLabel
+        .replace(/\b(\d)\s*x\s*(\d)\s*feet?\b/i, "$1'x$2'")
+        .replace(/\b(\d)\s*x\s*(\d)\b/i, "$1'x$2'")
+        .replace(/\s+/g, " ")
+        .trim();
+      const safeFixtureLabel = /^variant\s+\d+$/i.test(fixtureDisplay)
+        ? ""
+        : fixtureDisplay;
+
+      return {
+        id: `variant-preview-${index}`,
+        fixture: safeFixtureLabel,
+        fixtureDetail: fullLabel,
+        power: normalizeText(row[powerIndex] ?? ""),
+        lumens: normalizeText(row[lumenIndex] ?? ""),
+        cct: normalizeText(row[cctIndex] ?? ""),
+        efficacy: normalizeText(row[efficacyIndex] ?? ""),
+      };
+    })
+    .filter((row) => isSpecified(row.fixture) || isSpecified(row.power) || isSpecified(row.lumens));
+}
+
+const OVERVIEW_LABEL_ACRONYMS = new Set([
+  "AC",
+  "CCT",
+  "CRI",
+  "DC",
+  "IK",
+  "IP",
+  "LED",
+  "THD",
+  "UGR",
+  "UV",
+]);
+
+function formatOverviewLabel(value: string) {
+  const canonical = canonicalizeSpecLabel(value);
+  if (canonical && canonical !== normalizeText(value)) {
+    return canonical;
+  }
+
+  return normalizeText(value)
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part, index) => {
+      const uppercasePart = part.toUpperCase();
+      if (OVERVIEW_LABEL_ACRONYMS.has(uppercasePart) || /^\d+$/.test(part)) {
+        return uppercasePart;
+      }
+
+      const lowerPart = part.toLowerCase();
+      return index === 0
+        ? lowerPart.charAt(0).toUpperCase() + lowerPart.slice(1)
+        : lowerPart;
+    })
+    .join(" ");
+}
+
+function isSpecified(value: string | null | undefined) {
+  const normalized = normalizeText(value ?? "");
+  return normalized !== "" && normalized.toLowerCase() !== "not specified";
+}
+
+function extractWarrantyNumber(value: string) {
+  const match = value.match(/\d+/);
+  return match?.[0] ?? "5";
+}
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia(query).matches : false,
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const mediaQuery = window.matchMedia(query);
+    const handleChange = () => setMatches(mediaQuery.matches);
+
+    handleChange();
+    mediaQuery.addEventListener("change", handleChange);
+
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, [query]);
+
+  return matches;
+}
+
+function SheetHeaderOverlayValue({
+  value,
+  className,
+}: {
+  value: string;
+  className: string;
+}) {
+  if (!isSpecified(value)) {
+    return null;
+  }
+
+  return (
+    <div className={cn("absolute text-[11px] font-medium leading-none text-slate-800", className)}>
+      {value}
+    </div>
+  );
+}
+
+function SheetSectionTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="mb-1 border-b border-slate-300 pb-0.5">
+      <h3 className="text-[13px] font-bold uppercase tracking-[0.12em] text-slate-900" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+        {children}
+      </h3>
+    </div>
+  );
+}
+
+function QualificationBadge({
+  id,
+  selected: _selected = false,
+  className,
+}: {
+  id: QualificationBadgeId;
+  selected?: boolean;
+  className?: string;
+}) {
+  const badge = QUALIFICATION_BADGES.find((item) => item.id === id);
+  if (!badge) return null;
+
+  return (
+    <img
+      src={`${import.meta.env.BASE_URL}images/badges/${badge.imageFile}`}
+      alt={badge.label}
+      className={cn("block h-[60px] w-auto max-w-[82px] object-contain", className)}
+    />
+  );
+}
+
+function WarrantySeal({ label }: { label: string }) {
+  const imageFile = label.includes("10")
+    ? "10-Year-Warranty.png"
+    : label.includes("5")
+      ? "5-Year-Warranty.png"
+      : null;
+
+  if (!imageFile) {
+    const years = label.match(/\d+/)?.[0] ?? "";
+    return (
+      <div
+        className="flex h-[64px] w-[64px] flex-col items-center justify-center rounded-full border-2 border-[#b3272d] text-center text-[#b3272d]"
+        style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
+      >
+        <span className="text-[22px] font-extrabold leading-none">{years}</span>
+        <span className="text-[7px] font-bold uppercase leading-[1.1] tracking-wide">Year Warranty</span>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={`${import.meta.env.BASE_URL}images/badges/${imageFile}`}
+      alt={label}
+      className="block h-[64px] w-auto object-contain"
+    />
+  );
+}
+
+function SheetPageOne({
+  draft,
+  selectedImage,
+  spec,
+}: {
+  draft: EditorDraft;
+  selectedImage: SourceImage | null;
+  spec: ExtendedExtractedSpec;
+}) {
+  const features = normalizePreviewFeatures(draft.featuresText);
+  const applicationAreas = splitCommaList(draft.applicationAreasText);
+  const filteredOverviewRows = draft.overviewRows.filter((row) => isSpecified(row.label) && isSpecified(row.value));
+  const normalizedDescription = normalizePreviewDescription(draft.description);
+  const visibleDescription = isSpecified(normalizedDescription);
+  const visibleFeatures = features.filter(isSpecified);
+  const visibleApplications = applicationAreas.filter(isSpecified);
+  const visibleWarrantyLabel = isSpecified(draft.warrantyLabel);
+  const visibleWarrantyCopy = isSpecified(draft.warrantyCopy);
+  const showWarrantyBlock = visibleWarrantyLabel || visibleWarrantyCopy;
+  const visibleQualificationIds = draft.selectedQualificationIds;
+
+  return (
+    <div
+      className="sheet-print-root mx-auto h-[1056px] w-[816px] max-w-full overflow-hidden bg-white font-sans text-slate-900 shadow-[0_24px_60px_rgba(15,23,42,0.28)]"
+      style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
+    >
+      <div className="relative h-[1056px] overflow-hidden bg-white">
+        <header className="relative">
+          <img
+            src={`${import.meta.env.BASE_URL}images/ikio-fin-header.png`}
+            alt=""
+            className="block w-full"
+          />
+          <div className="pointer-events-none absolute inset-0">
+            <SheetHeaderOverlayValue value={draft.headerProjectName} className="left-[35.2%] top-[44%] w-[25%]" />
+            <SheetHeaderOverlayValue value={draft.headerCatNumber} className="left-[63%] top-[44%] w-[23%]" />
+            <SheetHeaderOverlayValue value={draft.headerNote} className="left-[31.5%] top-[64%] w-[28.5%]" />
+            <SheetHeaderOverlayValue value={draft.headerFixtureSchedule} className="left-[62.8%] top-[64%] w-[23.5%]" />
+          </div>
+        </header>
+
+        {/* Data area: 545 x 650 pt (x 4/3 = 727 x 864 px), filling between header and footer */}
+        <div className="mx-auto flex h-[864px] w-[727px] flex-col overflow-hidden">
+          {/* Region A - product name/info + certificate logo + image (left) and overview (right): 545 x 430 pt (727 x 573 px) */}
+          <div className="flex h-[573px] w-[727px]">
+            {/* Left column: 310 pt (413 px) */}
+            <div className="flex h-[573px] w-[413px] flex-col overflow-hidden">
+              {/* Product name and info: 310 x 58 pt (413 x 77 px) */}
+              <div className="h-[77px] w-[413px] overflow-hidden">
+                <h1 className="text-[27px] font-bold uppercase leading-[0.96] tracking-[-0.03em] text-slate-950" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                  {draft.title}
+                </h1>
+                {isSpecified(draft.subtitle) && (
+                  <div className="mt-1 text-[11px] font-bold uppercase leading-[1.25] text-slate-700" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                    {draft.subtitle}
+                  </div>
+                )}
+                {isSpecified(draft.categoryLabel) && (
+                  <div className="mt-1 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                    {draft.categoryLabel}
+                  </div>
+                )}
+              </div>
+
+              {/* Image: 281 x 315 pt (375 x 420 px) */}
+              <div className="mt-2 flex h-[420px] w-[375px] items-center justify-center bg-white">
+                {selectedImage ? (
+                  <img
+                    src={selectedImage.dataUrl}
+                    alt="Extracted vendor product visual"
+                    className="h-full w-full object-contain"
+                  />
+                ) : (
+                  <div className="flex flex-col items-center gap-3 text-center text-slate-400">
+                    <FileImage className="h-10 w-10" />
+                    <p className="max-w-[240px] text-sm">
+                      No vendor image has been selected yet. Use the crop action in the vendor PDF panel to add one.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Product certificate logo (after image): 310 pt wide (413 px), badges 36 pt tall (48 px) */}
+              {visibleQualificationIds.length > 0 && (
+                <div className="mt-2.5 flex h-[48px] w-[413px] items-center gap-3 overflow-hidden">
+                  {visibleQualificationIds.map((badgeId) => (
+                    <QualificationBadge key={badgeId} id={badgeId} className="h-[48px] w-auto max-w-[96px]" />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Right column - Overview: 235 x 452 pt (313 x 601 px), text 210 pt (280 px) */}
+            {filteredOverviewRows.length > 0 && (
+              <div className="h-[573px] w-[313px] overflow-hidden rounded-sm bg-slate-50 px-4 pb-2.5 pt-2">
+                <h3 className="mb-1.5 border-b border-slate-300 pb-1 text-[13px] font-bold uppercase tracking-[0.16em] text-slate-800" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                  Overview
+                </h3>
+                <table className="w-full border-collapse">
+                  <tbody>
+                    {filteredOverviewRows.map((row) => (
+                      <tr key={row.id} className="border-b border-slate-200 align-top last:border-b-0">
+                        <td className="w-[44%] py-[2.5px] pr-2 text-[10px] font-semibold leading-[1.12] text-[#2f8258]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                          {formatOverviewLabel(row.label)}
+                        </td>
+                        <td
+                          className={cn(
+                            "py-[2.5px] text-[10px] font-bold leading-[1.14] whitespace-pre-line",
+                            isSpecified(row.value) ? "text-slate-800" : "italic text-slate-400",
+                          )}
+                        >
+                          {row.value}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Margin after overview and image: 545 x 12 pt (727 x 16 px) */}
+          <div className="h-[16px] w-[727px]" />
+
+          {/* Region B - description/features + application area/warranty: 545 x 206 pt (727 x 275 px) */}
+          <div className="flex h-[275px] w-[727px]">
+            {/* Description and features: 287 x 206 pt (383 x 275 px) */}
+            <div className="flex h-[275px] w-[383px] flex-col gap-2 overflow-hidden">
+              {visibleDescription && (
+                <section>
+                  <SheetSectionTitle>Product Description</SheetSectionTitle>
+                  <p className="text-[11px] leading-[1.34] text-slate-700">
+                    {normalizedDescription}
+                  </p>
+                </section>
+              )}
+
+              {visibleFeatures.length > 0 && (
+                <section>
+                  <SheetSectionTitle>Features</SheetSectionTitle>
+                  <ul className="space-y-0.5 text-[11px] leading-[1.28] text-slate-700">
+                    {visibleFeatures.map((feature, index) => (
+                      <li key={`${feature}-${index}`} className="flex gap-2">
+                        <span className="mt-[3px] h-1 w-1 rounded-full bg-[#2f8258]" />
+                        <span>{feature}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+            </div>
+
+            {/* Margin between description/features and application/warranty: 27 pt (36 px) */}
+            <div className="w-[36px]" />
+
+            {/* Application area and warranty: 228 x 206 pt (304 x 275 px) */}
+            <div className="flex h-[275px] w-[304px] flex-col gap-2 overflow-hidden">
+              {visibleApplications.length > 0 && (
+                <section>
+                  <SheetSectionTitle>Application Area</SheetSectionTitle>
+                  <p className="text-[11px] leading-[1.28] text-slate-700">
+                    {visibleApplications.join(", ")}
+                  </p>
+                </section>
+              )}
+
+              {showWarrantyBlock && (
+                <section>
+                  <SheetSectionTitle>Warranty</SheetSectionTitle>
+                  <div className="bg-slate-50 px-2.5 py-1.5">
+                    <div className="space-y-1">
+                      {visibleWarrantyLabel && (
+                        <div>
+                          <WarrantySeal label={draft.warrantyLabel} />
+                        </div>
+                      )}
+                      {visibleWarrantyCopy && (
+                        <p className="whitespace-pre-line text-[10px] leading-[1.22] text-slate-600">
+                          {draft.warrantyCopy}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <SheetFooter pageNumber={1} />
+      </div>
+    </div>
+  );
+}
+
+// ---- Page-content presence helpers ----
+function specGroupHasContent(group: SpecGroup) {
+  return (
+    isSpecified(group.partNumber) ||
+    group.options.some((option) => isSpecified(option.power) || isSpecified(option.lumen)) ||
+    [group.voltage, group.efficacy, group.cri, group.current, group.cct, group.thd, group.lightDistribution].some(
+      isSpecified,
+    )
+  );
+}
+const accessoryRowHasContent = (row: AccessoryRow) =>
+  isSpecified(row.code) || isSpecified(row.description) || Boolean(row.imageId) || isSpecified(row.downloadUrl);
+
+const dimensionItemHasContent = (item: DimensionItem) =>
+  isSpecified(item.label) ||
+  Boolean(item.imageId) ||
+  isSpecified(item.width) ||
+  isSpecified(item.height) ||
+  isSpecified(item.depth);
+
+/** Footer image with a dynamic "Page No.: 0X" overlay (the baked-in number is masked). */
+function SheetFooter({ pageNumber }: { pageNumber: number }) {
+  return (
+    <footer className="absolute inset-x-0 bottom-0">
+      <div className="relative">
+        <img
+          src={`${import.meta.env.BASE_URL}images/ikio-fin-footer.png`}
+          alt=""
+          className="block w-full"
+        />
+        {/* Mask the baked-in "Page No.: 01" with the footer bar colour, then redraw the real number. */}
+        <div
+          className="absolute flex items-center justify-end pr-[3px]"
+          style={{ left: "78.5%", right: "2.5%", top: "30%", bottom: "24%", backgroundColor: "#57585A" }}
+        >
+          <span className="text-[10px] leading-none text-[#cdced0]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+            Page No.: {String(pageNumber).padStart(2, "0")}
+          </span>
+        </div>
+      </div>
+    </footer>
+  );
+}
+
+/** Shared page chrome (header overlay + data area + footer) used by pages 2+. */
+function SheetPageFrame({
+  draft,
+  pageNumber,
+  children,
+}: {
+  draft: EditorDraft;
+  pageNumber: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="sheet-print-root mx-auto h-[1056px] w-[816px] max-w-full overflow-hidden bg-white font-sans text-slate-900 shadow-[0_24px_60px_rgba(15,23,42,0.28)]"
+      style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
+    >
+      <div className="relative h-[1056px] overflow-hidden bg-white">
+        <header className="relative">
+          <img
+            src={`${import.meta.env.BASE_URL}images/ikio-fin-header.png`}
+            alt=""
+            className="block w-full"
+          />
+          <div className="pointer-events-none absolute inset-0">
+            <SheetHeaderOverlayValue value={draft.headerProjectName} className="left-[35.2%] top-[44%] w-[25%]" />
+            <SheetHeaderOverlayValue value={draft.headerCatNumber} className="left-[63%] top-[44%] w-[23%]" />
+            <SheetHeaderOverlayValue value={draft.headerNote} className="left-[31.5%] top-[64%] w-[28.5%]" />
+            <SheetHeaderOverlayValue value={draft.headerFixtureSchedule} className="left-[62.8%] top-[64%] w-[23.5%]" />
+          </div>
+        </header>
+
+        <div className="mx-auto flex h-[864px] w-[727px] flex-col overflow-hidden">
+          {children}
+        </div>
+
+        <SheetFooter pageNumber={pageNumber} />
+      </div>
+    </div>
+  );
+}
+
+/** Large blue section heading with an accent underline (matches the IKIO template). */
+function SheetPageHeading({ title, trailing }: { title: string; trailing?: string }) {
+  return (
+    <div className="mb-2.5">
+      <div className="flex items-end gap-2">
+        <h2 className="text-[18px] font-bold leading-none text-[#1f5f3f]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+          {title}
+        </h2>
+        {isSpecified(trailing) && (
+          <span className="pb-[2px] text-[9px] font-semibold text-slate-500">{trailing}</span>
+        )}
+      </div>
+      <div className="mt-1.5 h-[3px] w-[132px] bg-[#2f8258]" />
+      <div className="h-px w-full bg-slate-200" />
+    </div>
+  );
+}
+
+function SheetNote({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="mt-2 text-[8px] leading-[1.3] text-slate-500">
+      <span className="font-bold text-[#2f8258]">Note: </span>
+      {children}
+    </p>
+  );
+}
+
+const SPEC_COLUMNS: Array<{ label: string; unit: string }> = [
+  { label: "Part Number", unit: "" },
+  { label: "Power Selectable (Options)", unit: "W" },
+  { label: "Voltage", unit: "V" },
+  { label: "Lumen Output", unit: "lm" },
+  { label: "Efficacy", unit: "lm/W" },
+  { label: "CRI", unit: "" },
+  { label: "Current", unit: "A" },
+  { label: "CCT", unit: "K" },
+  { label: "THD", unit: "" },
+  { label: "Light Distribution", unit: "" },
+];
+
+const SPEC_COL_WIDTHS = ["19%", "9%", "9%", "10%", "8%", "5%", "8%", "6%", "7%", "11%"];
+
+function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
+  return (
+    <table className="w-full table-fixed border-collapse" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+      <colgroup>
+        {SPEC_COL_WIDTHS.map((width, index) => (
+          <col key={index} style={{ width }} />
+        ))}
+      </colgroup>
+      <thead>
+        <tr>
+          {SPEC_COLUMNS.map((column) => (
+            <th
+              key={column.label}
+              className="border border-[#256b47] bg-[#2f8258] px-1.5 py-1 text-left align-top text-[8.5px] font-bold uppercase leading-[1.12] text-white"
+            >
+              {column.label}
+            </th>
+          ))}
+        </tr>
+        <tr>
+          {SPEC_COLUMNS.map((column) => (
+            <th
+              key={column.label}
+              className="border border-[#cfe3d7] bg-[#eaf4ee] px-1.5 py-[2px] text-left text-[8.5px] font-semibold text-[#2f8258]"
+            >
+              {column.unit}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {groups.map((group) => {
+          const options = group.options.length > 0 ? group.options : [{ power: "", lumen: "" }];
+          const span = options.length;
+          return options.map((option, index) => (
+            <tr key={`${group.id}-${index}`} className="align-top">
+              {index === 0 && (
+                <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] font-bold leading-[1.2] text-slate-900">
+                  {group.partNumber}
+                </td>
+              )}
+              <td className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                {option.power}
+              </td>
+              {index === 0 && (
+                <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                  {group.voltage}
+                </td>
+              )}
+              <td className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                {option.lumen}
+              </td>
+              {index === 0 && (
+                <>
+                  <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                    {group.efficacy}
+                  </td>
+                  <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                    {group.cri}
+                  </td>
+                  <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                    {group.current}
+                  </td>
+                  <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                    {group.cct}
+                  </td>
+                  <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                    {group.thd}
+                  </td>
+                  <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                    {group.lightDistribution}
+                  </td>
+                </>
+              )}
+            </tr>
+          ));
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function SheetSpecificationsPage({
+  draft,
+  pageNumber,
+  resolveImage,
+}: {
+  draft: EditorDraft;
+  pageNumber: number;
+  resolveImage: (id: string | null) => SourceImage | null;
+}) {
+  const groups = draft.specGroups.filter(specGroupHasContent);
+  return (
+    <SheetPageFrame draft={draft} pageNumber={pageNumber}>
+      <div className="flex h-[864px] w-[727px] flex-col overflow-hidden">
+        {/* Top: Product Specifications */}
+        <section className="h-[400px] overflow-hidden">
+          <SheetPageHeading title="Product Specifications" />
+          <SpecificationsTable groups={groups} />
+          {isSpecified(draft.specsNote) && <SheetNote>{draft.specsNote}</SheetNote>}
+        </section>
+
+        <div className="h-[24px]" />
+
+        {/* Bottom half: Dimensions */}
+        <section className="h-[440px] overflow-hidden">
+          <DimensionsSection draft={draft} resolveImage={resolveImage} imageHeightClass="h-[150px]" />
+        </section>
+      </div>
+    </SheetPageFrame>
+  );
+}
+
+const ORDERING_GROUP_ORDER: OrderingGroupId[] = ["family", "performance", "construction"];
+
+const ORDERING_COL_WIDTHS: Record<string, string> = {
+  Brand: "6%",
+  "Family/Version": "12%",
+  Size: "5%",
+  Power: "11%",
+  Voltage: "9%",
+  Dimming: "9%",
+  CCT: "8%",
+  Distribution: "11%",
+  Driver: "8%",
+  Finish: "8%",
+  Manufacturer: "13%",
+};
+
+function OrderingDecoderTable({ columns }: { columns: OrderingColumn[] }) {
+  const ordered = ORDERING_GROUP_ORDER.flatMap((group) => columns.filter((column) => column.group === group));
+  const groupSpans = ORDERING_GROUP_ORDER.map((group) => ({
+    group,
+    span: columns.filter((column) => column.group === group).length,
+  })).filter((entry) => entry.span > 0);
+
+  return (
+    <table className="w-full table-fixed border-collapse" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+      <colgroup>
+        {ordered.map((column) => (
+          <col key={column.id} style={{ width: ORDERING_COL_WIDTHS[column.header] }} />
+        ))}
+      </colgroup>
+      <thead>
+        <tr>
+          {groupSpans.map((entry) => (
+            <th
+              key={entry.group}
+              colSpan={entry.span}
+              className="border border-[#256b47] bg-[#2f8258] px-1.5 py-1 text-left text-[8.5px] font-bold uppercase leading-[1.1] text-white"
+            >
+              {ORDERING_GROUP_LABELS[entry.group]}
+            </th>
+          ))}
+        </tr>
+        <tr>
+          {ordered.map((column) => (
+            <th
+              key={column.id}
+              className="border border-[#cfe3d7] bg-[#eaf4ee] px-1 py-[3px] text-left align-top text-[7.5px] font-bold uppercase leading-[1.1] text-[#1f5f3f]"
+            >
+              {column.header}
+              {isSpecified(column.unit) ? ` (${column.unit})` : ""}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        <tr className="align-top">
+          {ordered.map((column) => (
+            <td key={column.id} className="border border-slate-200 px-1.5 py-1 align-top">
+              <div className="flex flex-col gap-1">
+                {column.entries
+                  .filter((entry) => isSpecified(entry.code) || isSpecified(entry.description))
+                  .map((entry, index) => (
+                    <div key={index} className="leading-[1.15]">
+                      <div className="text-[8.5px] font-bold text-slate-900">{entry.code}</div>
+                      {isSpecified(entry.description) && (
+                        <div className="text-[7.5px] text-slate-600">{entry.description}</div>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            </td>
+          ))}
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
+function AccessoriesTable({ rows, resolveImage }: { rows: AccessoryRow[]; resolveImage: (id: string | null) => SourceImage | null }) {
+  return (
+    <table className="w-full table-fixed border-collapse" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+      <colgroup>
+        <col style={{ width: "27%" }} />
+        <col style={{ width: "39%" }} />
+        <col style={{ width: "17%" }} />
+        <col style={{ width: "17%" }} />
+      </colgroup>
+      <thead>
+        <tr>
+          {["Product Code", "Description", "Image", "Download"].map((label) => (
+            <th
+              key={label}
+              className="border border-[#256b47] bg-[#2f8258] px-1 py-1 text-left text-[7.5px] font-bold uppercase leading-[1.1] text-white"
+            >
+              {label}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => {
+          const image = resolveImage(row.imageId);
+          return (
+            <tr key={row.id} className="align-middle">
+              <td className="border border-slate-200 px-1.5 py-1 text-[8px] font-bold leading-[1.15] text-slate-900">
+                {row.code}
+              </td>
+              <td className="border border-slate-200 px-1.5 py-1 text-[8px] leading-[1.2] text-slate-700">
+                {row.description}
+              </td>
+              <td className="border border-slate-200 px-1.5 py-1">
+                <div className="flex h-[34px] items-center justify-center overflow-hidden">
+                  {image ? (
+                    <img src={image.dataUrl} alt={row.code} className="h-full w-full object-contain" />
+                  ) : (
+                    <FileImage className="h-5 w-5 text-slate-300" />
+                  )}
+                </div>
+              </td>
+              <td className="border border-slate-200 px-1.5 py-1 text-center text-[8px]">
+                {isSpecified(row.downloadUrl) ? (
+                  <a href={row.downloadUrl} className="font-semibold text-[#2f8258] underline">
+                    Download
+                  </a>
+                ) : (
+                  <span className="text-slate-300">—</span>
+                )}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function SheetOrderingPage({
+  draft,
+  pageNumber,
+  resolveImage,
+}: {
+  draft: EditorDraft;
+  pageNumber: number;
+  resolveImage: (id: string | null) => SourceImage | null;
+}) {
+  const accessories = draft.accessoryRows.filter(accessoryRowHasContent);
+  const half = Math.max(1, Math.ceil(accessories.length / 2));
+  const leftAccessories = accessories.slice(0, half);
+  const rightAccessories = accessories.slice(half);
+
+  return (
+    <SheetPageFrame draft={draft} pageNumber={pageNumber}>
+      <div className="flex h-[864px] w-[727px] flex-col overflow-hidden">
+        <section className="mb-5">
+          <SheetPageHeading
+            title="Product Ordering Information"
+            trailing={isSpecified(draft.orderingExample) ? `Typical order example: ${draft.orderingExample}` : undefined}
+          />
+          <OrderingDecoderTable columns={draft.orderingColumns} />
+          {isSpecified(draft.orderingNote) && <SheetNote>{draft.orderingNote}</SheetNote>}
+        </section>
+
+        <section>
+          <SheetPageHeading title="Accessories Ordering Information" />
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <AccessoriesTable rows={leftAccessories} resolveImage={resolveImage} />
+            </div>
+            <div className="flex-1">
+              <AccessoriesTable rows={rightAccessories} resolveImage={resolveImage} />
+            </div>
+          </div>
+        </section>
+      </div>
+    </SheetPageFrame>
+  );
+}
+
+function DimensionsSection({
+  draft,
+  resolveImage,
+  imageHeightClass,
+}: {
+  draft: EditorDraft;
+  resolveImage: (id: string | null) => SourceImage | null;
+  imageHeightClass: string;
+}) {
+  const filled = draft.dimensionItems.filter(dimensionItemHasContent);
+  // Show placeholder slots so the fixed layout is visible before any drawing is added.
+  const items =
+    filled.length > 0
+      ? filled
+      : [
+          { id: "dim-placeholder-0", label: "", imageId: null, width: "", height: "", depth: "" },
+          { id: "dim-placeholder-1", label: "", imageId: null, width: "", height: "", depth: "" },
+        ];
+  return (
+    <>
+      <SheetPageHeading title="Dimensions" />
+      <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+        {items.map((item) => {
+          const image = resolveImage(item.imageId);
+          const dims = [
+            item.width && `W ${item.width}`,
+            item.height && `H ${item.height}`,
+            item.depth && `D ${item.depth}`,
+          ].filter(Boolean);
+          return (
+            <div key={item.id} className="flex flex-col">
+              {isSpecified(item.label) && (
+                <div className="mb-1 text-[10px] font-bold text-[#1f5f3f]">{item.label}</div>
+              )}
+              <div className={cn("flex w-full items-center justify-center overflow-hidden rounded-sm bg-slate-50", imageHeightClass)}>
+                {image ? (
+                  <img src={image.dataUrl} alt={item.label} className="h-full w-full object-contain" />
+                ) : (
+                  <div className="flex flex-col items-center gap-1 text-slate-400">
+                    <FileImage className="h-8 w-8" />
+                    <p className="text-[9px]">Dimension drawing</p>
+                  </div>
+                )}
+              </div>
+              {dims.length > 0 && (
+                <div className="mt-1 text-[9px] font-semibold text-slate-600">{dims.join("  ×  ")}</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+function SheetPreview({
+  draft,
+  selectedImage,
+  spec,
+}: {
+  draft: EditorDraft;
+  selectedImage: SourceImage | null;
+  spec: ExtendedExtractedSpec;
+}) {
+  const sourceImages = getDraftSourceImages(spec, draft);
+  const resolveImage = (id: string | null) =>
+    (id ? sourceImages.find((image) => image.id === id) : null) ?? null;
+
+  return (
+    <div className="flex flex-col items-center gap-8">
+      <SheetPageOne draft={draft} selectedImage={selectedImage} spec={spec} />
+      <SheetSpecificationsPage draft={draft} pageNumber={2} resolveImage={resolveImage} />
+      <SheetOrderingPage draft={draft} pageNumber={3} resolveImage={resolveImage} />
+    </div>
+  );
+}
+
+function SecondPageImagePicker({
+  images,
+  value,
+  onChange,
+}: {
+  images: SourceImage[];
+  value: string | null;
+  onChange: (value: string | null) => void;
+}) {
+  return (
+    <select
+      value={value ?? ""}
+      onChange={(event) => onChange(event.target.value || null)}
+      className="h-10 w-full rounded-xl border border-border/70 bg-background px-3 text-sm text-foreground"
+    >
+      <option value="">No image</option>
+      {images.map((image, index) => (
+        <option key={image.id} value={image.id}>
+          Image {index + 1} · Page {image.page}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
+  const [productNameRecommendations, setProductNameRecommendations] = useState<string[]>(() => buildProductNameRecommendations(spec));
+  const [draft, setDraft] = useState<EditorDraft>(() => buildEditorDraft(spec, buildProductNameRecommendations(spec)));
+  const [draggedOverviewIndex, setDraggedOverviewIndex] = useState<number | null>(null);
+  const [overviewDropIndex, setOverviewDropIndex] = useState<number | null>(null);
+  const [isImageEditorOpen, setIsImageEditorOpen] = useState(false);
+  const [editingImageId, setEditingImageId] = useState<string | null>(null);
+  const [isCropDialogOpen, setIsCropDialogOpen] = useState(false);
+  const [croppingPageId, setCroppingPageId] = useState<string | null>(null);
+  const [pendingImageTarget, setPendingImageTarget] = useState<
+    { kind: "dimension" | "accessory"; id: string } | null
+  >(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const previewViewportRef = useRef<HTMLDivElement | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  // Tracks which extraction's saved draft has finished loading, so autosave
+  // never overwrites persisted edits with the freshly-built baseline.
+  const hydratedSpecIdRef = useRef<string | null>(null);
+  const [previewScale, setPreviewScale] = useState(1);
+  const isWideWorkspace = useMediaQuery("(min-width: 1280px)");
+  const sourcePages = spec.sourcePages ?? [];
+  const sourcePdfUrl = `/api/extract/${spec.id}/source-pdf#toolbar=0&navpanes=0&view=FitH`;
+
+  useEffect(() => {
+    const nextRecommendations = buildProductNameRecommendations(spec);
+    setProductNameRecommendations(nextRecommendations);
+    const fresh = buildEditorDraft(spec, nextRecommendations);
+    setDraft(fresh);
+    setDraggedOverviewIndex(null);
+    setOverviewDropIndex(null);
+    setEditingImageId(null);
+    setCroppingPageId(null);
+
+    // Hydrate any saved edits for this extraction from IndexedDB.
+    hydratedSpecIdRef.current = null;
+    let cancelled = false;
+    loadDraft<EditorDraft>(draftKey(spec.id)).then((saved) => {
+      if (cancelled) return;
+      if (saved) {
+        // Merge over the fresh baseline so fields added in newer versions keep defaults.
+        setDraft({ ...fresh, ...saved });
+      }
+      hydratedSpecIdRef.current = String(spec.id);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [spec]);
+
+  // Autosave the draft to IndexedDB (debounced) once hydration for this spec is done.
+  useEffect(() => {
+    if (hydratedSpecIdRef.current !== String(spec.id)) return undefined;
+    const handle = window.setTimeout(() => {
+      void saveDraft(draftKey(spec.id), draft);
+    }, 500);
+    return () => window.clearTimeout(handle);
+  }, [draft, spec.id]);
+
+  useEffect(() => {
+    const viewport = previewViewportRef.current;
+    if (!viewport) return undefined;
+
+    const updateScale = () => {
+      const availableWidth = viewport.clientWidth;
+      if (availableWidth <= 0) {
+        setPreviewScale(1);
+        return;
+      }
+
+      setPreviewScale(Math.min(1, availableWidth / SHEET_PREVIEW_WIDTH));
+    };
+
+    updateScale();
+
+    if (typeof ResizeObserver === "undefined") return undefined;
+
+    const observer = new ResizeObserver(() => updateScale());
+    observer.observe(viewport);
+
+    return () => observer.disconnect();
+  }, [isWideWorkspace]);
+
+  const displaySourceImages = getDraftSourceImages(spec, draft);
+  // Only user-added images (uploaded or cropped) — never the auto-extracted embedded PDF images.
+  const productImages = draft.manualSourceImages.map((image) =>
+    resolveSourceImage(image, draft.editedImageDataUrls),
+  );
+  const selectedImage =
+    displaySourceImages.find((image) => image.id === draft.selectedImageId) ?? null;
+  const editingImage =
+    displaySourceImages.find((image) => image.id === editingImageId) ??
+    null;
+  const croppingPage =
+    sourcePages.find((page) => page.id === croppingPageId) ??
+    null;
+
+  const updateDraft = <K extends keyof EditorDraft>(key: K, value: EditorDraft[K]) => {
+    setDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  const previewPageCount = 3;
+  const totalPreviewHeight =
+    previewPageCount * SHEET_PREVIEW_HEIGHT + (previewPageCount - 1) * PREVIEW_PAGE_GAP;
+
+  const openImageEditor = (imageId: string) => {
+    updateDraft("selectedImageId", imageId);
+    setEditingImageId(imageId);
+    setIsImageEditorOpen(true);
+  };
+
+  const openCropDialog = (pageId: string) => {
+    setPendingImageTarget(null);
+    setCroppingPageId(pageId);
+    setIsCropDialogOpen(true);
+  };
+
+  const openCropForTarget = (target: { kind: "dimension" | "accessory"; id: string }) => {
+    if (sourcePages.length === 0) {
+      toast.error("No vendor PDF pages available to crop.");
+      return;
+    }
+    setPendingImageTarget(target);
+    setCroppingPageId((current) => current ?? sourcePages[0].id);
+    setIsCropDialogOpen(true);
+  };
+
+  const triggerImageUpload = (target?: { kind: "dimension" | "accessory"; id: string }) => {
+    setPendingImageTarget(target ?? null);
+    uploadInputRef.current?.click();
+  };
+
+  const handleUploadFile = (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please choose an image file.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      const image = new window.Image();
+      const finish = (width: number, height: number) =>
+        addManualSourceImage({ id: `upload-${Date.now()}`, page: 0, width, height, dataUrl });
+      image.onload = () => finish(image.naturalWidth || 0, image.naturalHeight || 0);
+      image.onerror = () => finish(0, 0);
+      image.src = dataUrl;
+    };
+    reader.onerror = () => toast.error("Could not read the image file.");
+    reader.readAsDataURL(file);
+  };
+
+  const saveEditedImage = (imageId: string, dataUrl: string) => {
+    setDraft((current) => ({
+      ...current,
+      selectedImageId: imageId,
+      editedImageDataUrls: {
+        ...current.editedImageDataUrls,
+        [imageId]: dataUrl,
+      },
+    }));
+    setIsImageEditorOpen(false);
+  };
+
+  const resetEditedImage = (imageId: string) => {
+    setDraft((current) => {
+      const nextEditedImageDataUrls = { ...current.editedImageDataUrls };
+      delete nextEditedImageDataUrls[imageId];
+      return {
+        ...current,
+        editedImageDataUrls: nextEditedImageDataUrls,
+      };
+    });
+  };
+
+  const addManualSourceImage = (image: SourceImage) => {
+    setDraft((current) => {
+      const next: EditorDraft = {
+        ...current,
+        manualSourceImages: [...current.manualSourceImages, image],
+        selectedImageId: image.id,
+      };
+      // Auto-assign the freshly cropped image to the row that triggered the crop.
+      if (pendingImageTarget?.kind === "dimension") {
+        next.dimensionItems = current.dimensionItems.map((item) =>
+          item.id === pendingImageTarget.id ? { ...item, imageId: image.id } : item,
+        );
+      } else if (pendingImageTarget?.kind === "accessory") {
+        next.accessoryRows = current.accessoryRows.map((row) =>
+          row.id === pendingImageTarget.id ? { ...row, imageId: image.id } : row,
+        );
+      }
+      return next;
+    });
+    setPendingImageTarget(null);
+    setIsCropDialogOpen(false);
+  };
+
+  const removeSourceImage = (imageId: string) => {
+    setDraft((current) => {
+      const nextEdited = { ...current.editedImageDataUrls };
+      delete nextEdited[imageId];
+      return {
+        ...current,
+        manualSourceImages: current.manualSourceImages.filter((image) => image.id !== imageId),
+        editedImageDataUrls: nextEdited,
+        selectedImageId: current.selectedImageId === imageId ? null : current.selectedImageId,
+        dimensionItems: current.dimensionItems.map((item) =>
+          item.imageId === imageId ? { ...item, imageId: null } : item,
+        ),
+        accessoryRows: current.accessoryRows.map((row) =>
+          row.imageId === imageId ? { ...row, imageId: null } : row,
+        ),
+      };
+    });
+  };
+
+  const updateOverviewRow = (index: number, field: Exclude<keyof OverviewRow, "id">, value: string) => {
+    setDraft((current) => ({
+      ...current,
+      overviewRows: current.overviewRows.map((row, rowIndex) =>
+        rowIndex === index ? { ...row, [field]: value } : row,
+      ),
+    }));
+  };
+
+  const removeOverviewRow = (index: number) => {
+    setDraft((current) => ({
+      ...current,
+      overviewRows: current.overviewRows.filter((_, rowIndex) => rowIndex !== index),
+    }));
+  };
+
+  const addOverviewRow = () => {
+    setDraft((current) => ({
+      ...current,
+      overviewRows: [
+        ...current.overviewRows,
+        {
+          id: `custom-${Date.now()}-${current.overviewRows.length}`,
+          label: "",
+          value: "",
+        },
+      ],
+    }));
+  };
+
+  const moveOverviewRow = (fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex) return;
+
+    setDraft((current) => {
+      if (
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= current.overviewRows.length ||
+        toIndex >= current.overviewRows.length
+      ) {
+        return current;
+      }
+
+      const nextRows = [...current.overviewRows];
+      const [movedRow] = nextRows.splice(fromIndex, 1);
+
+      if (!movedRow) {
+        return current;
+      }
+
+      nextRows.splice(toIndex, 0, movedRow);
+      return {
+        ...current,
+        overviewRows: nextRows,
+      };
+    });
+  };
+
+  // ---- Page 2: Product Specifications ----
+  const addSpecGroup = () => {
+    setDraft((current) => ({
+      ...current,
+      specGroups: [
+        ...current.specGroups,
+        {
+          id: `spec-${Date.now()}-${current.specGroups.length}`,
+          partNumber: "",
+          options: [{ power: "", lumen: "" }],
+          voltage: "",
+          efficacy: "",
+          cri: "",
+          current: "",
+          cct: "",
+          thd: "",
+          lightDistribution: "",
+        },
+      ],
+    }));
+  };
+
+  const removeSpecGroup = (index: number) => {
+    setDraft((current) => ({
+      ...current,
+      specGroups: current.specGroups.filter((_, i) => i !== index),
+    }));
+  };
+
+  const updateSpecGroup = (index: number, patch: Partial<SpecGroup>) => {
+    setDraft((current) => ({
+      ...current,
+      specGroups: current.specGroups.map((group, i) => (i === index ? { ...group, ...patch } : group)),
+    }));
+  };
+
+  const addSpecOption = (groupIndex: number) => {
+    setDraft((current) => ({
+      ...current,
+      specGroups: current.specGroups.map((group, i) =>
+        i === groupIndex ? { ...group, options: [...group.options, { power: "", lumen: "" }] } : group,
+      ),
+    }));
+  };
+
+  const updateSpecOption = (groupIndex: number, optionIndex: number, patch: Partial<SpecOption>) => {
+    setDraft((current) => ({
+      ...current,
+      specGroups: current.specGroups.map((group, i) =>
+        i === groupIndex
+          ? {
+              ...group,
+              options: group.options.map((option, oi) => (oi === optionIndex ? { ...option, ...patch } : option)),
+            }
+          : group,
+      ),
+    }));
+  };
+
+  const removeSpecOption = (groupIndex: number, optionIndex: number) => {
+    setDraft((current) => ({
+      ...current,
+      specGroups: current.specGroups.map((group, i) =>
+        i === groupIndex && group.options.length > 1
+          ? { ...group, options: group.options.filter((_, oi) => oi !== optionIndex) }
+          : group,
+      ),
+    }));
+  };
+
+  // ---- Page 3: Ordering decoder ----
+  const updateOrderingEntry = (columnIndex: number, entryIndex: number, patch: Partial<OrderingEntry>) => {
+    setDraft((current) => ({
+      ...current,
+      orderingColumns: current.orderingColumns.map((column, i) =>
+        i === columnIndex
+          ? { ...column, entries: column.entries.map((entry, ei) => (ei === entryIndex ? { ...entry, ...patch } : entry)) }
+          : column,
+      ),
+    }));
+  };
+
+  const addOrderingEntry = (columnIndex: number) => {
+    setDraft((current) => ({
+      ...current,
+      orderingColumns: current.orderingColumns.map((column, i) =>
+        i === columnIndex ? { ...column, entries: [...column.entries, { code: "", description: "" }] } : column,
+      ),
+    }));
+  };
+
+  const removeOrderingEntry = (columnIndex: number, entryIndex: number) => {
+    setDraft((current) => ({
+      ...current,
+      orderingColumns: current.orderingColumns.map((column, i) =>
+        i === columnIndex && column.entries.length > 1
+          ? { ...column, entries: column.entries.filter((_, ei) => ei !== entryIndex) }
+          : column,
+      ),
+    }));
+  };
+
+  // ---- Page 3: Accessories ----
+  const addAccessoryRow = () => {
+    setDraft((current) => ({
+      ...current,
+      accessoryRows: [
+        ...current.accessoryRows,
+        { id: `acc-${Date.now()}-${current.accessoryRows.length}`, code: "", description: "", imageId: null, downloadUrl: "" },
+      ],
+    }));
+  };
+
+  const updateAccessoryRow = (index: number, patch: Partial<AccessoryRow>) => {
+    setDraft((current) => ({
+      ...current,
+      accessoryRows: current.accessoryRows.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    }));
+  };
+
+  const removeAccessoryRow = (index: number) => {
+    setDraft((current) => ({
+      ...current,
+      accessoryRows: current.accessoryRows.filter((_, i) => i !== index),
+    }));
+  };
+
+  // ---- Page 4: Dimensions ----
+  const addDimensionItem = () => {
+    setDraft((current) => ({
+      ...current,
+      dimensionItems: [
+        ...current.dimensionItems,
+        { id: `dim-${Date.now()}-${current.dimensionItems.length}`, label: "", imageId: null, width: "", height: "", depth: "" },
+      ],
+    }));
+  };
+
+  const updateDimensionItem = (index: number, patch: Partial<DimensionItem>) => {
+    setDraft((current) => ({
+      ...current,
+      dimensionItems: current.dimensionItems.map((item, i) => (i === index ? { ...item, ...patch } : item)),
+    }));
+  };
+
+  const removeDimensionItem = (index: number) => {
+    setDraft((current) => ({
+      ...current,
+      dimensionItems: current.dimensionItems.filter((_, i) => i !== index),
+    }));
+  };
+
+  const toggleQualificationBadge = (badgeId: QualificationBadgeId) => {
+    setDraft((current) => ({
+      ...current,
+      selectedQualificationIds: current.selectedQualificationIds.includes(badgeId)
+        ? current.selectedQualificationIds.filter((item) => item !== badgeId)
+        : [...current.selectedQualificationIds, badgeId],
+    }));
+  };
+
+  const handleOverviewDragStart = (index: number) => (event: React.DragEvent<HTMLButtonElement>) => {
+    setDraggedOverviewIndex(index);
+    setOverviewDropIndex(index);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", String(index));
+  };
+
+  const handleOverviewDragOver = (index: number) => (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    if (overviewDropIndex !== index) {
+      setOverviewDropIndex(index);
+    }
+  };
+
+  const handleOverviewDrop = (index: number) => (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const fallbackIndex = Number(event.dataTransfer.getData("text/plain"));
+    const sourceIndex = draggedOverviewIndex ?? (Number.isNaN(fallbackIndex) ? null : fallbackIndex);
+
+    if (sourceIndex !== null) {
+      moveOverviewRow(sourceIndex, index);
+    }
+
+    setDraggedOverviewIndex(null);
+    setOverviewDropIndex(null);
+  };
+
+  const handleOverviewDragEnd = () => {
+    setDraggedOverviewIndex(null);
+    setOverviewDropIndex(null);
+  };
+
+  const getPrintablePages = () =>
+    Array.from(previewRef.current?.querySelectorAll<HTMLElement>(".sheet-print-root") ?? []).filter(
+      (element) => element.getAttribute("data-page-empty") !== "true",
+    );
+
+  const handleDownloadPdf = async () => {
+    const sheets = getPrintablePages();
+    if (sheets.length === 0) {
+      toast.error("The sheet preview is not ready yet.");
+      return;
+    }
+
+    const toastId = toast.loading("Generating PDF...");
+    try {
+      // Wait for every image across all pages (header/footer/product) to load,
+      // otherwise the capture can miss them.
+      const images = sheets.flatMap((sheet) => Array.from(sheet.querySelectorAll("img")));
+      await Promise.all(
+        images.map((image) =>
+          image.complete
+            ? Promise.resolve()
+            : new Promise<void>((resolve) => {
+                image.addEventListener("load", () => resolve(), { once: true });
+                image.addEventListener("error", () => resolve(), { once: true });
+              }),
+        ),
+      );
+
+      const [{ toPng }, { jsPDF }] = await Promise.all([
+        import("html-to-image"),
+        import("jspdf"),
+      ]);
+
+      const pdf = new jsPDF({ unit: "in", format: "letter", orientation: "portrait" });
+
+      for (let i = 0; i < sheets.length; i += 1) {
+        // html-to-image reads computed styles (resolved to rgb), so it renders the
+        // Tailwind v4 oklch palette correctly where html2canvas would fail.
+        const dataUrl = await toPng(sheets[i], {
+          pixelRatio: 2,
+          cacheBust: true,
+          backgroundColor: "#ffffff",
+          width: 816,
+          height: 1056,
+          style: { transform: "none", margin: "0", boxShadow: "none" },
+        });
+
+        if (i > 0) {
+          pdf.addPage();
+        }
+        pdf.addImage(dataUrl, "PNG", 0, 0, 8.5, 11, undefined, "FAST");
+      }
+
+      const filename = `${draft.title.replace(/[^a-z0-9]/gi, "_").toLowerCase() || "spec_sheet"}.pdf`;
+      pdf.save(filename);
+      toast.success("PDF downloaded.", { id: toastId });
+    } catch (error) {
+      console.error("PDF export failed", error);
+      toast.error("Could not generate the PDF. Please try again.", { id: toastId });
+    }
+  };
+
+  const renderControlsPanel = (className?: string) => (
+    <Card className={cn("sheet-editor-controls flex h-full min-h-0 flex-col overflow-hidden", className)}>
+      <div className="shrink-0 border-b border-border/60 px-5 py-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          <FileText className="h-4 w-4 text-primary" />
+          Edit First Page
+        </div>
+      </div>
+
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="space-y-6 px-5 py-5">
+          <section className="space-y-3">
+            <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
+              Header
+            </h2>
+            <Input
+              value={draft.headerProjectName}
+              onChange={(event) => updateDraft("headerProjectName", event.target.value)}
+              placeholder="Project Name"
+            />
+            <Input
+              value={draft.headerCatNumber}
+              onChange={(event) => updateDraft("headerCatNumber", event.target.value)}
+              placeholder="CAT.#"
+            />
+            <Input
+              value={draft.headerFixtureSchedule}
+              onChange={(event) => updateDraft("headerFixtureSchedule", event.target.value)}
+              placeholder="Fixture Schedule"
+            />
+            <Input
+              value={draft.headerNote}
+              onChange={(event) => updateDraft("headerNote", event.target.value)}
+              placeholder="Note"
+            />
+          </section>
+
+          <section className="space-y-3">
+            <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
+              Product
+            </h2>
+            <div className="rounded-2xl border border-border/70 bg-card/40 p-3">
+              <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                Recommended Product Names
+              </div>
+              <div className="mt-3 grid gap-2">
+                {productNameRecommendations.map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => updateDraft("title", name)}
+                    className={cn(
+                      "rounded-xl border px-3 py-2 text-left text-sm font-semibold transition-colors",
+                      draft.title === name
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border/70 bg-background hover:border-primary/40 hover:bg-primary/5",
+                    )}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <Input
+              value={draft.title}
+              onChange={(event) => updateDraft("title", event.target.value)}
+              placeholder="Sheet title"
+            />
+            <Input
+              value={draft.subtitle}
+              onChange={(event) => updateDraft("subtitle", event.target.value)}
+              placeholder="Subtitle"
+            />
+            <Input
+              value={draft.categoryLabel}
+              onChange={(event) => updateDraft("categoryLabel", event.target.value)}
+              placeholder="Category label"
+            />
+          </section>
+
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
+                Product Image
+              </h2>
+              <Badge variant="outline">
+                {productImages.length} {productImages.length === 1 ? "image" : "images"}
+              </Badge>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => triggerImageUpload()}
+              className="h-10 w-full gap-2 rounded-xl border-dashed border-primary/40 bg-primary/5 text-primary hover:border-primary hover:bg-primary/10"
+              title="Upload a product image from your computer"
+            >
+              <Upload className="h-4 w-4" />
+              Upload Image
+            </Button>
+            {productImages.length > 0 ? (
+              <div className="grid grid-cols-2 gap-3">
+                {productImages.map((image) => (
+                  <div
+                    key={image.id}
+                    className={cn(
+                      "overflow-hidden rounded-2xl border p-1 transition-all",
+                      draft.selectedImageId === image.id
+                        ? "border-primary bg-primary/10 shadow-[0_0_20px_rgba(6,182,212,0.18)]"
+                        : "border-border/60 bg-card/40 hover:border-primary/40",
+                    )}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => updateDraft("selectedImageId", image.id)}
+                      className="block w-full"
+                    >
+                      <img
+                        src={image.dataUrl}
+                        alt={image.page > 0 ? `Cropped from page ${image.page}` : "Uploaded image"}
+                        className="h-28 w-full rounded-xl object-cover"
+                      />
+                    </button>
+                    <div className="flex items-center justify-between gap-2 px-2 pb-2 pt-2">
+                      <div className="text-left text-[11px] font-medium text-muted-foreground">
+                        {image.page > 0 ? `Page ${image.page}` : "Uploaded"}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-7 rounded-lg px-2 text-[10px] font-semibold uppercase tracking-[0.12em]"
+                          onClick={() => openImageEditor(image.id)}
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-7 w-7 rounded-lg border-border/70 p-0 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                          onClick={() => removeSourceImage(image.id)}
+                          aria-label="Delete image"
+                          title="Delete image"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="rounded-2xl border border-dashed border-border/70 bg-card/30 px-4 py-5 text-sm text-muted-foreground">
+                No product image yet. Upload one above, or use the crop action in the vendor PDF panel to add one.
+              </p>
+            )}
+          </section>
+
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
+                Qualification Icons
+              </h2>
+              <Badge variant="outline">{draft.selectedQualificationIds.length} selected</Badge>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              {QUALIFICATION_BADGES.map((badge) => {
+                const isSelected = draft.selectedQualificationIds.includes(badge.id);
+                return (
+                  <button
+                    key={badge.id}
+                    type="button"
+                    onClick={() => toggleQualificationBadge(badge.id)}
+                    className={cn(
+                      "rounded-2xl border p-2 transition-colors",
+                      isSelected
+                        ? "border-primary bg-primary/10"
+                        : "border-border/70 bg-background hover:border-primary/40 hover:bg-primary/5",
+                    )}
+                  >
+                    <QualificationBadge id={badge.id} selected={isSelected} className="mx-auto h-[70px] w-[70px]" />
+                    <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                      {badge.label}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
+                Overview
+              </h2>
+              <div className="text-[10px] font-medium text-muted-foreground">
+                Drag rows to reorder
+              </div>
+            </div>
+            <div className="space-y-3">
+              {draft.overviewRows.map((row, index) => (
+                <div
+                  key={row.id}
+                  className={cn(
+                    "grid grid-cols-[44px_132px_minmax(0,1fr)_44px] items-start gap-2 rounded-2xl border border-transparent p-2 transition-colors",
+                    draggedOverviewIndex === index
+                      ? "bg-primary/5"
+                      : overviewDropIndex === index
+                        ? "border-primary/40 bg-primary/5"
+                        : "hover:border-border/60 hover:bg-card/20",
+                  )}
+                  onDragOver={handleOverviewDragOver(index)}
+                  onDrop={handleOverviewDrop(index)}
+                >
+                  <button
+                    type="button"
+                    draggable
+                    onDragStart={handleOverviewDragStart(index)}
+                    onDragEnd={handleOverviewDragEnd}
+                    className="inline-flex h-10 items-center justify-center rounded-xl border border-border/70 bg-background text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 cursor-grab active:cursor-grabbing"
+                    aria-label={`Drag ${row.label || "overview row"} to reorder`}
+                    title="Drag to reorder"
+                  >
+                    <GripVertical className="h-4 w-4" />
+                  </button>
+                  <Input
+                    value={row.label}
+                    onChange={(event) => updateOverviewRow(index, "label", event.target.value)}
+                  />
+                  {row.value.includes("\n") ? (
+                    <Textarea
+                      value={row.value}
+                      onChange={(event) => updateOverviewRow(index, "value", event.target.value)}
+                      className="min-h-[84px]"
+                    />
+                  ) : (
+                    <Input
+                      value={row.value}
+                      onChange={(event) => updateOverviewRow(index, "value", event.target.value)}
+                    />
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => removeOverviewRow(index)}
+                    className="h-10 w-10 rounded-xl border-border/70 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                    aria-label={`Delete ${row.label || "overview row"}`}
+                    title="Delete row"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={addOverviewRow}
+                className="h-11 w-full rounded-2xl border-dashed border-primary/40 bg-primary/5 text-primary hover:border-primary hover:bg-primary/10"
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Add Field
+              </Button>
+            </div>
+          </section>
+
+          <section className="space-y-3">
+            <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
+              Copy
+            </h2>
+            <Textarea
+              value={draft.description}
+              onChange={(event) => updateDraft("description", event.target.value)}
+              placeholder="Product description"
+              className="min-h-[120px]"
+            />
+            <Textarea
+              value={draft.featuresText}
+              onChange={(event) => updateDraft("featuresText", event.target.value)}
+              placeholder="One feature per line"
+              className="min-h-[130px]"
+            />
+            <Textarea
+              value={draft.applicationAreasText}
+              onChange={(event) => updateDraft("applicationAreasText", event.target.value)}
+              placeholder="Comma separated application areas"
+              className="min-h-[110px]"
+            />
+            <Input
+              value={draft.certificationsText}
+              onChange={(event) => updateDraft("certificationsText", event.target.value)}
+              placeholder="Certification keywords"
+            />
+            <Input
+              value={draft.warrantyLabel}
+              onChange={(event) => updateDraft("warrantyLabel", event.target.value)}
+              placeholder="Warranty label"
+            />
+            <Textarea
+              value={draft.warrantyCopy}
+              onChange={(event) => updateDraft("warrantyCopy", event.target.value)}
+              placeholder="Warranty copy"
+              className="min-h-[180px]"
+            />
+          </section>
+
+          <div className="flex items-center gap-2 border-t border-border/60 pt-5">
+            <FileText className="h-4 w-4 text-primary" />
+            <span className="text-sm font-semibold text-foreground">Edit Additional Pages</span>
+          </div>
+
+          {/* Page 2 — Product Specifications */}
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
+                Product Specifications
+              </h2>
+              <Badge variant="outline">{draft.specGroups.length} rows</Badge>
+            </div>
+            <div className="space-y-3">
+              {draft.specGroups.map((group, groupIndex) => (
+                <div key={group.id} className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={group.partNumber}
+                      onChange={(event) => updateSpecGroup(groupIndex, { partNumber: event.target.value })}
+                      placeholder="Part number"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => removeSpecGroup(groupIndex)}
+                      className="h-10 w-10 shrink-0 rounded-xl border-border/70 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                      aria-label="Delete part number"
+                      title="Delete part number"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                      Power (W) / Lumen (lm) options
+                    </div>
+                    {group.options.map((option, optionIndex) => (
+                      <div key={optionIndex} className="flex items-center gap-2">
+                        <Input
+                          value={option.power}
+                          onChange={(event) => updateSpecOption(groupIndex, optionIndex, { power: event.target.value })}
+                          placeholder="Power (W)"
+                        />
+                        <Input
+                          value={option.lumen}
+                          onChange={(event) => updateSpecOption(groupIndex, optionIndex, { lumen: event.target.value })}
+                          placeholder="Lumen (lm)"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => removeSpecOption(groupIndex, optionIndex)}
+                          className="h-10 w-10 shrink-0 rounded-xl border-border/70 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                          aria-label="Delete option"
+                          title="Delete option"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => addSpecOption(groupIndex)}
+                      className="h-9 w-full rounded-xl border-dashed border-primary/40 bg-primary/5 text-[12px] text-primary hover:border-primary hover:bg-primary/10"
+                    >
+                      <Plus className="mr-1 h-3.5 w-3.5" />
+                      Add option
+                    </Button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input value={group.voltage} onChange={(event) => updateSpecGroup(groupIndex, { voltage: event.target.value })} placeholder="Voltage (V)" />
+                    <Input value={group.efficacy} onChange={(event) => updateSpecGroup(groupIndex, { efficacy: event.target.value })} placeholder="Efficacy (lm/W)" />
+                    <Input value={group.cri} onChange={(event) => updateSpecGroup(groupIndex, { cri: event.target.value })} placeholder="CRI" />
+                    <Input value={group.current} onChange={(event) => updateSpecGroup(groupIndex, { current: event.target.value })} placeholder="Current (A)" />
+                    <Input value={group.cct} onChange={(event) => updateSpecGroup(groupIndex, { cct: event.target.value })} placeholder="CCT (K)" />
+                    <Input value={group.thd} onChange={(event) => updateSpecGroup(groupIndex, { thd: event.target.value })} placeholder="THD" />
+                    <Input value={group.lightDistribution} onChange={(event) => updateSpecGroup(groupIndex, { lightDistribution: event.target.value })} placeholder="Light Distribution" className="col-span-2" />
+                  </div>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={addSpecGroup}
+                className="h-11 w-full rounded-2xl border-dashed border-primary/40 bg-primary/5 text-primary hover:border-primary hover:bg-primary/10"
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Add Part Number
+              </Button>
+            </div>
+            <Textarea
+              value={draft.specsNote}
+              onChange={(event) => updateDraft("specsNote", event.target.value)}
+              placeholder="Specifications note"
+              className="min-h-[70px]"
+            />
+          </section>
+
+          {/* Page 3 — Product Ordering Information */}
+          <section className="space-y-3">
+            <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
+              Product Ordering Information
+            </h2>
+            <Input
+              value={draft.orderingExample}
+              onChange={(event) => updateDraft("orderingExample", event.target.value)}
+              placeholder="Typical order example (e.g. IK-LHB2-02-...)"
+            />
+            <div className="space-y-3">
+              {draft.orderingColumns.map((column, columnIndex) => (
+                <div key={column.id} className="space-y-1.5 rounded-2xl border border-border/70 bg-card/40 p-3">
+                  <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+                    {column.header}
+                    {isSpecified(column.unit) ? ` (${column.unit})` : ""}
+                  </div>
+                  {column.entries.map((entry, entryIndex) => (
+                    <div key={entryIndex} className="flex items-center gap-2">
+                      <Input
+                        value={entry.code}
+                        onChange={(event) => updateOrderingEntry(columnIndex, entryIndex, { code: event.target.value })}
+                        placeholder="Code"
+                        className="w-[90px] shrink-0"
+                      />
+                      <Input
+                        value={entry.description}
+                        onChange={(event) => updateOrderingEntry(columnIndex, entryIndex, { description: event.target.value })}
+                        placeholder="Meaning"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => removeOrderingEntry(columnIndex, entryIndex)}
+                        className="h-10 w-10 shrink-0 rounded-xl border-border/70 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                        aria-label="Delete entry"
+                        title="Delete entry"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => addOrderingEntry(columnIndex)}
+                    className="h-9 w-full rounded-xl border-dashed border-primary/40 bg-primary/5 text-[12px] text-primary hover:border-primary hover:bg-primary/10"
+                  >
+                    <Plus className="mr-1 h-3.5 w-3.5" />
+                    Add code
+                  </Button>
+                </div>
+              ))}
+            </div>
+            <Textarea
+              value={draft.orderingNote}
+              onChange={(event) => updateDraft("orderingNote", event.target.value)}
+              placeholder="Ordering note"
+              className="min-h-[70px]"
+            />
+          </section>
+
+          {/* Page 3 — Accessories */}
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
+                Accessories Ordering
+              </h2>
+              <Badge variant="outline">{draft.accessoryRows.length} rows</Badge>
+            </div>
+            <div className="space-y-2">
+              {draft.accessoryRows.map((row, index) => (
+                <div key={row.id} className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={row.code}
+                      onChange={(event) => updateAccessoryRow(index, { code: event.target.value })}
+                      placeholder="Product code"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => removeAccessoryRow(index)}
+                      className="h-10 w-10 shrink-0 rounded-xl border-border/70 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                      aria-label="Delete accessory"
+                      title="Delete accessory"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <Input
+                    value={row.description}
+                    onChange={(event) => updateAccessoryRow(index, { description: event.target.value })}
+                    placeholder="Description"
+                  />
+                  <Input
+                    value={row.downloadUrl}
+                    onChange={(event) => updateAccessoryRow(index, { downloadUrl: event.target.value })}
+                    placeholder="Download URL"
+                  />
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1">
+                      <SecondPageImagePicker
+                        images={displaySourceImages}
+                        value={row.imageId}
+                        onChange={(value) => updateAccessoryRow(index, { imageId: value })}
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => openCropForTarget({ kind: "accessory", id: row.id })}
+                      className="h-10 shrink-0 gap-1 rounded-xl px-3 text-[12px]"
+                      title="Crop a new image from the vendor PDF"
+                    >
+                      <Crop className="h-3.5 w-3.5" />
+                      Crop
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => triggerImageUpload({ kind: "accessory", id: row.id })}
+                      className="h-10 shrink-0 gap-1 rounded-xl px-3 text-[12px]"
+                      title="Upload an image from your computer"
+                    >
+                      <Upload className="h-3.5 w-3.5" />
+                      Upload
+                    </Button>
+                  </div>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={addAccessoryRow}
+                className="h-11 w-full rounded-2xl border-dashed border-primary/40 bg-primary/5 text-primary hover:border-primary hover:bg-primary/10"
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Add Accessory
+              </Button>
+            </div>
+          </section>
+
+          {/* Page 4 — Dimensions */}
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
+                Dimensions
+              </h2>
+              <Badge variant="outline">{draft.dimensionItems.length} drawings</Badge>
+            </div>
+            <div className="space-y-2">
+              {draft.dimensionItems.map((item, index) => (
+                <div key={item.id} className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={item.label}
+                      onChange={(event) => updateDimensionItem(index, { label: event.target.value })}
+                      placeholder="Label (e.g. 2' : IK-LHB2-02-S0150)"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => removeDimensionItem(index)}
+                      className="h-10 w-10 shrink-0 rounded-xl border-border/70 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                      aria-label="Delete drawing"
+                      title="Delete drawing"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1">
+                      <SecondPageImagePicker
+                        images={displaySourceImages}
+                        value={item.imageId}
+                        onChange={(value) => updateDimensionItem(index, { imageId: value })}
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => openCropForTarget({ kind: "dimension", id: item.id })}
+                      className="h-10 shrink-0 gap-1 rounded-xl px-3 text-[12px]"
+                      title="Crop a new drawing from the vendor PDF"
+                    >
+                      <Crop className="h-3.5 w-3.5" />
+                      Crop
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => triggerImageUpload({ kind: "dimension", id: item.id })}
+                      className="h-10 shrink-0 gap-1 rounded-xl px-3 text-[12px]"
+                      title="Upload a drawing from your computer"
+                    >
+                      <Upload className="h-3.5 w-3.5" />
+                      Upload
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <Input value={item.width} onChange={(event) => updateDimensionItem(index, { width: event.target.value })} placeholder="Width" />
+                    <Input value={item.height} onChange={(event) => updateDimensionItem(index, { height: event.target.value })} placeholder="Height" />
+                    <Input value={item.depth} onChange={(event) => updateDimensionItem(index, { depth: event.target.value })} placeholder="Depth" />
+                  </div>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={addDimensionItem}
+                className="h-11 w-full rounded-2xl border-dashed border-primary/40 bg-primary/5 text-primary hover:border-primary hover:bg-primary/10"
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Add Drawing
+              </Button>
+            </div>
+          </section>
+        </div>
+      </ScrollArea>
+    </Card>
+  );
+
+  const renderPreviewPanel = (className?: string) => (
+    <Card className={cn("sheet-preview-shell flex h-full min-h-0 flex-col overflow-hidden bg-gradient-to-b from-slate-950/80 to-slate-900/40", className)}>
+      <div className="shrink-0 border-b border-white/10 px-5 py-4">
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <div className="text-sm font-semibold text-white">Generated Template Preview</div>
+            <div className="text-xs text-slate-400">
+              US Letter, 8.5 x 11 in, ready for print/save as PDF from the browser.
+            </div>
+          </div>
+          <Badge className="bg-white/5 text-white" variant="outline">
+            {previewPageCount} Pages
+          </Badge>
+        </div>
+      </div>
+
+      <div ref={previewViewportRef} className="min-h-0 flex-1 overflow-auto p-4 md:p-6">
+        <div
+          className="mx-auto"
+          style={{
+            height: `${totalPreviewHeight * previewScale}px`,
+            width: `${SHEET_PREVIEW_WIDTH * previewScale}px`,
+          }}
+        >
+          <div
+            ref={previewRef}
+            style={{
+              height: `${totalPreviewHeight}px`,
+              transform: `scale(${previewScale})`,
+              transformOrigin: "top left",
+              width: `${SHEET_PREVIEW_WIDTH}px`,
+            }}
+          >
+            <SheetPreview draft={draft} selectedImage={selectedImage} spec={spec} />
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+
+  const renderVendorPanel = (className?: string) => (
+    <Card className={cn("flex h-full min-h-0 flex-col overflow-hidden", className)}>
+      <div className="shrink-0 border-b border-border/60 px-5 py-4">
+        <div className="flex flex-col gap-3">
+          <div>
+            <div className="text-sm font-semibold text-foreground">Vendor PDF Review</div>
+            <div className="text-xs text-muted-foreground">
+              Cross-check the uploaded vendor specification sheet beside the generated IKIO template. Use page crop to capture product visuals instead of auto-extracting embedded PDF images.
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Badge variant="outline">{sourcePages.length} pages</Badge>
+            <a
+              href={sourcePdfUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 rounded-xl border border-border/70 px-3 py-2 text-xs font-semibold text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5"
+            >
+              <ExternalLink className="h-3.5 w-3.5 text-primary" />
+              Open Original PDF
+            </a>
+          </div>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 p-5">
+        <div className="h-full overflow-hidden rounded-[1.5rem] border border-border/70 bg-slate-950/60">
+          <ScrollArea className="h-full">
+            <div className="space-y-5 p-5">
+              {sourcePages.length > 0 ? (
+                sourcePages.map((page) => (
+                  <div key={page.id} className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm">
+                    <div className="flex items-center justify-between gap-3 border-b border-border/60 px-4 py-2">
+                      <div className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                        Page {page.page}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-8 rounded-lg px-3 text-[10px] font-semibold uppercase tracking-[0.12em]"
+                        onClick={() => openCropDialog(page.id)}
+                      >
+                        <Crop className="mr-2 h-3.5 w-3.5" />
+                        Crop Image
+                      </Button>
+                    </div>
+                    <img src={page.dataUrl} alt={`Vendor PDF page ${page.page}`} className="w-full" />
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-border/70 bg-card/40 px-4 py-6 text-sm text-muted-foreground">
+                  Vendor PDF page previews were not stored for this extraction. Re-extract the PDF once to populate this panel with the original vendor pages.
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+        </div>
+      </div>
+    </Card>
+  );
+
+  return (
+    <div className="space-y-6 pb-8">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+        <div>
+          <div className="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-xs font-bold uppercase tracking-[0.26em] text-primary">
+            <Sparkles className="h-3.5 w-3.5" />
+            Visual Sheet Editor
+          </div>
+          <h1 className="mt-3 text-3xl font-display font-bold text-foreground">
+            {draft.title}
+          </h1>
+          <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+            Editable page-1 builder with the vendor PDF as reference on the same screen.
+            The generated sheet follows the demo layout and uses the IKIO header/footer template.
+          </p>
+          <p className="mt-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            Vendor Source Name: {spec.productName}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            variant="outline"
+            className="gap-2"
+            onClick={() => setDraft(buildEditorDraft(spec))}
+          >
+            <RotateCcw className="h-4 w-4" />
+            Reset
+          </Button>
+          <Button className="gap-2" onClick={handleDownloadPdf}>
+            <FileText className="h-4 w-4" />
+            Download PDF
+          </Button>
+        </div>
+      </div>
+
+      {isWideWorkspace ? (
+        <div className="h-[calc(100vh-250px)] min-h-[720px]">
+          <ResizablePanelGroup
+            autoSaveId="spec-sheet-workspace"
+            direction="horizontal"
+            className="h-full min-h-0 w-full"
+          >
+            <ResizablePanel defaultSize={26} minSize={20}>
+              <div className="h-full min-h-0 min-w-0 pr-3">
+                {renderControlsPanel()}
+              </div>
+            </ResizablePanel>
+            <ResizableHandle withHandle className="bg-transparent" />
+            <ResizablePanel defaultSize={42} minSize={32}>
+              <div className="h-full min-h-0 min-w-0 px-3">
+                {renderPreviewPanel()}
+              </div>
+            </ResizablePanel>
+            <ResizableHandle withHandle className="bg-transparent" />
+            <ResizablePanel defaultSize={32} minSize={24}>
+              <div className="h-full min-h-0 min-w-0 pl-3">
+                {renderVendorPanel()}
+              </div>
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        </div>
+      ) : (
+        <div className="grid gap-6">
+          {renderControlsPanel()}
+          {renderPreviewPanel()}
+          {renderVendorPanel()}
+        </div>
+      )}
+
+      <ImageEditorDialog
+        image={editingImage}
+        open={isImageEditorOpen}
+        onOpenChange={setIsImageEditorOpen}
+        onSave={(dataUrl) => {
+          if (!editingImageId) return;
+          saveEditedImage(editingImageId, dataUrl);
+        }}
+        onReset={() => {
+          if (!editingImageId) return;
+          resetEditedImage(editingImageId);
+        }}
+      />
+      <SourcePageCropDialog
+        page={croppingPage}
+        pages={sourcePages}
+        onSelectPage={setCroppingPageId}
+        open={isCropDialogOpen}
+        onOpenChange={(open) => {
+          setIsCropDialogOpen(open);
+          if (!open) setPendingImageTarget(null);
+        }}
+        onSave={addManualSourceImage}
+      />
+      <input
+        ref={uploadInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) handleUploadFile(file);
+          event.target.value = "";
+        }}
+      />
+    </div>
+  );
+}

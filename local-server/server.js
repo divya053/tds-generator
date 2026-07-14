@@ -12,6 +12,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 const FLASK_URL = process.env.FLASK_URL || "http://localhost:5001";
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(__dirname, "extractions.json");
+const SAVE_EXTRACTION_HISTORY = String(process.env.SAVE_EXTRACTION_HISTORY || "false").toLowerCase() === "true";
 
 // Serve the built React frontend if it exists
 const FRONTEND_DIST = path.join(__dirname, "..", "artifacts", "spec-extractor", "dist", "public");
@@ -63,24 +64,35 @@ app.post("/api/extract", upload.single("file"), async (req, res) => {
 
     const extracted = await flaskRes.json();
     const data = loadData();
-    const id = data.length > 0 ? Math.max(...data.map(d => d.id)) + 1 : 1;
+    const nextPersistedId = data.length > 0 ? Math.max(...data.map(d => d.id)) + 1 : 1;
+    const id = SAVE_EXTRACTION_HISTORY ? nextPersistedId : Date.now();
     const record = {
       id,
       filename,
+      ...extracted,
       productName: extracted.productName || "Unknown Product",
       alternateName: extracted.alternateName || "",
       productDescription: extracted.productDescription || "",
       productFeatures: extracted.productFeatures || [],
       applicationAreas: extracted.applicationAreas || [],
+      productCategory: extracted.productCategory || "",
+      isProductFamily: typeof extracted.isProductFamily === "boolean" ? extracted.isProductFamily : false,
+      variantOverview: extracted.variantOverview || { parameters: ["Wattage", "Lumen Output", "CCT", "Efficacy"], matrix: [] },
+      variants: extracted.variants || [],
       technicalSpecs: extracted.technicalSpecs || [],
+      categorySpecificSpecs: extracted.categorySpecificSpecs || [],
       notes: extracted.notes || [],
       vendorInfo: extracted.vendorInfo || { vendorName: "", vendorContact: "" },
       createdAt: new Date().toISOString(),
     };
 
-    data.push(record);
-    saveData(data);
-    console.log(`[INFO] Saved extraction ID ${id}: ${record.productName}`);
+    if (SAVE_EXTRACTION_HISTORY) {
+      data.push(record);
+      saveData(data);
+      console.log(`[INFO] Saved extraction ID ${id}: ${record.productName}`);
+    } else {
+      console.log(`[INFO] History save disabled; returning unsaved extraction for: ${record.productName}`);
+    }
     res.json(record);
   } catch (err) {
     console.error("[ERROR] Processing PDF:", err.message);

@@ -1,2 +1,10 @@
 export * from "./generated/api";
-export * from "./generated/types";
+export type { ErrorResponse } from "./generated/types/errorResponse";
+export type { ExtractedSpec } from "./generated/types/extractedSpec";
+export type { ExtractedSpecVendorInfo } from "./generated/types/extractedSpecVendorInfo";
+export type { ExtractionSummary } from "./generated/types/extractionSummary";
+export type { ExtractSpecBody as ExtractSpecBodyType } from "./generated/types/extractSpecBody";
+export type { HealthStatus } from "./generated/types/healthStatus";
+export type { SourceImage } from "./generated/types/sourceImage";
+export type { SuccessResponse } from "./generated/types/successResponse";
+export type { TechnicalSpec } from "./generated/types/technicalSpec";

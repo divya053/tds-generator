@@ -23,6 +23,14 @@ export interface TechnicalSpec {
   specification: string;
 }
 
+export interface SourceImage {
+  id: string;
+  page: number;
+  width: number;
+  height: number;
+  dataUrl: string;
+}
+
 export type ExtractedSpecVendorInfo = {
   vendorName?: string;
   vendorContact?: string;
@@ -36,9 +44,19 @@ export interface ExtractedSpec {
   productDescription: string;
   productFeatures: string[];
   applicationAreas: string[];
+  productCategory?: string;
+  isProductFamily?: boolean;
+  variantOverview?: {
+    parameters: string[];
+    matrix: string[][];
+  };
+  variants?: Record<string, unknown>[];
   technicalSpecs: TechnicalSpec[];
+  categorySpecificSpecs?: TechnicalSpec[];
   notes: string[];
   vendorInfo: ExtractedSpecVendorInfo;
+  sourceImages: SourceImage[];
+  sourcePages: SourceImage[];
   createdAt: string;
 }
 

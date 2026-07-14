@@ -1,10 +1,8 @@
 @echo off
 echo Building React frontend...
-cd artifacts\spec-extractor
-set PORT=3000
-set BASE_PATH=/
-npx vite build
-cd ..\..
+set "PORT=4173"
+set "BASE_PATH=/"
+pnpm --filter @workspace/spec-extractor run build
 echo.
-echo Build complete! Restart the App Server window (local-server) to see changes.
+echo Build complete!
 pause

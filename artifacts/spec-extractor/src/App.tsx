@@ -3,7 +3,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "sonner";
 import NotFound from "@/pages/not-found";
 import { Layout } from "@/components/Layout";
+import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import Home from "@/pages/Home";
+import LoginPage from "@/pages/Login";
 import SpecDetail from "@/pages/SpecDetail";
 
 // Configure react-query client with reasonable defaults
@@ -18,6 +20,25 @@ const queryClient = new QueryClient({
 });
 
 function Router() {
+  const { isAuthenticated, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="h-16 w-16 rounded-full border-t-2 border-primary animate-spin" />
+          <div className="text-sm font-medium uppercase tracking-[0.24em] text-muted-foreground">
+            Loading Session
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginPage />;
+  }
+
   return (
     <Layout>
       <Switch>
@@ -32,9 +53,11 @@ function Router() {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-        <Router />
-      </WouterRouter>
+      <AuthProvider>
+        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+          <Router />
+        </WouterRouter>
+      </AuthProvider>
       <Toaster 
         theme="dark" 
         position="bottom-right"

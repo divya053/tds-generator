@@ -12,5 +12,6 @@ export * from "./extractedSpecVendorInfo";
 export * from "./extractionSummary";
 export * from "./extractSpecBody";
 export * from "./healthStatus";
+export * from "./sourceImage";
 export * from "./successResponse";
 export * from "./technicalSpec";

@@ -1,17 +1,41 @@
+import { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
-import { FileText, Plus, Trash2, Zap, History, Loader2 } from "lucide-react";
+import { FileText, Plus, Trash2, Zap, History, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useGetExtractionHistory, useDeleteExtraction, getGetExtractionHistoryQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn, formatDate } from "@/lib/utils";
 import { toast } from "sonner";
+import { useAuth } from "./AuthProvider";
 import { Button } from "./ui";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location, setLocation] = useLocation();
-  const { data: history, isLoading } = useGetExtractionHistory();
+  const { data: history, isLoading, error } = useGetExtractionHistory();
   const { mutate: deleteDoc, isPending: isDeleting } = useDeleteExtraction();
+  const { username, logout } = useAuth();
   const queryClient = useQueryClient();
+  const isSpecWorkspace = /^\/spec\/\d+/.test(location);
+  const storageKey = isSpecWorkspace ? "ikio-sidebar-hidden-spec" : "ikio-sidebar-hidden-general";
+  const [isSidebarHidden, setIsSidebarHidden] = useState(isSpecWorkspace);
+
+  useEffect(() => {
+    if (error && typeof error === "object" && "status" in error && error.status === 401) {
+      void logout();
+    }
+  }, [error, logout]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const savedState = window.localStorage.getItem(storageKey);
+    if (savedState === null) {
+      setIsSidebarHidden(isSpecWorkspace);
+      return;
+    }
+
+    setIsSidebarHidden(savedState === "true");
+  }, [isSpecWorkspace, storageKey]);
 
   const handleDelete = (e: React.MouseEvent, id: number) => {
     e.preventDefault();
@@ -28,8 +52,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
     });
   };
 
+  const updateSidebarHidden = (hidden: boolean) => {
+    setIsSidebarHidden(hidden);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(storageKey, String(hidden));
+    }
+  };
+
   return (
-    <div className="flex flex-col md:flex-row min-h-screen bg-background relative overflow-hidden">
+    <div className="relative flex min-h-screen flex-col overflow-hidden bg-background md:flex-row">
       {/* Immersive background glow layer */}
       <div className="absolute inset-0 pointer-events-none z-0 overflow-hidden">
         <img
@@ -42,21 +73,45 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] rounded-full bg-blue-600/5 blur-[120px]" />
       </div>
 
+      {isSidebarHidden && (
+        <Button
+          variant="outline"
+          className="fixed left-4 top-4 z-30 hidden h-10 w-10 items-center justify-center rounded-xl border-border/70 bg-background/85 px-0 shadow-lg backdrop-blur-xl md:inline-flex"
+          onClick={() => updateSidebarHidden(false)}
+          aria-label="Show sidebar"
+        >
+          <PanelLeftOpen className="h-4 w-4 text-primary" />
+        </Button>
+      )}
+
       {/* Glassmorphic Sidebar */}
-      <aside className="w-full md:w-[320px] border-b md:border-b-0 md:border-r border-border/80 bg-background/60 backdrop-blur-2xl flex flex-col h-screen md:sticky top-0 z-20 shadow-[4px_0_24px_rgba(0,0,0,0.2)]">
-        <div className="p-6 border-b border-border/50 flex items-center justify-between">
+      <aside className={cn(
+        "z-20 flex w-full flex-col border-b border-border/80 bg-background/60 backdrop-blur-2xl shadow-[4px_0_24px_rgba(0,0,0,0.2)] md:sticky md:top-0 md:h-screen md:shrink-0 md:overflow-hidden md:border-b-0 md:transition-[width,transform,opacity,border-color] md:duration-300",
+        isSidebarHidden
+          ? "md:w-0 md:-translate-x-4 md:border-r-0 md:opacity-0 md:pointer-events-none"
+          : "md:w-[320px] md:border-r md:opacity-100",
+      )}>
+        <div className="flex items-center justify-between border-b border-border/50 p-6">
           <Link href="/" className="flex items-center gap-3 group">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-primary to-blue-600 flex items-center justify-center shadow-[0_0_20px_rgba(6,182,212,0.3)] group-hover:shadow-[0_0_25px_rgba(6,182,212,0.5)] transition-all duration-300 group-hover:scale-105">
               <Zap className="w-5 h-5 text-primary-foreground" fill="currentColor" />
             </div>
             <div>
-              <h1 className="font-display font-bold text-lg leading-none tracking-tight text-foreground">Lumens AI</h1>
-              <p className="text-[10px] text-primary font-bold uppercase tracking-widest mt-1 opacity-80">Spec Extractor</p>
+              <h1 className="font-display font-bold text-lg leading-none tracking-tight text-foreground">IKIO TDS Generator</h1>
+              <p className="text-[10px] text-primary font-bold uppercase tracking-widest mt-1 opacity-80">IKIO LED LIGHTING</p>
             </div>
           </Link>
+          <Button
+            variant="ghost"
+            className="hidden h-10 w-10 px-0 md:inline-flex"
+            onClick={() => updateSidebarHidden(true)}
+            aria-label="Hide sidebar"
+          >
+            <PanelLeftClose className="h-4 w-4" />
+          </Button>
         </div>
 
-        <div className="p-5">
+        <div className="space-y-3 p-5">
           <Button
             onClick={() => setLocation("/")}
             className="w-full justify-start gap-2 h-12 border-border/50 shadow-sm"
@@ -65,6 +120,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <Plus className="w-4 h-4 text-primary" />
             New Extraction
           </Button>
+          <div className="rounded-2xl border border-border/70 bg-card/40 px-4 py-3">
+            <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+              Signed In
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-foreground">{username ?? "Authenticated User"}</div>
+                <div className="text-xs text-muted-foreground">Protected extraction access</div>
+              </div>
+              <Button variant="ghost" className="h-9 px-3" onClick={() => void logout()}>
+                <LogOut className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-3 pt-0">
@@ -81,7 +150,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             ) : history?.length === 0 ? (
               <div className="text-center py-10 px-4 text-muted-foreground">
                 <FileText className="w-10 h-10 mx-auto mb-3 opacity-20" />
-                <p className="text-sm">No extractions yet.<br/>Upload a PDF to begin.</p>
+                <p className="text-sm">No analyzed vendor PDFs yet.<br/>Processed files will appear here automatically.</p>
               </div>
             ) : (
               <AnimatePresence>
@@ -143,8 +212,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 flex flex-col h-screen overflow-y-auto relative z-10">
-        <div className="flex-1 p-4 md:p-8 lg:p-12 max-w-7xl mx-auto w-full">
+      <main className="relative z-10 flex min-w-0 flex-1 flex-col md:h-screen md:overflow-y-auto">
+        <div className={cn(
+          "mx-auto flex-1 w-full min-w-0 max-w-[1760px] p-4 md:p-8 lg:p-10",
+          isSidebarHidden && "md:pl-20",
+        )}>
           <AnimatePresence mode="wait">
             {children}
           </AnimatePresence>

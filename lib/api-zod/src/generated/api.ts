@@ -44,6 +44,24 @@ export const ExtractSpecResponse = zod.object({
     vendorName: zod.string().optional(),
     vendorContact: zod.string().optional(),
   }),
+  sourceImages: zod.array(
+    zod.object({
+      id: zod.string(),
+      page: zod.number(),
+      width: zod.number(),
+      height: zod.number(),
+      dataUrl: zod.string(),
+    }),
+  ),
+  sourcePages: zod.array(
+    zod.object({
+      id: zod.string(),
+      page: zod.number(),
+      width: zod.number(),
+      height: zod.number(),
+      dataUrl: zod.string(),
+    }),
+  ),
   createdAt: zod.string(),
 });
 
@@ -88,6 +106,24 @@ export const GetExtractionResponse = zod.object({
     vendorName: zod.string().optional(),
     vendorContact: zod.string().optional(),
   }),
+  sourceImages: zod.array(
+    zod.object({
+      id: zod.string(),
+      page: zod.number(),
+      width: zod.number(),
+      height: zod.number(),
+      dataUrl: zod.string(),
+    }),
+  ),
+  sourcePages: zod.array(
+    zod.object({
+      id: zod.string(),
+      page: zod.number(),
+      width: zod.number(),
+      height: zod.number(),
+      dataUrl: zod.string(),
+    }),
+  ),
   createdAt: zod.string(),
 });
 
