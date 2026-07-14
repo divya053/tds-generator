@@ -162,6 +162,8 @@ type EditorDraft = {
   manualSourceImages: SourceImage[];
   selectedImageId: string | null;
   editedImageDataUrls: Record<string, string>;
+  // Which section each manual image belongs to: "product" | `accessory:<id>` | `dimension:<id>`.
+  imageOwners: Record<string, string>;
   selectedQualificationIds: QualificationBadgeId[];
   // Page 2 — Product Specifications
   specGroups: SpecGroup[];
@@ -444,6 +446,37 @@ const OVERVIEW_EXCLUDED_PARAMETERS = new Set([
   "product category",
   "product type",
 ]);
+
+// Overview rows to hide entirely (in addition to the set above): dimming/dimmable
+// and colour-options rows should never appear.
+function isExcludedOverviewLabel(label: string) {
+  const key = normalizeSpecKey(label);
+  if (OVERVIEW_EXCLUDED_PARAMETERS.has(key)) return true;
+  return key.includes("dimm") || key.includes("color option") || key.includes("colour option");
+}
+
+// Rows whose values represent a physical size and should be shown in ft/in.
+function isDimensionLabel(label: string) {
+  const key = normalizeSpecKey(label);
+  return ["dimension", "size", "length", "width", "height", "depth", "thickness"].some((token) =>
+    key.includes(token),
+  );
+}
+
+function mmToFeetInches(mm: number) {
+  const inches = mm / 25.4;
+  if (inches >= 12) {
+    const feet = Math.floor(inches / 12);
+    const remainder = inches - feet * 12;
+    return remainder >= 0.05 ? `${feet}'-${remainder.toFixed(1)}"` : `${feet}'`;
+  }
+  return `${inches.toFixed(1)}"`;
+}
+
+// Replace every "<n>mm" occurrence in a dimension string with feet/inches.
+function convertDimensionUnits(value: string) {
+  return value.replace(/(\d+(?:\.\d+)?)\s*mm\b/gi, (_match, num: string) => mmToFeetInches(Number(num)));
+}
 
 function buildWarrantyStatement(years: number) {
   return `This product is backed by a limited ${years}-year manufacturer's warranty covering defects in materials and workmanship under normal use and service from the date of purchase. Warranty coverage is subject to published terms, conditions, exclusions, and proper installation, operation, and maintenance.`;
@@ -1130,7 +1163,7 @@ function getOverviewTemplateRows(spec: ExtendedExtractedSpec) {
 function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
   const allSpecs = getAllSpecs(spec);
   const template = getOverviewTemplateRows(spec).filter(
-    (row) => !OVERVIEW_EXCLUDED_PARAMETERS.has(normalizeSpecKey(row.label)),
+    (row) => !isExcludedOverviewLabel(row.label),
   );
   const variantRows = buildPreviewVariantRows(spec);
   const buildVariantOverviewValue = (label: string) => {
@@ -1222,7 +1255,7 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
     }))
     .filter((row) => row.label)
     .filter((row) => isSpecified(row.value))
-    .filter((row) => !OVERVIEW_EXCLUDED_PARAMETERS.has(normalizeSpecKey(row.label)))
+    .filter((row) => !isExcludedOverviewLabel(row.label))
     .filter((row) => !templateKeys.has(normalizeSpecKey(row.label)))
     .filter((row, index, rows) => rows.findIndex((candidate) => normalizeSpecKey(candidate.label) === normalizeSpecKey(row.label)) === index)
     .map((row, index) => ({
@@ -1233,12 +1266,16 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
         : formatOverviewValue(row.label, row.value),
     }));
 
-  return [...templateRows, ...appendedRows].filter(
-    (row, index, rows) =>
-      isSpecified(row.label) &&
-      isSpecified(row.value) &&
-      rows.findIndex((candidate) => normalizeSpecKey(candidate.label) === normalizeSpecKey(row.label)) === index,
-  );
+  return [...templateRows, ...appendedRows]
+    .filter(
+      (row, index, rows) =>
+        isSpecified(row.label) &&
+        isSpecified(row.value) &&
+        rows.findIndex((candidate) => normalizeSpecKey(candidate.label) === normalizeSpecKey(row.label)) === index,
+    )
+    .map((row) =>
+      isDimensionLabel(row.label) ? { ...row, value: convertDimensionUnits(row.value) } : row,
+    );
 }
 
 function buildCertifications(spec: ExtendedExtractedSpec) {
@@ -1688,6 +1725,7 @@ function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendation
     manualSourceImages: [],
     selectedImageId: null,
     editedImageDataUrls: {},
+    imageOwners: {},
     selectedQualificationIds: inferQualificationBadgeIds(spec as ExtendedExtractedSpec),
     specGroups: [],
     specsNote:
@@ -2490,7 +2528,12 @@ function SheetPageOne({
 }) {
   const features = normalizePreviewFeatures(draft.featuresText);
   const applicationAreas = splitCommaList(draft.applicationAreasText);
-  const filteredOverviewRows = draft.overviewRows.filter((row) => isSpecified(row.label) && isSpecified(row.value));
+  const filteredOverviewRows = draft.overviewRows
+    .filter((row) => isSpecified(row.label) && isSpecified(row.value))
+    .filter((row) => !isExcludedOverviewLabel(row.label))
+    .map((row) =>
+      isDimensionLabel(row.label) ? { ...row, value: convertDimensionUnits(row.value) } : row,
+    );
   const normalizedDescription = normalizePreviewDescription(draft.description);
   const visibleDescription = isSpecified(normalizedDescription);
   const visibleFeatures = features.filter(isSpecified);
@@ -3186,7 +3229,7 @@ function SecondPageImagePicker({
       <option value="">No image</option>
       {images.map((image, index) => (
         <option key={image.id} value={image.id}>
-          Image {index + 1} · Page {image.page}
+          Image {index + 1} · {image.page > 0 ? `Page ${image.page}` : "Uploaded"}
         </option>
       ))}
     </select>
@@ -3277,10 +3320,14 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   }, [isWideWorkspace]);
 
   const displaySourceImages = getDraftSourceImages(spec, draft);
-  // Only user-added images (uploaded or cropped) — never the auto-extracted embedded PDF images.
-  const productImages = draft.manualSourceImages.map((image) =>
-    resolveSourceImage(image, draft.editedImageDataUrls),
-  );
+  // Images owned by a given section (plus the one currently assigned to that row, for legacy drafts).
+  const imagesForOwner = (ownerKey: string, currentId: string | null) =>
+    draft.manualSourceImages
+      .filter((image) => (draft.imageOwners[image.id] ?? "product") === ownerKey || image.id === currentId)
+      .map((image) => resolveSourceImage(image, draft.editedImageDataUrls));
+  // Product Image section: only images added for the product (uploaded/cropped here), never
+  // auto-extracted embedded images or images uploaded for accessories/dimensions.
+  const productImages = imagesForOwner("product", draft.selectedImageId);
   const selectedImage =
     displaySourceImages.find((image) => image.id === draft.selectedImageId) ?? null;
   const editingImage =
@@ -3369,10 +3416,13 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
 
   const addManualSourceImage = (image: SourceImage) => {
     setDraft((current) => {
+      const owner = pendingImageTarget ? `${pendingImageTarget.kind}:${pendingImageTarget.id}` : "product";
       const next: EditorDraft = {
         ...current,
         manualSourceImages: [...current.manualSourceImages, image],
-        selectedImageId: image.id,
+        imageOwners: { ...current.imageOwners, [image.id]: owner },
+        // Only images meant for the product update the page-1 product image.
+        selectedImageId: pendingImageTarget ? current.selectedImageId : image.id,
       };
       // Auto-assign the freshly cropped image to the row that triggered the crop.
       if (pendingImageTarget?.kind === "dimension") {
@@ -3394,10 +3444,13 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     setDraft((current) => {
       const nextEdited = { ...current.editedImageDataUrls };
       delete nextEdited[imageId];
+      const nextOwners = { ...current.imageOwners };
+      delete nextOwners[imageId];
       return {
         ...current,
         manualSourceImages: current.manualSourceImages.filter((image) => image.id !== imageId),
         editedImageDataUrls: nextEdited,
+        imageOwners: nextOwners,
         selectedImageId: current.selectedImageId === imageId ? null : current.selectedImageId,
         dimensionItems: current.dimensionItems.map((item) =>
           item.imageId === imageId ? { ...item, imageId: null } : item,
@@ -3861,7 +3914,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                         <Button
                           type="button"
                           variant="outline"
-                          className="h-7 w-7 rounded-lg border-border/70 p-0 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                          className="h-7 w-7 rounded-lg border-border/70 p-0 p-0 border-[#7a3b3b] bg-[#5f2a2a] text-red-100 hover:bg-[#743636] hover:text-red-50 [&>svg]:!size-5 [&>svg]:!text-red-100"
                           onClick={() => removeSourceImage(image.id)}
                           aria-label="Delete image"
                           title="Delete image"
@@ -3967,7 +4020,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                     type="button"
                     variant="outline"
                     onClick={() => removeOverviewRow(index)}
-                    className="h-10 w-10 rounded-xl border-border/70 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                    className="h-10 w-10 rounded-xl border-border/70 p-0 border-[#7a3b3b] bg-[#5f2a2a] text-red-100 hover:bg-[#743636] hover:text-red-50 [&>svg]:!size-5 [&>svg]:!text-red-100"
                     aria-label={`Delete ${row.label || "overview row"}`}
                     title="Delete row"
                   >
@@ -4053,7 +4106,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                       type="button"
                       variant="outline"
                       onClick={() => removeSpecGroup(groupIndex)}
-                      className="h-10 w-10 shrink-0 rounded-xl border-border/70 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                      className="h-10 w-10 shrink-0 rounded-xl border-border/70 p-0 border-[#7a3b3b] bg-[#5f2a2a] text-red-100 hover:bg-[#743636] hover:text-red-50 [&>svg]:!size-5 [&>svg]:!text-red-100"
                       aria-label="Delete part number"
                       title="Delete part number"
                     >
@@ -4081,7 +4134,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                           type="button"
                           variant="outline"
                           onClick={() => removeSpecOption(groupIndex, optionIndex)}
-                          className="h-10 w-10 shrink-0 rounded-xl border-border/70 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                          className="h-10 w-10 shrink-0 rounded-xl border-border/70 p-0 border-[#7a3b3b] bg-[#5f2a2a] text-red-100 hover:bg-[#743636] hover:text-red-50 [&>svg]:!size-5 [&>svg]:!text-red-100"
                           aria-label="Delete option"
                           title="Delete option"
                         >
@@ -4163,7 +4216,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                         type="button"
                         variant="outline"
                         onClick={() => removeOrderingEntry(columnIndex, entryIndex)}
-                        className="h-10 w-10 shrink-0 rounded-xl border-border/70 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                        className="h-10 w-10 shrink-0 rounded-xl border-border/70 p-0 border-[#7a3b3b] bg-[#5f2a2a] text-red-100 hover:bg-[#743636] hover:text-red-50 [&>svg]:!size-5 [&>svg]:!text-red-100"
                         aria-label="Delete entry"
                         title="Delete entry"
                       >
@@ -4212,7 +4265,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                       type="button"
                       variant="outline"
                       onClick={() => removeAccessoryRow(index)}
-                      className="h-10 w-10 shrink-0 rounded-xl border-border/70 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                      className="h-10 w-10 shrink-0 rounded-xl border-border/70 p-0 border-[#7a3b3b] bg-[#5f2a2a] text-red-100 hover:bg-[#743636] hover:text-red-50 [&>svg]:!size-5 [&>svg]:!text-red-100"
                       aria-label="Delete accessory"
                       title="Delete accessory"
                     >
@@ -4232,7 +4285,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                   <div className="flex items-center gap-2">
                     <div className="flex-1">
                       <SecondPageImagePicker
-                        images={displaySourceImages}
+                        images={imagesForOwner(`accessory:${row.id}`, row.imageId)}
                         value={row.imageId}
                         onChange={(value) => updateAccessoryRow(index, { imageId: value })}
                       />
@@ -4293,7 +4346,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                       type="button"
                       variant="outline"
                       onClick={() => removeDimensionItem(index)}
-                      className="h-10 w-10 shrink-0 rounded-xl border-border/70 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                      className="h-10 w-10 shrink-0 rounded-xl border-border/70 p-0 border-[#7a3b3b] bg-[#5f2a2a] text-red-100 hover:bg-[#743636] hover:text-red-50 [&>svg]:!size-5 [&>svg]:!text-red-100"
                       aria-label="Delete drawing"
                       title="Delete drawing"
                     >
@@ -4303,7 +4356,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                   <div className="flex items-center gap-2">
                     <div className="flex-1">
                       <SecondPageImagePicker
-                        images={displaySourceImages}
+                        images={imagesForOwner(`dimension:${item.id}`, item.imageId)}
                         value={item.imageId}
                         onChange={(value) => updateDimensionItem(index, { imageId: value })}
                       />
