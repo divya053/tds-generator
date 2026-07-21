@@ -288,64 +288,64 @@ const TEMPLATE_OVERVIEW_ROWS: OverviewTemplateRow[] = [
 ];
 
 const CATEGORY_OVERVIEW_TEMPLATES: Record<string, OverviewTemplateRow[]> = {
-  // Master overview heads for INDOOR products, in order. Anything the vendor PDF has that is NOT
-  // one of these becomes an optional (not-included) row the user can opt into.
+  // Master overview heads for INDOOR products, in the exact wording/casing supplied. Anything the
+  // vendor PDF has that is NOT one of these becomes an optional (not-included) row.
   indoor: [
-    createOverviewTemplateRow("Power (Selectable)", "Power", "Wattage"),
-    createOverviewTemplateRow("Voltage", "Input Voltage"),
-    createOverviewTemplateRow("Current"),
-    createOverviewTemplateRow("Power Factor"),
+    createOverviewTemplateRow("power (selectable)", "Power", "Wattage", "Power (Selectable)"),
+    createOverviewTemplateRow("voltage", "Voltage", "Input Voltage"),
+    createOverviewTemplateRow("current", "Current"),
+    createOverviewTemplateRow("power factor", "Power Factor"),
     createOverviewTemplateRow("Total Harmonic Distortion (THD)", "THD"),
-    createOverviewTemplateRow("Surge Protection"),
-    createOverviewTemplateRow("Lumen Output", "Lumens"),
-    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
+    createOverviewTemplateRow("surge protection", "Surge Protection"),
+    createOverviewTemplateRow("lumen output", "Lumen Output", "Lumens"),
+    createOverviewTemplateRow("efficacy", "Efficacy", "Efficacy (lm/W)"),
     createOverviewTemplateRow("Color Temperature (CCT)", "CCT", "Color Temperature", "Color Temperature (Selectable)"),
     createOverviewTemplateRow("Color Rendering (CRI)", "CRI", "Color Rendering Index"),
-    createOverviewTemplateRow("Beam Angle"),
-    createOverviewTemplateRow("Dimming Capability", "Dimming"),
+    createOverviewTemplateRow("beam angle", "Beam Angle"),
+    createOverviewTemplateRow("dimming capability", "Dimming", "Dimming Capability"),
     createOverviewTemplateRow("Operating Temperature"),
-    createOverviewTemplateRow("Suitable Location"),
+    createOverviewTemplateRow("suitable location", "Suitable Location"),
     createOverviewTemplateRow("Ingress Protection Rating (IP)", "IP Rating"),
     createOverviewTemplateRow("Average Life (Hours)", "Lifespan", "Lifespan (Hours)"),
     createOverviewTemplateRow("Warranty (Years)", "Warranty"),
-    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
-    createOverviewTemplateRow("Driver"),
-    createOverviewTemplateRow("Housing", "Housing Material"),
-    createOverviewTemplateRow("Finish"),
-    createOverviewTemplateRow("Cover / Lens Material", "Lens", "Cover Material / Lens", "Cover/Lens Material"),
-    createOverviewTemplateRow("Cover Type"),
-    createOverviewTemplateRow("Power Supply"),
+    createOverviewTemplateRow("led light source", "LED Light Source", "LED Source", "LED Type"),
+    createOverviewTemplateRow("driver", "Driver"),
+    createOverviewTemplateRow("housing", "Housing", "Housing Material"),
+    createOverviewTemplateRow("finish", "Finish"),
+    createOverviewTemplateRow("cover/lens material", "Lens", "Cover Material / Lens", "Cover / Lens Material"),
+    createOverviewTemplateRow("cover type", "Cover Type"),
+    createOverviewTemplateRow("power supply", "Power Supply"),
   ],
-  // Master overview heads for OUTDOOR products, in order.
+  // Master overview heads for OUTDOOR products, in the exact wording/casing supplied.
   outdoor: [
-    createOverviewTemplateRow("Power (Selectable)", "Power", "Wattage"),
-    createOverviewTemplateRow("Voltage", "Input Voltage"),
-    createOverviewTemplateRow("Current"),
-    createOverviewTemplateRow("Power Factor"),
+    createOverviewTemplateRow("power (selectable)", "Power", "Wattage", "Power (Selectable)"),
+    createOverviewTemplateRow("voltage", "Voltage", "Input Voltage"),
+    createOverviewTemplateRow("current", "Current"),
+    createOverviewTemplateRow("power factor", "Power Factor"),
     createOverviewTemplateRow("Total Harmonic Distortion (THD)", "THD"),
-    createOverviewTemplateRow("Surge Protection"),
-    createOverviewTemplateRow("Lumen Output", "Lumens"),
-    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
+    createOverviewTemplateRow("surge protection", "Surge Protection"),
+    createOverviewTemplateRow("lumen output", "Lumen Output", "Lumens"),
+    createOverviewTemplateRow("efficacy", "Efficacy", "Efficacy (lm/W)"),
     createOverviewTemplateRow("Color Temperature (CCT)", "CCT", "Color Temperature", "Color Temperature (Selectable)"),
     createOverviewTemplateRow("Color Rendering (CRI)", "CRI", "Color Rendering Index"),
-    createOverviewTemplateRow("Beam Angle"),
-    createOverviewTemplateRow("Lighting Distribution", "Light Distribution"),
+    createOverviewTemplateRow("beam angle", "Beam Angle"),
+    createOverviewTemplateRow("lighting distribution", "Light Distribution", "Lighting Distribution"),
     createOverviewTemplateRow("BUG Rating (Backlight, Uplight, and Glare)", "BUG Rating", "Backlight Uplight Glare"),
-    createOverviewTemplateRow("Dimming Capability", "Dimming"),
+    createOverviewTemplateRow("dimming capability", "Dimming", "Dimming Capability"),
     createOverviewTemplateRow("Operating Temperature"),
-    createOverviewTemplateRow("Suitable Location"),
+    createOverviewTemplateRow("suitable location", "Suitable Location"),
     createOverviewTemplateRow("Ingress Protection Rating (IP)", "IP Rating"),
     createOverviewTemplateRow("Impact Protection Rating (IK)", "IK Rating"),
     createOverviewTemplateRow("Average Life (Hours)", "Lifespan", "Lifespan (Hours)"),
     createOverviewTemplateRow("Warranty (Years)", "Warranty"),
-    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
-    createOverviewTemplateRow("Driver"),
-    createOverviewTemplateRow("Housing", "Housing Material"),
-    createOverviewTemplateRow("Finish"),
+    createOverviewTemplateRow("led light source", "LED Light Source", "LED Source", "LED Type"),
+    createOverviewTemplateRow("driver", "Driver"),
+    createOverviewTemplateRow("housing", "Housing", "Housing Material"),
+    createOverviewTemplateRow("finish", "Finish"),
     createOverviewTemplateRow("Effective Projected Area (EPA)", "EPA", "Effective Projected Area"),
     createOverviewTemplateRow("Cover / Lens Material", "Lens", "Cover Material / Lens", "Cover/Lens Material"),
-    createOverviewTemplateRow("Cover Type"),
-    createOverviewTemplateRow("Power Supply"),
+    createOverviewTemplateRow("cover type", "Cover Type"),
+    createOverviewTemplateRow("power supply", "Power Supply"),
   ],
   panel: [
     createOverviewTemplateRow("Power (Selectable)", "Power", "Wattage"),
@@ -3115,6 +3115,17 @@ const OVERVIEW_LABEL_ACRONYMS = new Set([
   "UV",
 ]);
 
+const canonicalOverviewLabelKey = (label: string) => label.replace(/\s+/g, " ").trim().toLowerCase();
+
+// Exact canonical overview heads (from the Indoor/Outdoor master lists) keyed by a normalized form,
+// so formatOverviewLabel renders them VERBATIM — preserving the supplied caps/lowercase exactly
+// (e.g. "Total Harmonic Distortion (THD)", "Ingress Protection Rating (IP)", lowercase "voltage").
+const CANONICAL_OVERVIEW_LABELS = new Map<string, string>(
+  [...CATEGORY_OVERVIEW_TEMPLATES.indoor, ...CATEGORY_OVERVIEW_TEMPLATES.outdoor].map(
+    (row) => [canonicalOverviewLabelKey(row.label), row.label] as const,
+  ),
+);
+
 /** One uniform value font-size for the whole Overview, chosen so the longest value line
  *  (e.g. Lumen Output) fits on a single row. Every value uses the same size so the column
  *  stays symmetric and aligned with the labels — only shrinking when a long list requires it. */
@@ -3133,6 +3144,9 @@ function overviewValuesFontClass(rows: OverviewRow[]) {
 
 function formatOverviewLabel(value: string) {
   const normalized = normalizeText(value);
+  // Canonical category heads render exactly as supplied (preserve the intended caps/lowercase).
+  const canonicalExact = CANONICAL_OVERVIEW_LABELS.get(canonicalOverviewLabelKey(normalized));
+  if (canonicalExact) return canonicalExact;
   // If the user wrote it in ALL CAPS, that's intentional — keep their casing as-is.
   if (normalized && /[A-Za-z]/.test(normalized) && normalized === normalized.toUpperCase()) {
     return normalized;
