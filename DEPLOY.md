@@ -44,9 +44,14 @@ cd app
 pnpm install
 pnpm --filter @workspace/api-server run build
 
-# Frontend production build (served by nginx)
-pnpm --filter @workspace/spec-extractor run build
+# Frontend production build (served by nginx).
+# Hosting under a SUBPATH (https://ikiousa.tech/ikio-tds-generator/):
+BASE_PATH=/ikio-tds-generator/ pnpm --filter @workspace/spec-extractor run build
+# Hosting at the domain ROOT instead: just `pnpm --filter @workspace/spec-extractor run build`
 # -> output: artifacts/spec-extractor/dist/public
+#
+# BASE_PATH sets the asset paths, the wouter router base, AND the /api call prefix,
+# so everything resolves under the subpath. Rebuild if you change the subpath.
 
 # Python backend
 cd flask-backend
@@ -97,20 +102,21 @@ curl -s http://localhost:8787/api/healthz      # {"status":"ok"}
 
 ## 6. Point CloudPanel's nginx at the app
 
-In CloudPanel → Site `ikiousa.tech` → **Vhost**, set the site root and add the `/api` proxy. Replace the `location /` block with:
+In CloudPanel → Site `ikiousa.tech` → **Vhost**, add these two `location` blocks inside the
+`server { … }` (the API block is longer/more specific, so nginx matches it first):
+
+### Hosting under the subpath `/ikio-tds-generator/`
 
 ```nginx
-root /home/ikiousa/app/artifacts/spec-extractor/dist/public;
-index index.html;
-
-# SPA: serve index.html for client-side routes (/spec/NN etc.)
-location / {
-    try_files $uri $uri/ /index.html;
+# Static frontend under the subpath (built with BASE_PATH=/ikio-tds-generator/)
+location /ikio-tds-generator/ {
+    alias /home/ikiousa/app/artifacts/spec-extractor/dist/public/;
+    try_files $uri $uri/ /ikio-tds-generator/index.html;
 }
 
-# Reverse-proxy the API + AI + name registry to the Node server
-location /api/ {
-    proxy_pass http://127.0.0.1:8787;
+# API under the subpath -> Node (the trailing /api/ on proxy_pass strips the subpath prefix)
+location /ikio-tds-generator/api/ {
+    proxy_pass http://127.0.0.1:8787/api/;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -121,11 +127,18 @@ location /api/ {
 }
 ```
 
+### (Alternative) hosting at the domain root
+
+Build without `BASE_PATH` and use `root … /dist/public;` with `location / { try_files $uri $uri/ /index.html; }`
+plus `location /api/ { proxy_pass http://127.0.0.1:8787; … }` (same headers as above).
+
 Save (CloudPanel reloads nginx). Then add **SSL/TLS → Let's Encrypt** for `ikiousa.tech`.
 
 ## 7. Done
 
-Open `https://ikiousa.tech`. Uploads hit `/api/extract` → Node → Flask → Gemini.
+Open **`https://ikiousa.tech/ikio-tds-generator/`**. You'll see the **login screen** there (the app
+shows login at its base URL when you're not signed in — there's no separate `/login` path). After
+login, uploads hit `/ikio-tds-generator/api/extract` → Node → Flask → Gemini.
 
 ---
 

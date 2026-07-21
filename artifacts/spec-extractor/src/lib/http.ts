@@ -46,13 +46,21 @@ function buildErrorMessage(status: number, data: unknown) {
   return `Request failed with status ${status}`;
 }
 
+/** Prefix an absolute app path with the deploy base path (e.g. "/ikio-tds-generator")
+ *  so API calls work when the app is hosted under a subpath, not only the domain root. */
+export function apiUrl(path: string): string {
+  const base = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
+  return `${base}${path.startsWith("/") ? "" : "/"}${path}`;
+}
+
 export async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
   if (init.body && !(init.body instanceof FormData) && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
 
-  const response = await fetch(input, {
+  const resolvedInput = typeof input === "string" && input.startsWith("/api") ? apiUrl(input) : input;
+  const response = await fetch(resolvedInput, {
     credentials: "same-origin",
     ...init,
     headers,

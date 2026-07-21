@@ -33,6 +33,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { apiUrl } from "@/lib/http";
 import { draftKey, loadDraft, saveDraft } from "@/lib/draft-store";
 import { toast } from "sonner";
 
@@ -4070,7 +4071,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   const [aiBusy, setAiBusy] = useState<null | "description" | "features">(null);
   const isWideWorkspace = useMediaQuery("(min-width: 1280px)");
   const sourcePages = spec.sourcePages ?? [];
-  const sourcePdfUrl = `/api/extract/${spec.id}/source-pdf#toolbar=0&navpanes=0&view=FitH`;
+  const sourcePdfUrl = `${apiUrl(`/api/extract/${spec.id}/source-pdf`)}#toolbar=0&navpanes=0&view=FitH`;
 
   useEffect(() => {
     const nextRecommendations = buildProductNameRecommendations(spec);
@@ -4091,7 +4092,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
       // falling back to the local IndexedDB copy when offline.
       let saved: EditorDraft | null | undefined = localSaved;
       try {
-        const draftResponse = await fetch(`/api/extract/${spec.id}/draft`, { credentials: "include" });
+        const draftResponse = await fetch(apiUrl(`/api/extract/${spec.id}/draft`), { credentials: "include" });
         if (draftResponse.ok) {
           const data = (await draftResponse.json()) as { draft?: EditorDraft | null };
           if (data?.draft) saved = data.draft;
@@ -4108,7 +4109,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
 
       // Reserve globally-unique names from the backend registry so no two products repeat
       // a name. Falls back silently to the local suggestions if the backend is unavailable.
-      fetch("/api/product-names/reserve", {
+      fetch(apiUrl("/api/product-names/reserve"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -4144,7 +4145,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     if (hydratedSpecIdRef.current !== String(spec.id)) return undefined;
     const handle = window.setTimeout(() => {
       void saveDraft(draftKey(spec.id), draft);
-      void fetch(`/api/extract/${spec.id}/draft`, {
+      void fetch(apiUrl(`/api/extract/${spec.id}/draft`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -4721,7 +4722,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
         specs: specsSummary,
         current: kind === "description" ? draft.description : draft.featuresText,
       };
-      const response = await fetch("/api/ai-content", {
+      const response = await fetch(apiUrl("/api/ai-content"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

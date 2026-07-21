@@ -1,5 +1,5 @@
 import type { ExtractedSpec } from "@workspace/api-client-react";
-import { HttpError } from "./http";
+import { HttpError, apiUrl } from "./http";
 
 const EXTRACTION_DURATION_STORAGE_KEY = "ikio-tds-extraction-durations";
 const MAX_DURATION_SAMPLES = 6;
@@ -193,7 +193,7 @@ export function uploadSpecExtraction(
       reject(new HttpError(xhr.status, getErrorMessage(payload, "Extraction failed"), payload));
     });
 
-    xhr.open("POST", "/api/extract");
+    xhr.open("POST", apiUrl("/api/extract"));
     xhr.withCredentials = true;
     xhr.send(form);
     emitProgress();
