@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from typing import Any
 
 from flask import Flask, jsonify, request
@@ -1070,6 +1071,40 @@ def call_groq(document_text: str) -> dict[str, Any]:
     return json.loads(ensure_json_string(content))
 
 
+# Gemini's free-tier / preview models intermittently return 429 (rate limit) or 503 (overloaded).
+# Retry those (and other transient 5xx) a few times with exponential backoff before giving up.
+GEMINI_MAX_RETRIES = int(os.environ.get("GEMINI_MAX_RETRIES", "4").strip())
+_GEMINI_TRANSIENT_STATUS = {429, 500, 502, 503, 504}
+
+
+def _gemini_post(url: str, payload: dict[str, Any]) -> requests.Response:
+    """POST to Gemini, retrying transient 429/5xx with exponential backoff (1s, 2s, 4s, 8s…)."""
+    last_error: Exception | None = None
+    for attempt in range(1, GEMINI_MAX_RETRIES + 1):
+        response = requests.post(
+            url,
+            json=payload,
+            headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+            timeout=GEMINI_TIMEOUT_SECONDS,
+        )
+        if response.status_code not in _GEMINI_TRANSIENT_STATUS:
+            response.raise_for_status()
+            return response
+        last_error = requests.HTTPError(
+            f"{response.status_code} {response.reason} for url: {url}", response=response
+        )
+        if attempt < GEMINI_MAX_RETRIES:
+            wait = min(2 ** (attempt - 1), 8)
+            print(
+                f"[gemini] {response.status_code} on attempt {attempt}/{GEMINI_MAX_RETRIES}; "
+                f"retrying in {wait}s",
+                flush=True,
+            )
+            time.sleep(wait)
+    assert last_error is not None
+    raise last_error
+
+
 def _gemini_generate(system_prompt: str, user_message: str) -> dict[str, Any]:
     if not GEMINI_API_KEY:
         raise RuntimeError(
@@ -1082,13 +1117,7 @@ def _gemini_generate(system_prompt: str, user_message: str) -> dict[str, Any]:
         "contents": [{"role": "user", "parts": [{"text": user_message}]}],
         "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
     }
-    response = requests.post(
-        url,
-        json=payload,
-        headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
-        timeout=GEMINI_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
+    response = _gemini_post(url, payload)
     data = response.json()
     candidates = data.get("candidates", [])
     if not candidates:
@@ -1121,13 +1150,7 @@ def _gemini_edit_image(image_b64: str, mime_type: str, prompt: str) -> tuple[str
             }
         ],
     }
-    response = requests.post(
-        url,
-        json=payload,
-        headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
-        timeout=GEMINI_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
+    response = _gemini_post(url, payload)
     data = response.json()
     candidates = data.get("candidates", [])
     if not candidates:
