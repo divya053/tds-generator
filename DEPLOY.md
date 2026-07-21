@@ -67,13 +67,22 @@ cat > flask-backend/.env <<'EOF'
 LLM_PROVIDER=gemini
 GEMINI_API_KEY=AIza-or-AQ.-your-key-here
 GEMINI_MODEL=gemini-3-flash-preview
+GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
 ENABLE_REVIEW=1
 PDF_RENDER_SCALE=3.0
 EOF
 ```
 
-> On a VPS there's no Ollama fallback (no local model), so a **valid Gemini key is required**.
-> Paddle OCR is heavy — set `ENABLE_PADDLE_OCR=0` in `.env` if your PDFs already have a text layer.
+> **A valid Gemini key is required.** By default the backend does **NOT** fall back to Ollama when
+> Gemini fails (`LLM_FALLBACK_OLLAMA=0`), so any Gemini error (bad key, wrong model id, quota,
+> timeout) is surfaced directly instead of showing a misleading "Ollama timed out". Check the real
+> cause with `pm2 logs tds-flask`. If extraction returns a model/404 error, set a valid `GEMINI_MODEL`
+> (e.g. `gemini-flash-latest` or `gemini-2.5-flash`).
+>
+> - `GEMINI_MODEL` — text model for extraction / description / features.
+> - `GEMINI_IMAGE_MODEL` — image model for the editor's **AI Edit** (mm→inch, label fixes). Needs a
+>   key with image-model access; override if `gemini-2.5-flash-image` isn't available to you.
+> - Paddle OCR is heavy — set `ENABLE_PADDLE_OCR=0` in `.env` if your PDFs already have a text layer.
 
 ## 5. Run both backends with pm2 (auto-restart + boot startup)
 
@@ -149,9 +158,14 @@ su - ikiousa && cd /home/ikiousa/app
 git pull
 pnpm install
 pnpm --filter @workspace/api-server run build
-pnpm --filter @workspace/spec-extractor run build
+# Subpath hosting (https://ikiousa.tech/ikio-tds-generator/) MUST keep the BASE_PATH:
+BASE_PATH=/ikio-tds-generator/ pnpm --filter @workspace/spec-extractor run build
+# (Root hosting instead: drop BASE_PATH.)
 pm2 restart tds-flask tds-api
 ```
+
+> The frontend is static, so a browser hard-refresh may be needed after a rebuild. If you changed
+> `flask-backend/.env`, the restart above reloads it (the `.env` is read on Flask startup).
 
 ## Data & backups
 

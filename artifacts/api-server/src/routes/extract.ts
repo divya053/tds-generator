@@ -283,6 +283,21 @@ router.post("/ai-content", async (req, res) => {
   }
 });
 
+router.post("/ai-image-edit", async (req, res) => {
+  try {
+    const flaskRes = await fetch(`${FLASK_URL}/ai-image-edit`, {
+      method: "POST",
+      body: JSON.stringify(req.body ?? {}),
+      headers: { "Content-Type": "application/json" },
+    });
+    const body = await flaskRes.text();
+    res.status(flaskRes.status).type("application/json").send(body);
+  } catch (err) {
+    req.log.error({ err }, "AI image edit request failed");
+    res.status(500).json({ error: "AI image edit failed", detail: String(err) });
+  }
+});
+
 router.post("/product-names/reserve", async (req, res) => {
   try {
     const flaskRes = await fetch(`${FLASK_URL}/product-names/reserve`, {

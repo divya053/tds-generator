@@ -42,6 +42,10 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "ollama").strip().lower()
+# When a cloud provider (gemini/groq) fails, only fall back to local Ollama if this is enabled.
+# Default OFF so a Gemini error surfaces its real cause instead of a confusing "Ollama timed out"
+# on servers that have no Ollama installed.
+LLM_FALLBACK_OLLAMA = os.environ.get("LLM_FALLBACK_OLLAMA", "0").strip().lower() in ("1", "true", "yes", "on")
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").strip()
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b").strip()
@@ -54,6 +58,8 @@ GROQ_TIMEOUT_SECONDS = int(os.environ.get("GROQ_TIMEOUT_SECONDS", "120").strip()
 
 GEMINI_URL = os.environ.get("GEMINI_URL", "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest").strip()
+# Image-capable model used for the in-editor "AI Edit" (e.g. converting mm dimensions to inches).
+GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TIMEOUT_SECONDS", "180").strip())
 PDF_RENDER_SCALE = float(os.environ.get("PDF_RENDER_SCALE", "3.0").strip())
@@ -103,7 +109,7 @@ Return ONLY valid JSON with this exact structure:
 {
   "productName": "Vendor-source product name, cleaned for IKIO TDS use",
   "alternateName": "Alternate vendor/product naming if present",
-  "productDescription": "A cohesive paragraph of around 400 characters (360-430). Must reflect source PDF, key wattage/lumen/control details, and application intent.",
+  "productDescription": "One concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value. Grounded in the source PDF.",
   "productFeatures": ["Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars"],
   "applicationAreas": ["Area 1", "Area 2", "Area 3", "Area 4", "Area 5", "Area 6"],
   "productCategory": "panel/downlight/track/flood/street/high_bay/low_bay/linear/unknown",
@@ -244,7 +250,7 @@ Rules:
 - If a value is clearly selectable, format compactly, for example "20W/25W/30W" or "3000K/4000K/5000K".
 - Keep descriptions and features grounded in the source PDF.
 - productFeatures: return EXACTLY 4 features (no more, no fewer). Take the vendor's real features/specs and rewrite EACH as a complete, benefit-oriented sentence of about 100 characters (aim 90-115). NEVER return a bare fragment. Expand short bullets — e.g. source "Samsung 2835 chips" -> "Built with premium Samsung 2835 LED chips for consistent brightness and dependable long-term output." and "4KV surge protection" -> "Integrated 4 kV surge protection safeguards the driver against voltage spikes for reliable operation." Every claim must stay grounded in the source PDF.
-- productDescription: write a single cohesive paragraph of around 400 characters (target 360-430). Ground it in the source PDF.
+- productDescription: write one concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value. Ground it in the source PDF.
 - orderingInfo: Fill EVERY column with at least one {code, description} option. If the vendor PDF has a part-number / ordering decoder, copy its exact codes and meanings for each field. If it does NOT, best-effort DERIVE options from the real specs: Power codes from the wattage packages, CCT codes from the color temperatures, Voltage from the input voltage, etc. Use short codes (e.g. "50K" for 5000K, "MV" for 120-277V, "WH" for White, "D" for Dimmable). Never leave orderingInfo empty.
 - orderingExample: assemble one concrete example part number by joining one chosen code from each column with "-".
 - accessories: List any accessories, controllers, sensors, mounting/emergency kits mentioned. Each needs a product code (best-effort like "IK-ACC-...") and a short description. Return [] only if the PDF truly has none.
@@ -1096,6 +1102,49 @@ def call_gemini(document_text: str) -> dict[str, Any]:
     return _gemini_generate(SYSTEM_PROMPT, build_user_message(document_text))
 
 
+def _gemini_edit_image(image_b64: str, mime_type: str, prompt: str) -> tuple[str, str]:
+    """Edit an image with Gemini's image model. Returns (base64_data, mime_type) of the result."""
+    if not GEMINI_API_KEY:
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set. Export GEMINI_API_KEY (get a key at "
+            "https://aistudio.google.com/apikey) and set LLM_PROVIDER=gemini."
+        )
+    url = f"{GEMINI_URL}/models/{GEMINI_IMAGE_MODEL}:generateContent"
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime_type or "image/png", "data": image_b64}},
+                ],
+            }
+        ],
+    }
+    response = requests.post(
+        url,
+        json=payload,
+        headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+        timeout=GEMINI_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    data = response.json()
+    candidates = data.get("candidates", [])
+    if not candidates:
+        raise RuntimeError(f"Gemini returned no candidates: {str(data)[:300]}")
+    parts = candidates[0].get("content", {}).get("parts", [])
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        inline = part.get("inlineData") or part.get("inline_data")
+        if isinstance(inline, dict) and inline.get("data"):
+            out_mime = inline.get("mimeType") or inline.get("mime_type") or "image/png"
+            return str(inline["data"]), str(out_mime)
+    # No image came back — surface any text the model returned (often a refusal / explanation).
+    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+    raise RuntimeError(f"Gemini returned no image. {text[:200]}".strip())
+
+
 REVIEW_SYSTEM_PROMPT = """You are a senior QA reviewer for IKIO lighting technical data sheets.
 You receive (1) the vendor source text and (2) a first-pass JSON extraction of it. Cross-check the
 extraction against the source like a careful human would, then return a CORRECTED JSON with the
@@ -1160,7 +1209,10 @@ def _llm_chat_json(system_prompt: str, user_message: str) -> dict[str, Any]:
             response.raise_for_status()
             content = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
             return json.loads(ensure_json_string(content))
-        except Exception as exc:  # noqa: BLE001 - fall back to local model
+        except Exception as exc:  # noqa: BLE001
+            if not LLM_FALLBACK_OLLAMA:
+                # Let the caller (best-effort reviewer) skip rather than stall on a missing Ollama.
+                raise
             print(f"[review] {LLM_PROVIDER} failed ({str(exc)[:120]}); using local Ollama for review.", flush=True)
     return _ollama_chat_json(system_prompt, user_message)
 
@@ -1195,12 +1247,17 @@ def call_llm(document_text: str) -> dict[str, Any]:
             return call_groq(document_text)
         return call_ollama(document_text)
     except Exception as exc:  # noqa: BLE001 - resilience: never hard-fail if a fallback exists
-        if LLM_PROVIDER != "ollama":
+        if LLM_PROVIDER != "ollama" and LLM_FALLBACK_OLLAMA:
             print(
                 f"[llm] provider '{LLM_PROVIDER}' failed ({str(exc)[:160]}); falling back to local Ollama.",
                 flush=True,
             )
             return call_ollama(document_text)
+        if LLM_PROVIDER != "ollama":
+            # No silent Ollama fallback — surface the real provider error so the cause
+            # (bad API key, wrong model id, quota/timeout) is visible to the user.
+            print(f"[llm] provider '{LLM_PROVIDER}' failed: {str(exc)[:300]}", flush=True)
+            raise RuntimeError(f"{LLM_PROVIDER} extraction failed: {str(exc)[:300]}") from exc
         raise
 
 
@@ -1321,8 +1378,8 @@ def health():
 
 AI_DESCRIPTION_SYSTEM = (
     'You write IKIO lighting PRODUCT DESCRIPTIONS. Return ONLY JSON: {"text": "..."}. '
-    "Write one cohesive paragraph of about 400 characters (360-430), grounded in the provided specs, "
-    "highlighting the wattage/lumen/CCT options, controls, build quality, and ideal applications. "
+    "Write one concise paragraph covering what the product is, where it is used, its main performance "
+    "or design advantage, and its broader project value. Ground it in the provided specs. "
     "Do not invent unsupported claims and never include vendor part numbers. Follow the user's instruction."
 )
 AI_FEATURES_SYSTEM = (
@@ -1358,7 +1415,7 @@ def ai_content():
     default_instruction = (
         "Write 4 strong, benefit-oriented feature bullets."
         if is_features
-        else "Write a polished ~400 character product description."
+        else "One concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value."
     )
     user_message = f"{instruction or default_instruction}\n\nProduct context:\n{context}"
 
@@ -1378,6 +1435,40 @@ def ai_content():
 
     text = normalize_whitespace(str(out.get("text", "")) if isinstance(out, dict) else "")
     return jsonify({"text": text})
+
+
+@app.route("/ai-image-edit", methods=["POST"])
+def ai_image_edit():
+    """Edit a product image from a natural-language prompt (e.g. convert mm dimensions to inches).
+    Accepts {imageDataUrl, prompt} and returns {dataUrl} with the edited image."""
+    data = request.get_json(silent=True) or {}
+    data_url = str(data.get("imageDataUrl", "")).strip()
+    prompt = normalize_whitespace(str(data.get("prompt", "")))
+
+    if not data_url.startswith("data:") or "," not in data_url:
+        return jsonify({"error": "imageDataUrl must be a base64 data URL"}), 400
+    if not prompt:
+        return jsonify({"error": "A prompt describing the edit is required"}), 400
+    if LLM_PROVIDER != "gemini":
+        return jsonify({"error": "AI image edit requires LLM_PROVIDER=gemini"}), 400
+
+    header, b64 = data_url.split(",", 1)
+    mime_type = "image/png"
+    if header.startswith("data:") and ";" in header:
+        mime_type = header[len("data:"):header.index(";")] or "image/png"
+
+    instruction = (
+        "You are editing a product / technical image for a lighting spec sheet. Apply ONLY the "
+        "requested change and preserve the product, framing, layout, colours and background exactly. "
+        "Do not add, remove or restyle anything you were not asked to. Keep all other text identical. "
+        f"Requested change: {prompt}"
+    )
+    try:
+        out_b64, out_mime = _gemini_edit_image(b64, mime_type, instruction)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": "AI image edit failed", "detail": str(exc)[:300]}), 502
+
+    return jsonify({"dataUrl": f"data:{out_mime};base64,{out_b64}"})
 
 
 PRODUCT_NAME_STORE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "product-names.json")

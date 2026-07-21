@@ -48,6 +48,7 @@ type SpecOption = { power: string; lumen: string };
 type SpecGroup = {
   id: string;
   partNumber: string;
+  sku: string;
   options: SpecOption[];
   voltage: string;
   efficacy: string;
@@ -1659,6 +1660,219 @@ function inferQualificationBadgeIds(spec: ExtendedExtractedSpec) {
   return selected;
 }
 
+/** Canonical lighting-fixture profiles: for each fixture type we know its broad category,
+ *  a recommended sub-category name, and the application areas that fixture is typically used
+ *  for. Used to auto-predict application areas (and fill an empty category / sub-category) from
+ *  the product's title / category / sub-category text. Ordered most-specific first so a compound
+ *  match ("linear high bay", "explosion proof") wins over a generic one ("high bay", "flood"). */
+type FixtureProfile = {
+  id: string;
+  keywords: string[];
+  category: string;
+  subCategory: string;
+  group: string;
+  applications: string[];
+};
+
+const FIXTURE_PROFILES: FixtureProfile[] = [
+  {
+    id: "explosion_proof",
+    keywords: ["explosion proof", "explosion-proof", "hazardous location", "hazloc", "class i div"],
+    category: "Hazardous Location Lighting",
+    subCategory: "Explosion Proof Luminaire",
+    group: "Hazardous Location",
+    applications: ["Oil & Gas Facilities", "Refineries", "Chemical Plants", "Mining Operations", "Paint Booths"],
+  },
+  {
+    id: "vapor_tight",
+    keywords: ["vapor tight", "vapor-tight", "vaportight", "tri-proof", "tri proof", "triproof", "waterproof linear"],
+    category: "Indoor / Outdoor Lighting",
+    subCategory: "Vapor Tight Linear",
+    group: "Vapor Tight",
+    applications: ["Parking Garages", "Car Washes", "Food Processing Plants", "Cold Storage", "Warehouses", "Loading Docks"],
+  },
+  {
+    id: "linear_high_bay",
+    keywords: ["linear high bay", "linear highbay"],
+    category: "Indoor Lighting",
+    subCategory: "Linear High Bay",
+    group: "High Bays",
+    applications: ["Warehouses", "Manufacturing Facilities", "Distribution Centers", "Assembly Lines", "Big-Box Retail"],
+  },
+  {
+    id: "high_bay",
+    keywords: ["high bay", "highbay", "ufo", "high-bay"],
+    category: "Indoor Lighting",
+    subCategory: "UFO High Bay",
+    group: "High Bays",
+    applications: ["Warehouses", "Manufacturing Facilities", "Gymnasiums", "Distribution Centers", "Workshops", "Big-Box Retail"],
+  },
+  {
+    id: "low_bay",
+    keywords: ["low bay", "lowbay", "low-bay"],
+    category: "Indoor Lighting",
+    subCategory: "Low Bay",
+    group: "Low Bays",
+    applications: ["Retail Stores", "Workshops", "Storage Areas", "Auto Service Bays", "Warehouses"],
+  },
+  {
+    id: "troffer",
+    keywords: ["troffer", "2x2", "2x4", "1x4", "2'x4'", "recessed panel"],
+    category: "Indoor Lighting",
+    subCategory: "Recessed Troffer",
+    group: "Troffers",
+    applications: ["Offices", "Classrooms", "Healthcare Facilities", "Corridors", "Conference Rooms"],
+  },
+  {
+    id: "panel",
+    keywords: ["flat panel", "back-lit panel", "backlit panel", "edge-lit", "edge lit", "panel light", "panel"],
+    category: "Indoor Lighting",
+    subCategory: "Flat Panel",
+    group: "Panels",
+    applications: ["Offices", "Schools", "Hospitals", "Clinics", "Retail Stores", "Conference Rooms"],
+  },
+  {
+    id: "wrap",
+    keywords: ["wraparound", "wrap around", "wrap-around", "wrap light"],
+    category: "Indoor Lighting",
+    subCategory: "LED Wraparound",
+    group: "Wraparounds",
+    applications: ["Corridors", "Stairwells", "Basements", "Utility Rooms", "Garages", "Storage Areas"],
+  },
+  {
+    id: "strip",
+    keywords: ["strip light", "linear strip", "industrial strip", "shop light"],
+    category: "Indoor Lighting",
+    subCategory: "Linear Strip",
+    group: "Strip Lights",
+    applications: ["Warehouses", "Garages", "Utility Rooms", "Retail Stockrooms", "Cove Lighting"],
+  },
+  {
+    id: "downlight",
+    keywords: ["downlight", "down light", "recessed can", "can light", "recessed downlight"],
+    category: "Indoor Lighting",
+    subCategory: "Recessed Downlight",
+    group: "Downlights",
+    applications: ["Offices", "Hotels", "Corridors", "Retail Stores", "Lobbies", "Residential Spaces"],
+  },
+  {
+    id: "track",
+    keywords: ["track light", "track head", "track spot"],
+    category: "Indoor Lighting",
+    subCategory: "Track Light",
+    group: "Track Lighting",
+    applications: ["Retail Showrooms", "Galleries", "Museums", "Restaurants", "Boutiques"],
+  },
+  {
+    id: "tube",
+    keywords: ["t8", "t5", "led tube", "tube light", "linear tube"],
+    category: "Indoor Lighting",
+    subCategory: "LED Tube",
+    group: "Tube Lights",
+    applications: ["Offices", "Schools", "Retail Stores", "Hospitals", "Corridors"],
+  },
+  {
+    id: "wall_pack",
+    keywords: ["wall pack", "wallpack", "wall-pack"],
+    category: "Outdoor Lighting",
+    subCategory: "Wall Pack",
+    group: "Wall Packs",
+    applications: ["Building Perimeters", "Entrances", "Walkways", "Loading Docks", "Security Lighting"],
+  },
+  {
+    id: "flood",
+    keywords: ["flood light", "floodlight", "flood-light", "flood"],
+    category: "Outdoor Lighting",
+    subCategory: "Flood Light",
+    group: "Flood Lights",
+    applications: ["Sports Fields", "Building Facades", "Parking Lots", "Signage", "Security Lighting", "Landscapes"],
+  },
+  {
+    id: "area_light",
+    keywords: ["area light", "shoebox", "parking lot light", "pole light", "site light", "area"],
+    category: "Outdoor Lighting",
+    subCategory: "Area / Shoebox Light",
+    group: "Area Lights",
+    applications: ["Parking Lots", "Roadways", "Campuses", "Car Dealerships", "Pathways"],
+  },
+  {
+    id: "street",
+    keywords: ["street light", "streetlight", "roadway light", "cobra head", "cobrahead"],
+    category: "Outdoor Lighting",
+    subCategory: "Street Light",
+    group: "Street Lights",
+    applications: ["Roadways", "Highways", "Streets", "Pathways", "Public Areas"],
+  },
+  {
+    id: "canopy",
+    keywords: ["canopy light", "canopy", "gas station light"],
+    category: "Outdoor Lighting",
+    subCategory: "Canopy Light",
+    group: "Canopy Lights",
+    applications: ["Gas Stations", "Parking Garages", "Building Entrances", "Drive-Throughs", "Loading Docks"],
+  },
+  {
+    id: "stadium",
+    keywords: ["stadium", "sports light", "sport light", "arena light"],
+    category: "Outdoor Lighting",
+    subCategory: "Stadium / Sports Light",
+    group: "Sports Lighting",
+    applications: ["Stadiums", "Sports Fields", "Arenas", "Tennis Courts", "Athletic Facilities"],
+  },
+  {
+    id: "corn",
+    keywords: ["corn bulb", "corn lamp", "corn light", "retrofit lamp", "hid retrofit"],
+    category: "Indoor / Outdoor Lighting",
+    subCategory: "Corn Retrofit Lamp",
+    group: "Retrofit Lamps",
+    applications: ["Warehouses", "Parking Lots", "Street Lights", "High Bays", "Post-Top Fixtures"],
+  },
+  {
+    id: "bollard",
+    keywords: ["bollard"],
+    category: "Outdoor Lighting",
+    subCategory: "Bollard Light",
+    group: "Bollards",
+    applications: ["Walkways", "Landscapes", "Parks", "Building Entrances", "Pathways"],
+  },
+  {
+    id: "grow",
+    keywords: ["grow light", "horticulture", "grow lamp"],
+    category: "Horticultural Lighting",
+    subCategory: "Grow Light",
+    group: "Grow Lights",
+    applications: ["Greenhouses", "Indoor Farms", "Vertical Farms", "Nurseries", "Cultivation Rooms"],
+  },
+  {
+    id: "exit",
+    keywords: ["exit sign", "emergency light", "egress", "exit combo"],
+    category: "Life Safety Lighting",
+    subCategory: "Exit / Emergency",
+    group: "Emergency & Exit",
+    applications: ["Egress Paths", "Corridors", "Stairwells", "Exits", "Public Buildings"],
+  },
+];
+
+/** Find the fixture profile that best matches a product's naming text. Longer keyword matches
+ *  win (so "linear high bay" beats "high bay"); ties break toward the earlier, more-specific
+ *  profile in the ordered list. Returns null when nothing matches. */
+function predictFixtureProfile(...sources: Array<string | undefined>): FixtureProfile | null {
+  const haystack = sources.filter(Boolean).join(" ").toLowerCase();
+  if (!haystack.trim()) return null;
+
+  let best: { profile: FixtureProfile; score: number } | null = null;
+  for (const profile of FIXTURE_PROFILES) {
+    for (const keyword of profile.keywords) {
+      if (haystack.includes(keyword)) {
+        const score = keyword.length;
+        if (!best || score > best.score) best = { profile, score };
+        break;
+      }
+    }
+  }
+  return best?.profile ?? null;
+}
+
 function countWords(value: string) {
   return normalizeText(value).split(/\s+/).filter(Boolean).length;
 }
@@ -1843,6 +2057,7 @@ function buildSpecGroups(spec: ExtendedExtractedSpec): SpecGroup[] {
       return {
         id: `spec-extracted-${index}`,
         partNumber: variant.fixtureDetail || variant.fixture || `Variant ${index + 1}`,
+        sku: "",
         options,
         voltage,
         efficacy: variant.efficacy,
@@ -1986,6 +2201,12 @@ function ImageEditorDialog({
   const [eraseWidth, setEraseWidth] = useState(180);
   const [eraseHeight, setEraseHeight] = useState(56);
   const [penSize, setPenSize] = useState(16);
+  // The current base image drawn on the canvas. Starts as the source image and is replaced by the
+  // result of an "AI Edit" so further manual tools apply on top of the AI-edited image.
+  const [baseDataUrl, setBaseDataUrl] = useState<string | null>(null);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
   const isPaintingRef = useRef(false);
   const lastPaintRef = useRef<{ x: number; y: number } | null>(null);
 
@@ -2001,6 +2222,10 @@ function ImageEditorDialog({
     setEraseWidth(180);
     setEraseHeight(56);
     setPenSize(16);
+    setBaseDataUrl(image?.dataUrl ?? null);
+    setAiPrompt("");
+    setAiBusy(false);
+    setAiError(null);
     isPaintingRef.current = false;
     lastPaintRef.current = null;
   }, [image?.id, open]);
@@ -2061,7 +2286,7 @@ function ImageEditorDialog({
       context.fillStyle = editor.backgroundColor;
       context.fillRect(0, 0, canvas.width, canvas.height);
     };
-    source.src = image.dataUrl;
+    source.src = baseDataUrl ?? image.dataUrl;
     // If the image is already cached/decoded, onload may not fire — draw immediately.
     if (source.complete && source.naturalWidth > 0) {
       draw();
@@ -2070,7 +2295,7 @@ function ImageEditorDialog({
     return () => {
       cancelled = true;
     };
-  }, [editor, image, open, canvasEl]);
+  }, [editor, image, open, canvasEl, baseDataUrl]);
 
   const updateEditor = <K extends keyof ImageEditorState>(key: K, value: ImageEditorState[K]) => {
     setEditor((current) => ({ ...current, [key]: value }));
@@ -2188,6 +2413,43 @@ function ImageEditorDialog({
     onSave(canvas.toDataURL("image/png"));
   };
 
+  const runAiImageEdit = async () => {
+    const canvas = canvasEl;
+    const prompt = normalizeText(aiPrompt);
+    if (!canvas || !image || !prompt || aiBusy) return;
+    setAiBusy(true);
+    setAiError(null);
+    const toastId = toast.loading("AI editing image…");
+    try {
+      // Send the currently-composited canvas so the AI edits exactly what you see (including any
+      // manual text/erase already applied). The returned image bakes in the change.
+      const input = canvas.toDataURL("image/png");
+      const response = await fetch(apiUrl("/api/ai-image-edit"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ imageDataUrl: input, prompt }),
+      });
+      const data = (await response.json().catch(() => null)) as
+        | { dataUrl?: string; error?: string; detail?: string }
+        | null;
+      if (!response.ok || !data?.dataUrl) {
+        throw new Error(data?.detail || data?.error || `HTTP ${response.status}`);
+      }
+      // The result already contains the edit — make it the new base and reset the manual
+      // adjustments/layers (they're now baked into the returned image).
+      setBaseDataUrl(data.dataUrl);
+      setEditor(createImageEditorState());
+      toast.success("AI edit applied. Review it, then click Use In TDS.", { id: toastId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "AI image edit failed";
+      setAiError(message);
+      toast.error(`AI image edit failed: ${message}`, { id: toastId });
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92vh] w-[min(96vw,1200px)] max-w-none overflow-hidden p-0">
@@ -2201,6 +2463,35 @@ function ImageEditorDialog({
             </DialogHeader>
 
             <div className="mt-5 space-y-5">
+              <div className="space-y-2">
+                <div className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  AI Edit
+                </div>
+                <Textarea
+                  value={aiPrompt}
+                  onChange={(event) => setAiPrompt(event.target.value)}
+                  placeholder="Describe the change — e.g. “Convert every dimension shown in mm to inches (1 in = 25.4 mm), keep the same format and 2 decimals”."
+                  className="min-h-[76px] text-[13px]"
+                  disabled={aiBusy}
+                />
+                <Button
+                  type="button"
+                  onClick={runAiImageEdit}
+                  disabled={!image || aiBusy || !normalizeText(aiPrompt)}
+                  className="w-full"
+                >
+                  {aiBusy ? "Editing…" : "AI Edit Image"}
+                </Button>
+                {aiError ? (
+                  <p className="text-[11px] leading-snug text-red-500">{aiError}</p>
+                ) : (
+                  <p className="text-[11px] leading-snug text-muted-foreground">
+                    Edits the image you see now with Gemini (e.g. change units, fix a label). Review the
+                    result, then keep editing or click <span className="font-semibold">Use In TDS</span>.
+                  </p>
+                )}
+              </div>
+
               <div className="space-y-2">
                 <div className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
                   Adjustments
@@ -2988,6 +3279,13 @@ function SheetPageOne({
   const visibleWarrantyCopy = isSpecified(draft.warrantyCopy);
   const showWarrantyBlock = visibleWarrantyLabel || visibleWarrantyCopy;
   const visibleQualificationIds = draft.selectedQualificationIds;
+  const showDlcNote = visibleQualificationIds.some(
+    (id) => id === "dlc_premium" || id === "dlc_listed",
+  );
+  // Fixture "group" for the header's category line (e.g. "High Bays"), derived from the recognised
+  // fixture type. Sits after the category as: "Indoor Lighting | High Bays".
+  const fixtureGroup =
+    predictFixtureProfile(draft.title, draft.subtitle, draft.categoryLabel, draft.subCategory)?.group ?? "";
 
   return (
     <div
@@ -3009,25 +3307,26 @@ function SheetPageOne({
               {/* Breathing space after the header line, before the product name (left column only;
                   the Overview box on the right stays flush against the header rule). */}
               <div className="h-[12px] w-full shrink-0" />
-              {/* Product name + category block: Title case name, divider line, then category + sub-category */}
+              {/* Product header (3 lines): product name, the specific fixture type in bold
+                  beneath it, then a divider, then "Category | Fixture Group" — all auto-filled
+                  from the recognised fixture type. */}
               <div className="h-[110px] w-[413px] shrink-0 overflow-hidden" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
                 <h1 className="text-[25px] font-bold uppercase leading-[1.02] tracking-[-0.01em] text-[#00a651]">
                   {draft.title}
                 </h1>
-                {isSpecified(draft.subtitle) && (
-                  <div className="mt-1.5 text-[12px] font-semibold uppercase leading-[1.2] text-slate-600">
-                    {draft.subtitle}
-                  </div>
-                )}
-                <div className="my-1 h-px w-full bg-slate-200" />
-                {isSpecified(draft.categoryLabel) && (
-                  <div className="text-[9px] font-normal leading-[1.25] text-slate-800" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
-                    {draft.categoryLabel}
-                  </div>
-                )}
                 {isSpecified(draft.subCategory) && (
-                  <div className="text-[8.5px] font-normal leading-[1.25] text-slate-600" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                  <div className="mt-0.5 text-[11px] font-bold uppercase leading-[1.2] text-slate-900">
                     {draft.subCategory}
+                  </div>
+                )}
+                <div className="my-1.5 h-px w-full bg-slate-300" />
+                {(isSpecified(draft.categoryLabel) || isSpecified(fixtureGroup)) && (
+                  <div className="text-[11px] font-normal leading-[1.3] text-slate-900">
+                    {isSpecified(draft.categoryLabel) && <span>{draft.categoryLabel}</span>}
+                    {isSpecified(draft.categoryLabel) && isSpecified(fixtureGroup) && (
+                      <span className="mx-1.5 font-normal text-slate-400">|</span>
+                    )}
+                    {isSpecified(fixtureGroup) && <span>{fixtureGroup}</span>}
                   </div>
                 )}
               </div>
@@ -3050,13 +3349,6 @@ function SheetPageOne({
                 )}
               </div>
 
-              {/* SKU / Part number directly below the product image */}
-              {isSpecified(draft.skuNumber) && (
-                <div className="mt-1 w-[375px] text-[10px] font-semibold leading-[1.2] text-slate-800" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
-                  SKU / Part No.: <span className="font-bold">{draft.skuNumber}</span>
-                </div>
-              )}
-
               {/* Product certification badges: left-aligned in the left column (up to the overview).
                   Boxes are sized so ~8 fit the column, and each icon is scaled up to look larger
                   and overlap its PNG padding, tightening the visible spacing. */}
@@ -3065,6 +3357,22 @@ function SheetPageOne({
                   {visibleQualificationIds.map((badgeId) => (
                     <QualificationBadge key={badgeId} id={badgeId} className="h-[50px] w-auto max-w-[50px] shrink-0 scale-[1.15] object-contain" />
                   ))}
+                </div>
+              )}
+
+              {/* DLC qualification disclaimer: shown only when a DLC badge is selected. */}
+              {showDlcNote && (
+                <div className="mt-1 w-[413px] text-[8px] font-normal italic leading-[1.25] text-slate-600" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                  Not all product variations listed on the page are DLC qualified. Visit{" "}
+                  <a
+                    href="https://www.designlights.org/qpl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 underline"
+                  >
+                    https://www.designlights.org/qpl
+                  </a>{" "}
+                  to confirm qualifications.
                 </div>
               )}
             </div>
@@ -3180,6 +3488,7 @@ function SheetPageOne({
 function specGroupHasContent(group: SpecGroup) {
   return (
     isSpecified(group.partNumber) ||
+    isSpecified(group.sku) ||
     group.options.some((option) => isSpecified(option.power) || isSpecified(option.lumen)) ||
     [group.voltage, group.efficacy, group.cri, group.current, group.cct, group.thd, group.lightDistribution].some(
       isSpecified,
@@ -3315,12 +3624,6 @@ function SheetPageBand({ draft }: { draft: EditorDraft }) {
     >
       <div className="flex min-w-0 items-center gap-x-1.5 overflow-hidden whitespace-nowrap text-[9.5px]">
         <span className="shrink-0 font-bold uppercase text-slate-900">{draft.title}</span>
-        {isSpecified(draft.subtitle) && (
-          <>
-            <span className="shrink-0 text-slate-300">|</span>
-            <span className="shrink-0 font-normal uppercase text-slate-800">{draft.subtitle}</span>
-          </>
-        )}
         {isSpecified(draft.categoryLabel) && (
           <>
             <span className="shrink-0 text-slate-300">|</span>
@@ -3464,8 +3767,13 @@ function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
           return options.map((option, index) => (
             <tr key={`${group.id}-${index}`} className="align-middle">
               {index === 0 && (
-                <td rowSpan={span} className="whitespace-nowrap border border-l-0 border-slate-200 px-1 py-1.5 text-center text-[7px] font-bold leading-[1.2] text-slate-900">
-                  {group.partNumber}
+                <td rowSpan={span} className="border border-l-0 border-slate-200 px-1 py-1.5 text-center text-[7px] font-bold leading-[1.2] text-slate-900">
+                  <div className="whitespace-nowrap">{group.partNumber}</div>
+                  {isSpecified(group.sku) && (
+                    <div className="mt-0.5 whitespace-nowrap font-normal text-slate-500">
+                      SKU: {group.sku}
+                    </div>
+                  )}
                 </td>
               )}
               <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
@@ -3997,7 +4305,7 @@ function SecondPageImagePicker({
 }
 
 const DEFAULT_DESCRIPTION_PROMPT =
-  "Rewrite the product description in a professional, spec-grounded tone (~400 characters), highlighting the wattage/lumen/CCT options and ideal applications.";
+  "One concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value.";
 const DEFAULT_FEATURES_PROMPT =
   "Write 4 benefit-oriented feature bullets (~100 characters each) grounded in the product's real specs.";
 
@@ -4065,6 +4373,9 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   // Tracks which extraction's saved draft has finished loading, so autosave
   // never overwrites persisted edits with the freshly-built baseline.
   const hydratedSpecIdRef = useRef<string | null>(null);
+  // Signature of the last fixture profile we auto-applied, so re-detecting the same fixture
+  // (or a user clearing the field) never re-fills it — it applies once per detected type.
+  const lastAutoPredictRef = useRef<string | null>(null);
   const [previewScale, setPreviewScale] = useState(1);
   const [descriptionPrompt, setDescriptionPrompt] = useState(DEFAULT_DESCRIPTION_PROMPT);
   const [featuresPrompt, setFeaturesPrompt] = useState(DEFAULT_FEATURES_PROMPT);
@@ -4085,6 +4396,8 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
 
     // Hydrate any saved edits for this extraction from IndexedDB.
     hydratedSpecIdRef.current = null;
+    // A fresh extraction may auto-fill its category / sub-category from the fixture profile.
+    lastAutoPredictRef.current = null;
     let cancelled = false;
     loadDraft<EditorDraft>(draftKey(spec.id)).then(async (localSaved) => {
       if (cancelled) return;
@@ -4104,6 +4417,12 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
       if (saved) {
         // Merge over the fresh baseline so fields added in newer versions keep defaults.
         setDraft({ ...fresh, ...saved });
+        // The saved draft already holds the user's category / sub-category — mark its fixture
+        // profile as applied so auto-prediction never overwrites those hand-kept values.
+        const savedProfile = predictFixtureProfile(
+          saved.title, saved.subtitle, saved.categoryLabel, saved.subCategory,
+        );
+        if (savedProfile) lastAutoPredictRef.current = `${spec.id}::${savedProfile.id}`;
       }
       hydratedSpecIdRef.current = String(spec.id);
 
@@ -4156,6 +4475,33 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     }, 800);
     return () => window.clearTimeout(handle);
   }, [draft, spec.id]);
+
+  // Smart prediction: once a fixture type is recognised from the product name / category /
+  // sub-category, auto-fill the application areas that fixture is used for, and fill an empty
+  // category / sub-category with the recommended canonical name. Only touches empty fields, and
+  // only fires once per detected type, so it never overwrites hand-entered values.
+  useEffect(() => {
+    if (hydratedSpecIdRef.current !== String(spec.id)) return;
+    const profile = predictFixtureProfile(draft.title, draft.subtitle, draft.categoryLabel, draft.subCategory);
+    if (!profile) return;
+
+    const signature = `${spec.id}::${profile.id}`;
+    if (lastAutoPredictRef.current === signature) return;
+    lastAutoPredictRef.current = signature;
+
+    setDraft((current) => {
+      const patch: Partial<EditorDraft> = {};
+      // Category + sub-category are the two clean header lines — set them to the fixture's
+      // canonical names so the formatting is consistent (extraction often leaves them messy/blank).
+      if (current.categoryLabel !== profile.category) patch.categoryLabel = profile.category;
+      if (current.subCategory !== profile.subCategory) patch.subCategory = profile.subCategory;
+      // Application areas: only when the vendor extraction left them empty (keep real extracted ones).
+      if (!isSpecified(current.applicationAreasText)) {
+        patch.applicationAreasText = profile.applications.join(", ");
+      }
+      return Object.keys(patch).length ? { ...current, ...patch } : current;
+    });
+  }, [spec.id, draft.title, draft.subtitle, draft.categoryLabel, draft.subCategory]);
 
   useEffect(() => {
     const viewport = previewViewportRef.current;
@@ -4409,6 +4755,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
         {
           id: `spec-${Date.now()}-${current.specGroups.length}`,
           partNumber: "",
+          sku: "",
           options: [{ power: "", lumen: "" }],
           voltage: "",
           efficacy: "",
@@ -4818,27 +5165,17 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
             <Input
               value={draft.title}
               onChange={(event) => updateDraft("title", event.target.value)}
-              placeholder="Sheet title"
-            />
-            <Input
-              value={draft.subtitle}
-              onChange={(event) => updateDraft("subtitle", event.target.value)}
-              placeholder="Subtitle"
+              placeholder="Product name"
             />
             <Input
               value={draft.categoryLabel}
               onChange={(event) => updateDraft("categoryLabel", event.target.value)}
-              placeholder="Category (e.g. Indoor / Outdoor / HazLoc Lighting)"
+              placeholder="Category (auto — e.g. Indoor / Outdoor / HazLoc Lighting)"
             />
             <Input
               value={draft.subCategory}
               onChange={(event) => updateDraft("subCategory", event.target.value)}
-              placeholder="Sub-category (e.g. Panel, Linear High Bay)"
-            />
-            <Input
-              value={draft.skuNumber}
-              onChange={(event) => updateDraft("skuNumber", event.target.value)}
-              placeholder="SKU / Part number (shown under the image)"
+              placeholder="Sub-category (auto — e.g. Panel, Linear High Bay)"
             />
           </section>
 
@@ -5127,6 +5464,11 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
+                  <Input
+                    value={group.sku ?? ""}
+                    onChange={(event) => updateSpecGroup(groupIndex, { sku: event.target.value })}
+                    placeholder="SKU No. (shown under the part number)"
+                  />
 
                   <div className="space-y-1.5">
                     <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
