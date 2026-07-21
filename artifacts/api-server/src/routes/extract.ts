@@ -2,6 +2,8 @@ import { Router, type IRouter } from "express";
 import multer from "multer";
 import FormData from "form-data";
 import fetch from "node-fetch";
+import fs from "node:fs";
+import path from "node:path";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -68,6 +70,75 @@ type StoredExtraction = {
 
 const extractionStore = new Map<number, StoredExtraction>();
 let nextExtractionId = 1;
+
+// Persist extractions to disk so a server restart never loses them (they used to live
+// only in memory). Buffers are stored base64 in the JSON snapshot.
+const STORE_FILE = (process.env.EXTRACTION_STORE_FILE ?? path.join(process.cwd(), "data", "extractions-store.json")).trim();
+
+function persistStore() {
+  try {
+    fs.mkdirSync(path.dirname(STORE_FILE), { recursive: true });
+    const records = Array.from(extractionStore.values()).map((record) => ({
+      ...record,
+      pdfBuffer: record.pdfBuffer ? record.pdfBuffer.toString("base64") : "",
+    }));
+    fs.writeFileSync(STORE_FILE, JSON.stringify({ nextExtractionId, records }));
+  } catch {
+    // best-effort — never let a persistence error break extraction
+  }
+}
+
+function loadStore() {
+  try {
+    if (!fs.existsSync(STORE_FILE)) return;
+    const parsed = JSON.parse(fs.readFileSync(STORE_FILE, "utf-8")) as {
+      nextExtractionId?: number;
+      records?: Array<Record<string, unknown>>;
+    };
+    for (const raw of parsed.records ?? []) {
+      const record = {
+        ...(raw as unknown as StoredExtraction),
+        pdfBuffer: Buffer.from(String((raw as { pdfBuffer?: unknown }).pdfBuffer ?? ""), "base64"),
+      } as StoredExtraction;
+      if (typeof record.id === "number") extractionStore.set(record.id, record);
+    }
+    if (typeof parsed.nextExtractionId === "number") {
+      nextExtractionId = Math.max(parsed.nextExtractionId, ...Array.from(extractionStore.keys()).map((k) => k + 1), 1);
+    }
+  } catch {
+    // ignore a corrupt snapshot
+  }
+}
+
+loadStore();
+
+// Per-extraction editor drafts (hand-tweaks), persisted so a review can resume any day.
+const draftStore = new Map<number, unknown>();
+const DRAFT_STORE_FILE = path.join(path.dirname(STORE_FILE), "drafts-store.json");
+
+function persistDrafts() {
+  try {
+    fs.mkdirSync(path.dirname(DRAFT_STORE_FILE), { recursive: true });
+    fs.writeFileSync(DRAFT_STORE_FILE, JSON.stringify(Object.fromEntries(draftStore)));
+  } catch {
+    // best-effort
+  }
+}
+
+function loadDrafts() {
+  try {
+    if (!fs.existsSync(DRAFT_STORE_FILE)) return;
+    const parsed = JSON.parse(fs.readFileSync(DRAFT_STORE_FILE, "utf-8")) as Record<string, unknown>;
+    for (const [rawId, value] of Object.entries(parsed)) {
+      const id = Number(rawId);
+      if (!Number.isNaN(id)) draftStore.set(id, value);
+    }
+  } catch {
+    // ignore a corrupt snapshot
+  }
+}
+
+loadDrafts();
 
 function normalizeStringArray(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
@@ -189,11 +260,63 @@ router.post("/extract", upload.single("file"), async (req, res) => {
     };
 
     extractionStore.set(id, stored);
+    persistStore();
     res.json(serializeExtraction(stored));
   } catch (err) {
     req.log.error({ err }, "Error processing PDF");
     res.status(500).json({ error: "Extraction failed", detail: String(err) });
   }
+});
+
+router.post("/ai-content", async (req, res) => {
+  try {
+    const flaskRes = await fetch(`${FLASK_URL}/ai-content`, {
+      method: "POST",
+      body: JSON.stringify(req.body ?? {}),
+      headers: { "Content-Type": "application/json" },
+    });
+    const body = await flaskRes.text();
+    res.status(flaskRes.status).type("application/json").send(body);
+  } catch (err) {
+    req.log.error({ err }, "AI content request failed");
+    res.status(500).json({ error: "AI request failed", detail: String(err) });
+  }
+});
+
+router.post("/product-names/reserve", async (req, res) => {
+  try {
+    const flaskRes = await fetch(`${FLASK_URL}/product-names/reserve`, {
+      method: "POST",
+      body: JSON.stringify(req.body ?? {}),
+      headers: { "Content-Type": "application/json" },
+    });
+    const body = await flaskRes.text();
+    res.status(flaskRes.status).type("application/json").send(body);
+  } catch (err) {
+    req.log.error({ err }, "Product-name reserve failed");
+    res.status(500).json({ error: "Name reserve failed", detail: String(err) });
+  }
+});
+
+router.get("/extract/:id/draft", (req, res) => {
+  const id = Number(req.params.id);
+  res.json({ draft: draftStore.get(id) ?? null });
+});
+
+router.put("/extract/:id/draft", (req, res) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) {
+    res.status(400).json({ error: "Invalid ID" });
+    return;
+  }
+  const draft = (req.body as { draft?: unknown } | undefined)?.draft;
+  if (draft === undefined) {
+    res.status(400).json({ error: "Missing draft" });
+    return;
+  }
+  draftStore.set(id, draft);
+  persistDrafts();
+  res.json({ ok: true });
 });
 
 router.get("/extract/:id/source-pdf", async (req, res) => {
@@ -255,6 +378,9 @@ router.delete("/extract/:id", async (req, res) => {
     return;
   }
 
+  draftStore.delete(id);
+  persistDrafts();
+  persistStore();
   res.json({ message: "Deleted successfully" });
 });
 

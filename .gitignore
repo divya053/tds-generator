@@ -50,6 +50,8 @@ Thumbs.db
 
 # Runtime data, databases, and sessions (never commit)
 /data
+data/
+**/data/
 *.sqlite
 *.db
 *.cookie

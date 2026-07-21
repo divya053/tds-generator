@@ -5,11 +5,14 @@ import {
   FileImage,
   FileText,
   GripVertical,
+  Loader2,
+  Pencil,
   Plus,
   RotateCcw,
   Sparkles,
   Trash2,
   Upload,
+  Wand2,
 } from "lucide-react";
 import type {
   ExtractedSpec,
@@ -119,8 +122,12 @@ type SourcePage = {
   dataUrl: string;
 };
 
+type ExtractedCodeEntry = { code?: string; description?: string };
+type ExtractedDimension = { label?: string; width?: string; height?: string; depth?: string };
+
 type ExtendedExtractedSpec = ExtractedSpec & {
   productCategory?: string;
+  subCategory?: string;
   isProductFamily?: boolean;
   categorySpecificSpecs?: TechnicalSpec[];
   variantOverview?: {
@@ -129,6 +136,11 @@ type ExtendedExtractedSpec = ExtractedSpec & {
   };
   variants?: Record<string, unknown>[];
   sourcePages?: SourcePage[];
+  sourceText?: string;
+  orderingInfo?: Record<string, ExtractedCodeEntry[]>;
+  orderingExample?: string;
+  accessories?: ExtractedCodeEntry[];
+  dimensions?: ExtractedDimension[];
 };
 
 type QualificationBadgeId =
@@ -149,9 +161,12 @@ type EditorDraft = {
   headerCatNumber: string;
   headerFixtureSchedule: string;
   headerNote: string;
+  footerNote: string;
   title: string;
   subtitle: string;
   categoryLabel: string;
+  subCategory: string;
+  skuNumber: string;
   overviewRows: OverviewRow[];
   description: string;
   featuresText: string;
@@ -171,6 +186,9 @@ type EditorDraft = {
   // Page 3 — Product Ordering Information + Accessories
   orderingExample: string;
   orderingColumns: OrderingColumn[];
+  // Chosen code per ordering column (columnId -> code). Single-option columns are
+  // auto-resolved; multi-option columns use the user's selection.
+  orderingSelection: Record<string, string>;
   orderingNote: string;
   accessoryRows: AccessoryRow[];
   // Page 4 — Dimensions
@@ -200,15 +218,17 @@ type ImageEraseLayer = {
   width: number;
   height: number;
   color: string;
+  shape?: "rect" | "circle";
 };
 
-type ImageEditorMode = "text" | "erase";
+type ImageEditorMode = "text" | "erase" | "pen";
 
 type ImageEditorState = {
   backgroundColor: string;
   brightness: number;
   contrast: number;
   saturation: number;
+  removeBackground: boolean;
   textLayers: ImageTextLayer[];
   eraseLayers: ImageEraseLayer[];
 };
@@ -478,6 +498,31 @@ function convertDimensionUnits(value: string) {
   return value.replace(/(\d+(?:\.\d+)?)\s*mm\b/gi, (_match, num: string) => mmToFeetInches(Number(num)));
 }
 
+/** True for overview labels that represent color temperature / CCT. */
+function isCctLabel(label: string) {
+  return /color\s*temp|\bcct\b/i.test(label ?? "");
+}
+
+/** Keep only the Kelvin tokens in a CCT value, dropping any power/lumen pollution.
+ *  "40W/60W: 3000K-4000K-5000K | 300W: 4000K-5000K" -> "3000K/4000K/5000K". */
+function extractCctValue(value: string) {
+  const tokens = String(value ?? "").match(/\d[\d.]*\s*K\b/gi);
+  if (!tokens || tokens.length === 0) return value;
+  const seen: string[] = [];
+  for (const token of tokens) {
+    const normalized = token.replace(/\s+/g, "").toUpperCase();
+    if (!seen.includes(normalized)) seen.push(normalized);
+  }
+  return seen.join("/");
+}
+
+/** Normalize an overview row value for display (dimensions -> US units, CCT -> Kelvin only). */
+function normalizeOverviewRowValue(label: string, value: string) {
+  if (isDimensionLabel(label)) return convertDimensionUnits(value);
+  if (isCctLabel(label)) return extractCctValue(value);
+  return value;
+}
+
 function buildWarrantyStatement(years: number) {
   return `This product is backed by a limited ${years}-year manufacturer's warranty covering defects in materials and workmanship under normal use and service from the date of purchase. Warranty coverage is subject to published terms, conditions, exclusions, and proper installation, operation, and maintenance.`;
 }
@@ -555,9 +600,81 @@ function createImageEditorState(): ImageEditorState {
     brightness: 100,
     contrast: 100,
     saturation: 100,
+    removeBackground: false,
     textLayers: [],
     eraseLayers: [],
   };
+}
+
+/**
+ * Whiten the background of an image on a canvas by flood-filling inward from the edges: only
+ * background pixels connected to the border (and close to the sampled corner colour) become white,
+ * so the product itself is preserved. Used by the editor's manual "Remove Background" toggle.
+ */
+function whitenConnectedBackground(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D) {
+  const { width, height } = canvas;
+  if (width < 2 || height < 2) return;
+
+  let imageData: ImageData;
+  try {
+    imageData = context.getImageData(0, 0, width, height);
+  } catch {
+    return;
+  }
+  const data = imageData.data;
+
+  const cornerPixels = [0, width - 1, (height - 1) * width, height * width - 1];
+  let br = 0;
+  let bg = 0;
+  let bb = 0;
+  for (const p of cornerPixels) {
+    const i = p * 4;
+    br += data[i];
+    bg += data[i + 1];
+    bb += data[i + 2];
+  }
+  br /= 4;
+  bg /= 4;
+  bb /= 4;
+
+  const tolSq = 46 * 46;
+  const isBackground = (i: number) => {
+    const dr = data[i] - br;
+    const dg = data[i + 1] - bg;
+    const db = data[i + 2] - bb;
+    return dr * dr + dg * dg + db * db < tolSq;
+  };
+
+  const visited = new Uint8Array(width * height);
+  const stack: number[] = [];
+  for (let x = 0; x < width; x++) {
+    stack.push(x, (height - 1) * width + x);
+  }
+  for (let y = 0; y < height; y++) {
+    stack.push(y * width, y * width + (width - 1));
+  }
+
+  while (stack.length) {
+    const p = stack.pop() as number;
+    if (visited[p]) continue;
+    visited[p] = 1;
+    const i = p * 4;
+    if (!isBackground(i)) continue;
+
+    data[i] = 255;
+    data[i + 1] = 255;
+    data[i + 2] = 255;
+    data[i + 3] = 255;
+
+    const x = p % width;
+    const y = (p - x) / width;
+    if (x > 0 && !visited[p - 1]) stack.push(p - 1);
+    if (x < width - 1 && !visited[p + 1]) stack.push(p + 1);
+    if (y > 0 && !visited[p - width]) stack.push(p - width);
+    if (y < height - 1 && !visited[p + width]) stack.push(p + width);
+  }
+
+  context.putImageData(imageData, 0, 0);
 }
 
 function resolveSourceImage(image: SourceImage, editedImageDataUrls: Record<string, string>): SourceImage {
@@ -1274,7 +1391,7 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
         rows.findIndex((candidate) => normalizeSpecKey(candidate.label) === normalizeSpecKey(row.label)) === index,
     )
     .map((row) =>
-      isDimensionLabel(row.label) ? { ...row, value: convertDimensionUnits(row.value) } : row,
+      ({ ...row, value: normalizeOverviewRowValue(row.label, row.value) }),
     );
 }
 
@@ -1430,6 +1547,18 @@ function writeProductNameRegistry(registry: ProductNameRegistry) {
   window.localStorage.setItem(PRODUCT_NAME_REGISTRY_KEY, JSON.stringify(registry));
 }
 
+/** The ordered pool of candidate names (one per codename) sent to the backend registry,
+ *  which reserves the first ones not already used by another product. */
+function buildProductNameCandidates(spec: ExtendedExtractedSpec): string[] {
+  const typeCore = deriveTypeCore(spec);
+  const registryKey = buildProductNameRegistryKey(spec);
+  const baseIndex = hashString(registryKey) % CONSTELLATION_CODENAMES.length;
+  return Array.from({ length: CONSTELLATION_CODENAMES.length }, (_, offset) => {
+    const codename = CONSTELLATION_CODENAMES[(baseIndex + offset) % CONSTELLATION_CODENAMES.length];
+    return toTitleCase(normalizeText(`${codename} ${typeCore}`)).replace(/\s+/g, " ").trim();
+  }).filter(Boolean);
+}
+
 function buildProductNameRecommendations(spec: ExtendedExtractedSpec) {
   const typeCore = deriveTypeCore(spec);
   const descriptor = deriveNameDescriptor(spec);
@@ -1445,25 +1574,20 @@ function buildProductNameRecommendations(spec: ExtendedExtractedSpec) {
 
   const usedNames = new Set(registry.used.map((item) => item.toLowerCase()));
   existing.forEach((name) => usedNames.add(name.toLowerCase()));
+  // One name per codename, iterating the list, so the three suggestions each use a
+  // DIFFERENT unique codename (e.g. "Argo …", "Lyra …", "Vega …") instead of three
+  // variations of the same word.
   const baseIndex = hashString(registryKey) % CONSTELLATION_CODENAMES.length;
-  const recommendations = [
-    ...Array.from({ length: CONSTELLATION_CODENAMES.length }, (_, offset) => {
-      const codename = CONSTELLATION_CODENAMES[(baseIndex + offset) % CONSTELLATION_CODENAMES.length];
-      return [
-        `${codename} ${featureToken} ${typeCore}`,
-        wattage ? `${codename} ${wattage} ${featureToken}` : `${codename} ${descriptor}`,
-        `${codename} ${descriptor} ${typeCore}`,
-        wattage ? `${featureToken} ${wattage} ${typeCore}` : `${featureToken} ${typeCore}`,
-        `${descriptor} ${featureToken} ${typeCore}`,
-      ];
-    }).flat(),
-    `${featureToken} ${typeCore}`,
-    wattage ? `${wattage} ${featureToken} ${typeCore}` : `${typeCore} Prime`,
-    `${descriptor} ${typeCore}`,
-  ]
+  const recommendations = Array.from({ length: CONSTELLATION_CODENAMES.length }, (_, offset) => {
+    const codename = CONSTELLATION_CODENAMES[(baseIndex + offset) % CONSTELLATION_CODENAMES.length];
+    return `${codename} ${typeCore}`;
+  })
     .map((value) => toTitleCase(normalizeText(value)))
     .map((value) => value.replace(/\s+/g, " ").trim())
     .filter(Boolean);
+  void descriptor;
+  void wattage;
+  void featureToken;
 
   const uniqueRecommendations: string[] = [];
   const localSeen = new Set<string>();
@@ -1575,8 +1699,10 @@ function summarizeOptionText(value: string, fallbackLabel: string) {
 
 function buildNormalizedDescription(spec: ExtendedExtractedSpec) {
   const original = normalizeText(spec.productDescription);
-  if (countWords(original) >= 70) {
-    return trimWords(original, 80);
+  // Prefer the vendor's own extracted description whenever it exists (any length);
+  // only synthesise one when the source truly has none.
+  if (isSpecified(original)) {
+    return trimWords(original, 95);
   }
 
   const productType = getCategoryLabel(spec) || "lighting fixture";
@@ -1627,54 +1753,20 @@ function buildNormalizedDescription(spec: ExtendedExtractedSpec) {
   return trimWords(description, 80);
 }
 
+// Return the vendor's own extracted features (cleaned + de-duplicated). No fabricated fallback —
+// if the source PDF lists no features, the section simply stays empty for the user to fill.
 function buildNormalizedFeatures(spec: ExtendedExtractedSpec) {
-  const existing = spec.productFeatures
-    .map((feature) => normalizeText(feature).replace(/^[-*•]\s*/, "").replace(/\.$/, ""))
-    .filter(isSpecified);
-
-  const deduped: string[] = [];
   const seen = new Set<string>();
-
-  for (const feature of existing) {
+  const deduped: string[] = [];
+  for (const raw of spec.productFeatures) {
+    const feature = normalizeText(raw).replace(/^[-*•]\s*/, "").replace(/\.$/, "");
+    if (!isSpecified(feature)) continue;
     const key = feature.toLowerCase();
-    if (!seen.has(key)) {
-      seen.add(key);
-      deduped.push(feature);
-    }
-    if (deduped.length >= 5) {
-      return deduped.slice(0, 5);
-    }
-  }
-
-  const derived = [
-    `Support ${summarizeOptionText(getSpecValueFromSpec(spec, ["Power", "Wattage"]), "power options") || "project-ready power options"}`,
-    `Provide ${summarizeOptionText(getSpecValueFromSpec(spec, ["Lumens", "Lumen Output"]), "lumen packages") || "dependable luminous output"}`,
-    `Offer ${summarizeOptionText(getSpecValueFromSpec(spec, ["Color Temperature (Selectable)", "CCT"]), "CCT options") || "application-appropriate CCT choices"}`,
-    `Operate on ${normalizeText(getSpecValueFromSpec(spec, ["Voltage", "Input Voltage"])) || "standard project voltage"} input`,
-    `Serve ${joinNatural(spec.applicationAreas.map((area) => normalizeText(area)).filter(isSpecified).slice(0, 3)) || "commercial, institutional, and industrial environments"}`,
-    !isSpecified(normalizeWarrantyLabel(getSpecValueFromSpec(spec, ["Warranty (Years)", "Warranty"])))
-      ? "Back the fixture with manufacturer-backed warranty coverage"
-      : `Back the fixture with a ${normalizeWarrantyLabel(getSpecValueFromSpec(spec, ["Warranty (Years)", "Warranty"]))} limited warranty`,
-  ];
-
-  for (const feature of derived) {
-    const cleaned = normalizeText(feature).replace(/\.$/, "");
-    const key = cleaned.toLowerCase();
-    if (!cleaned || seen.has(key)) {
-      continue;
-    }
+    if (seen.has(key)) continue;
     seen.add(key);
-    deduped.push(cleaned);
-    if (deduped.length >= 5) {
-      break;
-    }
+    deduped.push(feature);
   }
-
-  while (deduped.length < 5) {
-    deduped.push("Deliver dependable lighting performance for specification-driven applications");
-  }
-
-  return deduped.slice(0, 5);
+  return deduped;
 }
 
 function buildCompactFeatures(spec: ExtendedExtractedSpec) {
@@ -1702,6 +1794,133 @@ function buildCompactFeatures(spec: ExtendedExtractedSpec) {
   ].map((feature) => trimWords(feature.replace(/\s+/g, " ").trim(), 10));
 }
 
+// Build the page-2 "Product Specifications" table straight from the extracted variant matrix
+// (fixture types + selectable power/lumen packages) and the shared technical specs.
+/** Remove a leaked vendor part-number / model-code prefix per line, so an electrical value never
+ *  shows a SKU fragment. "PT02-60W" -> "60W", "02-120W" -> "120W"; "20-60W" (a real range) is kept. */
+function stripCatalogCode(value: string): string {
+  return String(value ?? "")
+    .split("\n")
+    .map((line) => line.replace(/^\s*(?:[A-Za-z][A-Za-z0-9]*|0\d+)\s*[-–]\s*/, "").trim())
+    .join("\n");
+}
+
+function buildSpecGroups(spec: ExtendedExtractedSpec): SpecGroup[] {
+  const variants = buildPreviewVariantRows(spec);
+  if (variants.length === 0) return [];
+
+  const shared = (keys: string[]) => {
+    const value = getSpecValueFromSpec(spec, keys);
+    return isSpecified(value) ? normalizeText(value) : "";
+  };
+  const voltage = shared(["Voltage", "Input Voltage"]);
+  const cri = shared(["Color Rendering (CRI)", "CRI"]);
+  const current = shared(["Current"]);
+  const thd = shared(["THD"]);
+  const lightDistribution = shared(["Light Distribution"]);
+
+  // Split selectable power/lumen packages on "/", "|", dashes or newlines — but NOT commas
+  // (commas are thousands separators, e.g. "13,000lm" must stay intact). A hyphen only splits
+  // when it sits between a unit letter and the next number, e.g. "70W-100W" or "13000lm-16000lm".
+  const splitOptions = (value: string) =>
+    value
+      .replace(/([A-Za-z])\s*-\s*(?=\d)/g, "$1|")
+      .split(/\s*[/|–—]\s*|\n/)
+      .map((item) => normalizeText(item))
+      .filter(Boolean);
+
+  return variants
+    .map((variant, index) => {
+      // Strip any leaked part-number code (e.g. "PT02-60W" -> "60W") before splitting power.
+      const powers = splitOptions(stripCatalogCode(variant.power));
+      const lumens = splitOptions(variant.lumens);
+      const count = Math.max(powers.length, lumens.length, 1);
+      const options: SpecOption[] = Array.from({ length: count }, (_, k) => ({
+        power: powers[k] ?? (powers.length === 1 ? powers[0] : ""),
+        lumen: lumens[k] ?? (lumens.length === 1 ? lumens[0] : ""),
+      }));
+      return {
+        id: `spec-extracted-${index}`,
+        partNumber: variant.fixtureDetail || variant.fixture || `Variant ${index + 1}`,
+        options,
+        voltage,
+        efficacy: variant.efficacy,
+        cri,
+        current,
+        cct: variant.cct,
+        thd,
+        lightDistribution,
+      } satisfies SpecGroup;
+    })
+    .filter(specGroupHasContent);
+}
+
+// Sample accessory rows used to demo the Accessories Ordering table layout.
+function buildSampleAccessoryRows(): AccessoryRow[] {
+  return [
+    { id: "acc-sample-1", code: "IK-ACC-ARC", description: "Suspension Cable Kit", imageId: null, downloadUrl: "" },
+    { id: "acc-sample-2", code: "IK-OCCS", description: "Microwave Smart Controller (Black Sensor)", imageId: null, downloadUrl: "" },
+    { id: "acc-sample-3", code: "IK-HD05R-Digital", description: "Microwave Motion Sensor Remote", imageId: null, downloadUrl: "" },
+    { id: "acc-sample-4", code: "IK-EMH-18170-HY", description: "Emergency Pack for LED Fixture 18W / 90 Min / Split Type / L (On Field)", imageId: null, downloadUrl: "" },
+    { id: "acc-sample-5", code: "IK-10W-ED", description: "Emergency Pack for LED Fixture 10W / 90 Min / Split Type / L (Factory Installed)", imageId: null, downloadUrl: "" },
+    { id: "acc-sample-6", code: "IK-ACC-HD07VR", description: "3-Pin Microwave Motion Sensor", imageId: null, downloadUrl: "" },
+  ];
+}
+
+// Map the extracted decoder (keyed by column header) onto the fixed ordering columns.
+function buildOrderingColumns(spec: ExtendedExtractedSpec): OrderingColumn[] {
+  const info = spec.orderingInfo ?? {};
+  return createDefaultOrderingColumns().map((column) => {
+    const entries = info[column.header];
+    if (!Array.isArray(entries)) return column;
+    const mapped = entries
+      .map((entry) => ({
+        code: (entry?.code ?? "").trim(),
+        description: (entry?.description ?? "").trim(),
+      }))
+      .filter((entry) => entry.code || entry.description);
+    return mapped.length > 0 ? { ...column, entries: mapped } : column;
+  });
+}
+
+function buildAccessoryRowsFromSpec(spec: ExtendedExtractedSpec): AccessoryRow[] {
+  const list = Array.isArray(spec.accessories) ? spec.accessories : [];
+  return list
+    .map((entry) => ({
+      code: (entry?.code ?? "").trim(),
+      description: (entry?.description ?? "").trim(),
+    }))
+    .filter((entry) => entry.code || entry.description)
+    .map((entry, index) => ({
+      id: `acc-init-${index}`,
+      code: entry.code,
+      description: entry.description,
+      imageId: null,
+      downloadUrl: "",
+    }));
+}
+
+function buildDimensionItemsFromSpec(spec: ExtendedExtractedSpec): DimensionItem[] {
+  const list = Array.isArray(spec.dimensions) ? spec.dimensions : [];
+  const clean = (value: string) => (isSpecified(value) ? value.trim() : "");
+  return list
+    .map((entry) => ({
+      label: clean(entry?.label ?? ""),
+      width: clean(entry?.width ?? ""),
+      height: clean(entry?.height ?? ""),
+      depth: clean(entry?.depth ?? ""),
+    }))
+    .filter((entry) => entry.label || entry.width || entry.height || entry.depth)
+    .map((entry, index) => ({
+      id: `dim-init-${index}`,
+      label: entry.label,
+      imageId: null,
+      width: entry.width,
+      height: entry.height,
+      depth: entry.depth,
+    }));
+}
+
 function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendations = buildProductNameRecommendations(spec)): EditorDraft {
   const productType = getCategoryLabel(spec);
   const warrantyLabel = normalizeWarrantyLabel(getSpecValueFromSpec(spec, ["Warranty (Years)", "Warranty"]));
@@ -1712,12 +1931,15 @@ function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendation
     headerCatNumber: "",
     headerFixtureSchedule: "",
     headerNote: "",
+    footerNote: "",
     title: recommendedNames[0] ?? deriveTypeCore(spec),
     subtitle: spec.alternateName || productType || "Technical Data Sheet",
     categoryLabel: isSpecified(productType) ? productType : "",
+    subCategory: isSpecified(spec.subCategory) ? String(spec.subCategory).trim() : "",
+    skuNumber: getSpecValueFromSpec(spec, ["Part Number", "SKU", "Catalog Number", "Cat Number", "Model"]) || "",
     overviewRows: buildOverviewRows(spec),
     description: buildNormalizedDescription(spec),
-    featuresText: buildCompactFeatures(spec).join("\n"),
+    featuresText: buildNormalizedFeatures(spec).join("\n"),
     applicationAreasText: spec.applicationAreas.join(", "),
     certificationsText: buildCertifications(spec),
     warrantyLabel,
@@ -1727,14 +1949,15 @@ function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendation
     editedImageDataUrls: {},
     imageOwners: {},
     selectedQualificationIds: inferQualificationBadgeIds(spec as ExtendedExtractedSpec),
-    specGroups: [],
+    specGroups: buildSpecGroups(spec),
     specsNote:
       "Custom manufacturing options in CCT, wattage, voltage, light distribution, finish, and more are available upon request, subject to MOQ and lead time considerations.",
-    orderingExample: "",
-    orderingColumns: createDefaultOrderingColumns(),
+    orderingExample: isSpecified(spec.orderingExample) ? String(spec.orderingExample).trim() : "",
+    orderingColumns: buildOrderingColumns(spec),
+    orderingSelection: {},
     orderingNote: "Please ensure power compatibility with this specific fixture size when selecting this option.",
-    accessoryRows: [],
-    dimensionItems: [],
+    accessoryRows: buildAccessoryRowsFromSpec(spec),
+    dimensionItems: buildDimensionItemsFromSpec(spec),
   };
 }
 
@@ -1751,7 +1974,8 @@ function ImageEditorDialog({
   onSave: (dataUrl: string) => void;
   onReset: () => void;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // State-based ref so the draw effect re-runs as soon as the canvas mounts (Dialog portal timing).
+  const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
   const [editor, setEditor] = useState<ImageEditorState>(createImageEditorState);
   const [mode, setMode] = useState<ImageEditorMode>("text");
   const [textValue, setTextValue] = useState("");
@@ -1760,6 +1984,9 @@ function ImageEditorDialog({
   const [eraseColor, setEraseColor] = useState("#ffffff");
   const [eraseWidth, setEraseWidth] = useState(180);
   const [eraseHeight, setEraseHeight] = useState(56);
+  const [penSize, setPenSize] = useState(16);
+  const isPaintingRef = useRef(false);
+  const lastPaintRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -1772,25 +1999,27 @@ function ImageEditorDialog({
     setEraseColor("#ffffff");
     setEraseWidth(180);
     setEraseHeight(56);
+    setPenSize(16);
+    isPaintingRef.current = false;
+    lastPaintRef.current = null;
   }, [image?.id, open]);
 
   useEffect(() => {
-    if (!open || !image) return undefined;
+    if (!open || !image || !canvasEl) return undefined;
 
-    const canvas = canvasRef.current;
-    if (!canvas) return undefined;
-
+    const canvas = canvasEl;
     const context = canvas.getContext("2d");
     if (!context) return undefined;
 
     let cancelled = false;
     const source = new window.Image();
+    source.crossOrigin = "anonymous";
 
-    source.onload = () => {
+    const draw = () => {
       if (cancelled) return;
 
-      canvas.width = source.naturalWidth || source.width;
-      canvas.height = source.naturalHeight || source.height;
+      canvas.width = source.naturalWidth || source.width || 600;
+      canvas.height = source.naturalHeight || source.height || 400;
 
       context.clearRect(0, 0, canvas.width, canvas.height);
       context.fillStyle = editor.backgroundColor;
@@ -1799,9 +2028,19 @@ function ImageEditorDialog({
       context.drawImage(source, 0, 0, canvas.width, canvas.height);
       context.filter = "none";
 
+      if (editor.removeBackground) {
+        whitenConnectedBackground(canvas, context);
+      }
+
       editor.eraseLayers.forEach((layer) => {
         context.fillStyle = layer.color;
-        context.fillRect(layer.x, layer.y, layer.width, layer.height);
+        if (layer.shape === "circle") {
+          context.beginPath();
+          context.arc(layer.x + layer.width / 2, layer.y + layer.height / 2, layer.width / 2, 0, Math.PI * 2);
+          context.fill();
+        } else {
+          context.fillRect(layer.x, layer.y, layer.width, layer.height);
+        }
       });
 
       editor.textLayers.forEach((layer) => {
@@ -1812,21 +2051,91 @@ function ImageEditorDialog({
       });
     };
 
+    source.onload = draw;
+    source.onerror = () => {
+      if (cancelled) return;
+      // Still show a usable (blank, editor-background) canvas if the image fails to load.
+      canvas.width = 600;
+      canvas.height = 400;
+      context.fillStyle = editor.backgroundColor;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+    };
     source.src = image.dataUrl;
+    // If the image is already cached/decoded, onload may not fire — draw immediately.
+    if (source.complete && source.naturalWidth > 0) {
+      draw();
+    }
 
     return () => {
       cancelled = true;
     };
-  }, [editor, image, open]);
+  }, [editor, image, open, canvasEl]);
 
   const updateEditor = <K extends keyof ImageEditorState>(key: K, value: ImageEditorState[K]) => {
     setEditor((current) => ({ ...current, [key]: value }));
   };
 
+  const getCanvasPoint = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasEl;
+    if (!canvas) return null;
+    const bounds = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / bounds.width;
+    const scaleY = canvas.height / bounds.height;
+    return {
+      canvas,
+      x: (event.clientX - bounds.left) * scaleX,
+      y: (event.clientY - bounds.top) * scaleY,
+    };
+  };
+
+  const paintPenDot = (x: number, y: number, canvas: HTMLCanvasElement) => {
+    setEditor((current) => ({
+      ...current,
+      eraseLayers: [
+        ...current.eraseLayers,
+        {
+          id: `pen-${Date.now()}-${current.eraseLayers.length}-${Math.round(x)}-${Math.round(y)}`,
+          x: clamp(x - penSize / 2, 0, Math.max(0, canvas.width - penSize)),
+          y: clamp(y - penSize / 2, 0, Math.max(0, canvas.height - penSize)),
+          width: penSize,
+          height: penSize,
+          color: eraseColor,
+          shape: "circle",
+        },
+      ],
+    }));
+  };
+
+  const handlePenDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (mode !== "pen") return;
+    const point = getCanvasPoint(event);
+    if (!point) return;
+    isPaintingRef.current = true;
+    lastPaintRef.current = { x: point.x, y: point.y };
+    paintPenDot(point.x, point.y, point.canvas);
+  };
+
+  const handlePenMove = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (mode !== "pen" || !isPaintingRef.current) return;
+    const point = getCanvasPoint(event);
+    if (!point) return;
+    const last = lastPaintRef.current;
+    const step = Math.max(4, penSize * 0.45);
+    if (last && Math.hypot(point.x - last.x, point.y - last.y) < step) return;
+    lastPaintRef.current = { x: point.x, y: point.y };
+    paintPenDot(point.x, point.y, point.canvas);
+  };
+
+  const handlePenUp = () => {
+    isPaintingRef.current = false;
+    lastPaintRef.current = null;
+  };
+
   const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (!image) return;
+    if (mode === "pen") return; // pen is handled by drag (mouse down/move)
 
-    const canvas = canvasRef.current;
+    const canvas = canvasEl;
     if (!canvas) return;
 
     const bounds = canvas.getBoundingClientRect();
@@ -1873,7 +2182,7 @@ function ImageEditorDialog({
   };
 
   const handleSave = () => {
-    const canvas = canvasRef.current;
+    const canvas = canvasEl;
     if (!canvas) return;
     onSave(canvas.toDataURL("image/png"));
   };
@@ -1904,6 +2213,20 @@ function ImageEditorDialog({
                     className="h-10 w-full cursor-pointer rounded-lg border border-border bg-background p-1"
                   />
                 </label>
+                <Button
+                  type="button"
+                  variant={editor.removeBackground ? "default" : "outline"}
+                  onClick={() => updateEditor("removeBackground", !editor.removeBackground)}
+                  className="w-full"
+                >
+                  {editor.removeBackground ? "Background Removed ✓" : "Remove Background"}
+                </Button>
+                {editor.removeBackground && (
+                  <p className="text-[11px] leading-snug text-muted-foreground">
+                    Whitens the background around the product. If it clips the product (light-on-light),
+                    toggle it off.
+                  </p>
+                )}
                 <label className="block space-y-1 text-sm">
                   <span>Brightness: {editor.brightness}%</span>
                   <input
@@ -1943,12 +2266,15 @@ function ImageEditorDialog({
                 <div className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
                   Tools
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <Button type="button" variant={mode === "text" ? "default" : "outline"} onClick={() => setMode("text")}>
+                <div className="grid grid-cols-3 gap-2">
+                  <Button type="button" variant={mode === "text" ? "default" : "outline"} className="px-2 text-[12px]" onClick={() => setMode("text")}>
                     Add Text
                   </Button>
-                  <Button type="button" variant={mode === "erase" ? "default" : "outline"} onClick={() => setMode("erase")}>
-                    Erase Area
+                  <Button type="button" variant={mode === "erase" ? "default" : "outline"} className="px-2 text-[12px]" onClick={() => setMode("erase")}>
+                    Erase Box
+                  </Button>
+                  <Button type="button" variant={mode === "pen" ? "default" : "outline"} className="px-2 text-[12px]" onClick={() => setMode("pen")}>
+                    Erase Pen
                   </Button>
                 </div>
                 {mode === "text" ? (
@@ -1982,7 +2308,7 @@ function ImageEditorDialog({
                       Click on the image to place this text.
                     </div>
                   </div>
-                ) : (
+                ) : mode === "erase" ? (
                   <div className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
                     <label className="block space-y-1 text-sm">
                       <span>Fill color</span>
@@ -2017,6 +2343,33 @@ function ImageEditorDialog({
                     </label>
                     <div className="text-xs text-muted-foreground">
                       Click on the image to cover old text or marks.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
+                    <label className="block space-y-1 text-sm">
+                      <span>Pen color</span>
+                      <input
+                        type="color"
+                        value={eraseColor}
+                        onChange={(event) => setEraseColor(event.target.value)}
+                        className="h-10 w-full cursor-pointer rounded-lg border border-border bg-background p-1"
+                      />
+                    </label>
+                    <label className="block space-y-1 text-sm">
+                      <span>Brush size: {penSize}px</span>
+                      <input
+                        type="range"
+                        min="4"
+                        max="60"
+                        value={penSize}
+                        onChange={(event) => setPenSize(Number(event.target.value))}
+                        className="w-full"
+                      />
+                    </label>
+                    <div className="text-xs text-muted-foreground">
+                      Press and drag across the image to erase along fine edges. Use a small brush
+                      for detail; toggle off Remove Background first if it clipped the product.
                     </div>
                   </div>
                 )}
@@ -2067,8 +2420,12 @@ function ImageEditorDialog({
               <div className="flex min-h-full items-start justify-center">
                 {image ? (
                   <canvas
-                    ref={canvasRef}
+                    ref={setCanvasEl}
                     onClick={handleCanvasClick}
+                    onMouseDown={handlePenDown}
+                    onMouseMove={handlePenMove}
+                    onMouseUp={handlePenUp}
+                    onMouseLeave={handlePenUp}
                     className="max-h-[72vh] max-w-full cursor-crosshair rounded-2xl border border-white/10 bg-white shadow-2xl"
                   />
                 ) : (
@@ -2172,6 +2529,15 @@ function SourcePageCropDialog({
 
     const context = canvas.getContext("2d");
     if (!context) return;
+
+    // Keep the crop at the source page's full native resolution with high-quality sampling.
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+
+    // Fill an opaque white background first so any transparent areas of the crop
+    // become clean white (product visuals sit on white, matching the sheet).
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
 
     context.drawImage(
       image,
@@ -2316,17 +2682,11 @@ function normalizePreviewDescription(value: string) {
 }
 
 function normalizePreviewFeatures(value: string) {
-  const cleaned = splitLineList(value)
-    .map((feature) => normalizeText(feature).replace(/^[*-]\s*/, "").replace(/\.$/, ""))
+  // Show only the real (extracted/edited) features, at close to full length. No fabricated filler.
+  return splitLineList(value)
+    .map((feature) => normalizeText(feature).replace(/^[*•-]\s*/, "").replace(/\.$/, ""))
     .filter(isSpecified)
-    .slice(0, 5)
-    .map((feature) => trimWords(feature, 10));
-
-  while (cleaned.length < 5) {
-    cleaned.push("Deliver reliable lighting performance for specification-ready applications");
-  }
-
-  return cleaned.slice(0, 5);
+    .map((feature) => trimWords(feature, 22));
 }
 
 function buildPreviewVariantRows(spec: ExtendedExtractedSpec) {
@@ -2386,9 +2746,31 @@ const OVERVIEW_LABEL_ACRONYMS = new Set([
   "UV",
 ]);
 
+/** One uniform value font-size for the whole Overview, chosen so the longest value line
+ *  (e.g. Lumen Output) fits on a single row. Every value uses the same size so the column
+ *  stays symmetric and aligned with the labels — only shrinking when a long list requires it. */
+function overviewValuesFontClass(rows: OverviewRow[]) {
+  const maxLineLength = rows.reduce((max, row) => {
+    const lineMax = String(row.value ?? "")
+      .split("\n")
+      .reduce((rowMax, line) => Math.max(rowMax, line.trim().length), 0);
+    return Math.max(max, lineMax);
+  }, 0);
+  if (maxLineLength <= 32) return "text-[10px] leading-[1.12]";
+  if (maxLineLength <= 44) return "text-[8.5px] leading-[1.18]";
+  if (maxLineLength <= 58) return "text-[8px] leading-[1.22]";
+  return "text-[7px] leading-[1.28]";
+}
+
 function formatOverviewLabel(value: string) {
+  const normalized = normalizeText(value);
+  // If the user wrote it in ALL CAPS, that's intentional — keep their casing as-is.
+  if (normalized && /[A-Za-z]/.test(normalized) && normalized === normalized.toUpperCase()) {
+    return normalized;
+  }
+
   const canonical = canonicalizeSpecLabel(value);
-  if (canonical && canonical !== normalizeText(value)) {
+  if (canonical && canonical !== normalized) {
     return canonical;
   }
 
@@ -2412,6 +2794,84 @@ function formatOverviewLabel(value: string) {
 function isSpecified(value: string | null | undefined) {
   const normalized = normalizeText(value ?? "");
   return normalized !== "" && normalized.toLowerCase() !== "not specified";
+}
+
+// ---- Source grounding: verify an extracted value against the vendor PDF text ----
+type GroundLevel = "high" | "low" | "none";
+
+function groundingSnippet(source: string, needle: string): string {
+  const idx = source.toLowerCase().indexOf(needle.toLowerCase());
+  if (idx < 0) return "";
+  const start = Math.max(0, idx - 24);
+  const end = Math.min(source.length, idx + needle.length + 24);
+  const text = source.slice(start, end).replace(/\s+/g, " ").trim();
+  return `${start > 0 ? "…" : ""}${text}${end < source.length ? "…" : ""}`;
+}
+
+/** How well an extracted value is supported by the vendor source text.
+ *  Splits selectable values (e.g. "3000K/4000K"), and for each part checks whether
+ *  its numbers (exact) or key words appear in the source. */
+function groundValue(value: string, sourceText: string): { level: GroundLevel; evidence: string } {
+  const v = normalizeText(value ?? "");
+  if (!isSpecified(v)) return { level: "none", evidence: "" };
+  if (!sourceText) return { level: "none", evidence: "" };
+
+  const srcLower = sourceText.toLowerCase();
+  const srcNumbers = new Set(sourceText.match(/\d+(?:\.\d+)?/g) ?? []);
+  const parts = v.split(/[/|,]/).map((part) => part.trim()).filter(Boolean);
+
+  let hits = 0;
+  let total = 0;
+  let evidence = "";
+  for (const part of parts) {
+    total += 1;
+    const digits = part.match(/\d+(?:\.\d+)?/g) ?? [];
+    let found = false;
+    if (digits.length > 0) {
+      for (const digit of digits) {
+        if (srcNumbers.has(digit)) {
+          found = true;
+          if (!evidence) evidence = groundingSnippet(sourceText, digit);
+          break;
+        }
+      }
+    } else {
+      const words = part.toLowerCase().match(/[a-z]{3,}/g) ?? [];
+      for (const word of words) {
+        if (srcLower.includes(word)) {
+          found = true;
+          if (!evidence) evidence = groundingSnippet(sourceText, word);
+          break;
+        }
+      }
+    }
+    if (found) hits += 1;
+  }
+
+  if (total === 0 || hits === 0) return { level: "none", evidence: "" };
+  if (hits === total) return { level: "high", evidence };
+  return { level: "low", evidence };
+}
+
+const CONFIDENCE_STYLE: Record<GroundLevel, { color: string; label: string }> = {
+  high: { color: "bg-emerald-500", label: "Found in vendor PDF" },
+  low: { color: "bg-amber-500", label: "Partly matched in vendor PDF" },
+  none: { color: "bg-rose-500", label: "Not found in vendor PDF — verify" },
+};
+
+/** Small dot flag showing whether a field's value is grounded in the source PDF. */
+function ConfidenceBadge({ value, sourceText }: { value: string; sourceText?: string }) {
+  if (!isSpecified(value)) return null;
+  const { level, evidence } = groundValue(value, sourceText ?? "");
+  const style = CONFIDENCE_STYLE[level];
+  const title = evidence ? `${style.label}\nsource: ${evidence}` : style.label;
+  return (
+    <span
+      title={title}
+      aria-label={style.label}
+      className={cn("inline-block h-2.5 w-2.5 shrink-0 rounded-full", style.color)}
+    />
+  );
 }
 
 function extractWarrantyNumber(value: string) {
@@ -2439,28 +2899,10 @@ function useMediaQuery(query: string) {
   return matches;
 }
 
-function SheetHeaderOverlayValue({
-  value,
-  className,
-}: {
-  value: string;
-  className: string;
-}) {
-  if (!isSpecified(value)) {
-    return null;
-  }
-
-  return (
-    <div className={cn("absolute text-[11px] font-medium leading-none text-slate-800", className)}>
-      {value}
-    </div>
-  );
-}
-
 function SheetSectionTitle({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mb-1 border-b border-slate-300 pb-0.5">
-      <h3 className="text-[13px] font-bold uppercase tracking-[0.12em] text-slate-900" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+    <div className="mb-1.5">
+      <h3 className="text-[13px] font-bold tracking-[0.01em] text-[#00a651]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
         {children}
       </h3>
     </div>
@@ -2532,11 +2974,14 @@ function SheetPageOne({
     .filter((row) => isSpecified(row.label) && isSpecified(row.value))
     .filter((row) => !isExcludedOverviewLabel(row.label))
     .map((row) =>
-      isDimensionLabel(row.label) ? { ...row, value: convertDimensionUnits(row.value) } : row,
+      ({ ...row, value: normalizeOverviewRowValue(row.label, row.value) }),
     );
+  // One shared value font-size so the whole Overview column stays symmetric.
+  const overviewValueSize = overviewValuesFontClass(filteredOverviewRows);
   const normalizedDescription = normalizePreviewDescription(draft.description);
   const visibleDescription = isSpecified(normalizedDescription);
-  const visibleFeatures = features.filter(isSpecified);
+  // Cap the sheet's Features list to 4 points so it never overflows behind the footer.
+  const visibleFeatures = features.filter(isSpecified).slice(0, 4);
   const visibleApplications = applicationAreas.filter(isSpecified);
   const visibleWarrantyLabel = isSpecified(draft.warrantyLabel);
   const visibleWarrantyCopy = isSpecified(draft.warrantyCopy);
@@ -2549,45 +2994,45 @@ function SheetPageOne({
       style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
     >
       <div className="relative h-[1056px] overflow-hidden bg-white">
-        <header className="relative">
-          <img
-            src={`${import.meta.env.BASE_URL}images/ikio-fin-header.png`}
-            alt=""
-            className="block w-full"
-          />
-          <div className="pointer-events-none absolute inset-0">
-            <SheetHeaderOverlayValue value={draft.headerProjectName} className="left-[35.2%] top-[44%] w-[25%]" />
-            <SheetHeaderOverlayValue value={draft.headerCatNumber} className="left-[63%] top-[44%] w-[23%]" />
-            <SheetHeaderOverlayValue value={draft.headerNote} className="left-[31.5%] top-[64%] w-[28.5%]" />
-            <SheetHeaderOverlayValue value={draft.headerFixtureSchedule} className="left-[62.8%] top-[64%] w-[23.5%]" />
-          </div>
-        </header>
+        {/* Breathing space above the header */}
+        <div className="h-[20px] w-full" />
+        <SheetHeader draft={draft} />
+        {/* No gap: the content (Overview box) sits flush against the header rule. */}
 
-        {/* Data area: 545 x 650 pt (x 4/3 = 727 x 864 px), filling between header and footer */}
-        <div className="mx-auto flex h-[864px] w-[727px] flex-col overflow-hidden">
-          {/* Region A - product name/info + certificate logo + image (left) and overview (right): 545 x 430 pt (727 x 573 px) */}
+        {/* Data area (727 x 884 px), filling between header and the footer */}
+        <div className="mx-auto flex h-[884px] w-[727px] flex-col overflow-hidden">
+          {/* Region A - product name/info + image + badges (left) and overview (right): 727 x 573 px */}
           <div className="flex h-[573px] w-[727px]">
             {/* Left column: 310 pt (413 px) */}
             <div className="flex h-[573px] w-[413px] flex-col overflow-hidden">
-              {/* Product name and info: 310 x 58 pt (413 x 77 px) */}
-              <div className="h-[77px] w-[413px] overflow-hidden">
-                <h1 className="text-[27px] font-bold uppercase leading-[0.96] tracking-[-0.03em] text-slate-950" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+              {/* Breathing space after the header line, before the product name (left column only;
+                  the Overview box on the right stays flush against the header rule). */}
+              <div className="h-[12px] w-full shrink-0" />
+              {/* Product name + category block: Title case name, divider line, then category + sub-category */}
+              <div className="h-[110px] w-[413px] shrink-0 overflow-hidden" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                <h1 className="text-[25px] font-bold uppercase leading-[1.02] tracking-[-0.01em] text-[#00a651]">
                   {draft.title}
                 </h1>
                 {isSpecified(draft.subtitle) && (
-                  <div className="mt-1 text-[11px] font-bold uppercase leading-[1.25] text-slate-700" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                  <div className="mt-1.5 text-[12px] font-semibold uppercase leading-[1.2] text-slate-600">
                     {draft.subtitle}
                   </div>
                 )}
+                <div className="my-1 h-px w-full bg-slate-200" />
                 {isSpecified(draft.categoryLabel) && (
-                  <div className="mt-1 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                  <div className="text-[9px] font-normal leading-[1.25] text-slate-800" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
                     {draft.categoryLabel}
+                  </div>
+                )}
+                {isSpecified(draft.subCategory) && (
+                  <div className="text-[8.5px] font-normal leading-[1.25] text-slate-600" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                    {draft.subCategory}
                   </div>
                 )}
               </div>
 
-              {/* Image: 281 x 315 pt (375 x 420 px) */}
-              <div className="mt-2 flex h-[420px] w-[375px] items-center justify-center bg-white">
+              {/* Image: 375 x 354 px */}
+              <div className="mt-1.5 flex h-[354px] w-[375px] items-center justify-center bg-white">
                 {selectedImage ? (
                   <img
                     src={selectedImage.dataUrl}
@@ -2604,32 +3049,42 @@ function SheetPageOne({
                 )}
               </div>
 
-              {/* Product certificate logo (after image): 310 pt wide (413 px), badges 36 pt tall (48 px) */}
+              {/* SKU / Part number directly below the product image */}
+              {isSpecified(draft.skuNumber) && (
+                <div className="mt-1 w-[375px] text-[10px] font-semibold leading-[1.2] text-slate-800" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                  SKU / Part No.: <span className="font-bold">{draft.skuNumber}</span>
+                </div>
+              )}
+
+              {/* Product certification badges: left-aligned in the left column (up to the overview).
+                  Boxes are sized so ~8 fit the column, and each icon is scaled up to look larger
+                  and overlap its PNG padding, tightening the visible spacing. */}
               {visibleQualificationIds.length > 0 && (
-                <div className="mt-2.5 flex h-[48px] w-[413px] items-center gap-3 overflow-hidden">
+                <div className="mt-2 flex h-[58px] w-[413px] items-center gap-0 overflow-hidden">
                   {visibleQualificationIds.map((badgeId) => (
-                    <QualificationBadge key={badgeId} id={badgeId} className="h-[48px] w-auto max-w-[96px]" />
+                    <QualificationBadge key={badgeId} id={badgeId} className="h-[50px] w-auto max-w-[50px] shrink-0 scale-[1.15] object-contain" />
                   ))}
                 </div>
               )}
             </div>
 
-            {/* Right column - Overview: 235 x 452 pt (313 x 601 px), text 210 pt (280 px) */}
+            {/* Right column - Overview: 313 x 573 px */}
             {filteredOverviewRows.length > 0 && (
-              <div className="h-[573px] w-[313px] overflow-hidden rounded-sm bg-slate-50 px-4 pb-2.5 pt-2">
-                <h3 className="mb-1.5 border-b border-slate-300 pb-1 text-[13px] font-bold uppercase tracking-[0.16em] text-slate-800" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+              <div className="h-[573px] w-[313px] overflow-hidden bg-slate-50 px-4 pb-2.5 pt-3">
+                <h3 className="mb-1.5 border-b border-slate-300 pb-1 text-[13px] font-bold uppercase tracking-[0.08em] text-[#00a651]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
                   Overview
                 </h3>
                 <table className="w-full border-collapse">
                   <tbody>
                     {filteredOverviewRows.map((row) => (
                       <tr key={row.id} className="border-b border-slate-200 align-top last:border-b-0">
-                        <td className="w-[44%] py-[2.5px] pr-2 text-[10px] font-semibold leading-[1.12] text-[#2f8258]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                        <td className="w-[44%] py-[1.5px] pr-2 text-[10px] font-bold leading-[1.05] text-slate-900" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
                           {formatOverviewLabel(row.label)}
                         </td>
                         <td
                           className={cn(
-                            "py-[2.5px] text-[10px] font-bold leading-[1.14] whitespace-pre-line",
+                            "py-[1.5px] text-left font-normal whitespace-pre-line",
+                            overviewValueSize,
                             isSpecified(row.value) ? "text-slate-800" : "italic text-slate-400",
                           )}
                         >
@@ -2643,13 +3098,16 @@ function SheetPageOne({
             )}
           </div>
 
-          {/* Margin after overview and image: 545 x 12 pt (727 x 16 px) */}
-          <div className="h-[16px] w-[727px]" />
+          {/* Divider between the image/overview region and the description region: line sits flush
+              against the Overview box above, then a small gap before the description region. */}
+          <div className="flex h-[16px] w-[727px] items-start">
+            <div className="h-px w-full bg-slate-300" />
+          </div>
 
-          {/* Region B - description/features + application area/warranty: 545 x 206 pt (727 x 275 px) */}
-          <div className="flex h-[275px] w-[727px]">
-            {/* Description and features: 287 x 206 pt (383 x 275 px) */}
-            <div className="flex h-[275px] w-[383px] flex-col gap-2 overflow-hidden">
+          {/* Region B - description/features + application area/warranty (727 x 295 px) */}
+          <div className="flex h-[295px] w-[727px]">
+            {/* Description and features (383 x 295 px) */}
+            <div className="flex h-[295px] w-[383px] flex-col gap-2 overflow-hidden">
               {visibleDescription && (
                 <section>
                   <SheetSectionTitle>Product Description</SheetSectionTitle>
@@ -2665,7 +3123,7 @@ function SheetPageOne({
                   <ul className="space-y-0.5 text-[11px] leading-[1.28] text-slate-700">
                     {visibleFeatures.map((feature, index) => (
                       <li key={`${feature}-${index}`} className="flex gap-2">
-                        <span className="mt-[3px] h-1 w-1 rounded-full bg-[#2f8258]" />
+                        <span className="mt-[3px] h-1 w-1 rounded-full bg-[#00a651]" />
                         <span>{feature}</span>
                       </li>
                     ))}
@@ -2677,8 +3135,8 @@ function SheetPageOne({
             {/* Margin between description/features and application/warranty: 27 pt (36 px) */}
             <div className="w-[36px]" />
 
-            {/* Application area and warranty: 228 x 206 pt (304 x 275 px) */}
-            <div className="flex h-[275px] w-[304px] flex-col gap-2 overflow-hidden">
+            {/* Application area and warranty (304 x 295 px) */}
+            <div className="flex h-[295px] w-[304px] flex-col gap-2 overflow-hidden">
               {visibleApplications.length > 0 && (
                 <section>
                   <SheetSectionTitle>Application Area</SheetSectionTitle>
@@ -2689,9 +3147,9 @@ function SheetPageOne({
               )}
 
               {showWarrantyBlock && (
-                <section>
+                <section className="mt-auto mb-6">
                   <SheetSectionTitle>Warranty</SheetSectionTitle>
-                  <div className="bg-slate-50 px-2.5 py-1.5">
+                  <div className="bg-white py-1">
                     <div className="space-y-1">
                       {visibleWarrantyLabel && (
                         <div>
@@ -2711,7 +3169,7 @@ function SheetPageOne({
           </div>
         </div>
 
-        <SheetFooter pageNumber={1} />
+        <SheetFooter pageNumber={1} note={draft.footerNote} />
       </div>
     </div>
   );
@@ -2737,31 +3195,156 @@ const dimensionItemHasContent = (item: DimensionItem) =>
   isSpecified(item.height) ||
   isSpecified(item.depth);
 
-/** Footer image with a dynamic "Page No.: 0X" overlay (the baked-in number is masked). */
-function SheetFooter({ pageNumber }: { pageNumber: number }) {
+const IKIO_LOGO_SRC = `${import.meta.env.BASE_URL}images/ikio-logo.svg`;
+const IKIO_LOGO_BLACK_SRC = `${import.meta.env.BASE_URL}images/ikio-logo-black.svg`;
+
+/** Header built from real, editable/selectable text (not a baked image). Logo stays as the brand mark.
+ *  `showFields` renders the Project Name / CAT.# / Note / Fixture Schedule block (page 1 only). */
+function SheetHeader({ draft, showFields = true }: { draft: EditorDraft; showFields?: boolean }) {
+  const field = (label: string, value: string) => (
+    <div className="flex flex-1 items-end gap-1.5">
+      <span className="whitespace-nowrap text-slate-800">{label}</span>
+      <span className="min-w-0 flex-1 truncate border-b border-slate-400 pb-[1px] font-medium text-slate-900">
+        {value}
+      </span>
+    </div>
+  );
   return (
-    <footer className="absolute inset-x-0 bottom-0">
-      <div className="relative">
+    <header className="relative h-[88px] w-full bg-white">
+      {/* Inner content aligned to the 727px body width; the green rule starts/ends with the content. */}
+      <div
+        className="mx-auto flex h-full w-[727px] select-text items-center gap-6 border-b-[3px] border-[#00a651]"
+        style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
+      >
+        {showFields ? (
+          <>
+            {/* Logo left, TDS right; the two flexible spacers are equal so the field
+                block is centered with the SAME gap on both sides. */}
+            <img src={IKIO_LOGO_SRC} alt="IKIO LED Lighting" className="h-[62px] w-[135px] shrink-0 self-center object-contain" />
+            <div className="flex-1" />
+            <div className="flex w-[360px] shrink-0 flex-col gap-2 self-center text-[7.5px] text-slate-800">
+              <div className="flex items-end gap-5">
+                {field("Project Name:", draft.headerProjectName)}
+                {field("CAT.#", draft.headerCatNumber)}
+              </div>
+              <div className="flex items-end gap-5">
+                {field("Note:", draft.headerNote)}
+                {field("Fixture Schedule:", draft.headerFixtureSchedule)}
+              </div>
+            </div>
+            <div className="flex-1" />
+            {/* Mirror the block's two-row height (empty first row) so the label lands on
+                the second-row underline while the block stays vertically centered. */}
+            <div className="flex shrink-0 flex-col gap-2 self-center">
+              <div className="h-[11px]" aria-hidden />
+              <span className="flex h-[11px] items-end whitespace-nowrap text-[10px] leading-none text-slate-800">
+                Technical Data Sheet
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
+            <img src={IKIO_LOGO_SRC} alt="IKIO LED Lighting" className="h-[62px] w-[135px] shrink-0 object-contain" />
+            <div className="flex-1" />
+            <span className="shrink-0 self-end pb-1.5 text-[10px] text-slate-800">Technical Data Sheet</span>
+          </>
+        )}
+      </div>
+    </header>
+  );
+}
+
+/** Revision label using the current date, formatted R1.0_MM/DD/YY. */
+function currentRevisionLabel() {
+  const now = new Date();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const yy = String(now.getFullYear()).slice(-2);
+  return `R1.0_${mm}/${dd}/${yy}`;
+}
+
+/** Footer built from real, selectable text (not a baked image). */
+function SheetFooter({ pageNumber, note }: { pageNumber: number; note?: string }) {
+  return (
+    <footer className="absolute inset-x-0 bottom-0 h-[64px] w-full bg-[#6d6e71]">
+      {/* Grey bar spans the full page width; inner content stays aligned to the 727px body margins. */}
+      <div
+        className="mx-auto flex h-full w-[727px] select-text items-center gap-4"
+        style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
+      >
         <img
-          src={`${import.meta.env.BASE_URL}images/ikio-fin-footer.png`}
-          alt=""
-          className="block w-full"
+          src={IKIO_LOGO_BLACK_SRC}
+          alt="IKIO LED Lighting"
+          className="h-[34px] w-auto shrink-0"
+          style={{ filter: "brightness(0) invert(1)" }}
         />
-        {/* Mask the baked-in "Page No.: 01" with the footer bar colour, then redraw the real number. */}
-        <div
-          className="absolute flex items-center justify-end pr-[3px]"
-          style={{ left: "78.5%", right: "2.5%", top: "30%", bottom: "24%", backgroundColor: "#57585A" }}
-        >
-          <span className="text-[10px] leading-none text-[#cdced0]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+        <div className="min-w-0 flex-1">
+          <div className="text-[8.5px] font-semibold text-white">
+            © 2026 IKIO LED LIGHTING. All Rights Reserved. &nbsp;|&nbsp; info@ikioled.com &nbsp;|&nbsp; +1&nbsp;844-533-4546 &nbsp;|&nbsp; www.ikioled.com
+          </div>
+          {/* Narrowed a touch so the legal text wraps into three near-equal lines, then
+              justified (including the last line) for even edges with tight, uniform spacing. */}
+          <div className="mt-1 [text-wrap:balance] text-[6.5px] leading-[1.34] text-slate-200">
+            This document and its contents, including but not limited to product designs, specifications, images, and
+            technical data, are the property of IKIO LED LIGHTING and may not be reproduced, distributed, or used without
+            prior written consent. Products and technologies described herein may be covered by one or more U.S. and/or
+            international patents, including patents pending. Product images are for illustration purposes only and may
+            not represent the exact product. Specifications are subject to change without notice.
+          </div>
+          {isSpecified(note) && <div className="mt-0.5 text-[6.5px] leading-[1.3] text-slate-200">{note}</div>}
+        </div>
+        <div className="shrink-0 text-right">
+          <div className="text-[8.5px] font-medium text-white">
             Page No.: {String(pageNumber).padStart(2, "0")}
-          </span>
+          </div>
+          <div className="mt-0.5 text-[7px] font-medium text-slate-200">{currentRevisionLabel()}</div>
         </div>
       </div>
     </footer>
   );
 }
 
-/** Shared page chrome (header overlay + data area + footer) used by pages 2+. */
+/** Continuation band shown on pages 2+ under the header: product name + category + qualification
+ *  icons, all pulled automatically from the page-1 draft. */
+function SheetPageBand({ draft }: { draft: EditorDraft }) {
+  return (
+    <div
+      className="mx-auto flex h-[40px] w-[727px] items-center justify-between gap-4 rounded-sm bg-slate-100 px-3"
+      style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
+    >
+      <div className="flex min-w-0 items-center gap-x-1.5 overflow-hidden whitespace-nowrap text-[9.5px]">
+        <span className="shrink-0 font-bold uppercase text-slate-900">{draft.title}</span>
+        {isSpecified(draft.subtitle) && (
+          <>
+            <span className="shrink-0 text-slate-300">|</span>
+            <span className="shrink-0 font-normal uppercase text-slate-800">{draft.subtitle}</span>
+          </>
+        )}
+        {isSpecified(draft.categoryLabel) && (
+          <>
+            <span className="shrink-0 text-slate-300">|</span>
+            <span className="shrink-0 font-normal text-slate-800">{draft.categoryLabel}</span>
+          </>
+        )}
+        {isSpecified(draft.subCategory) && (
+          <>
+            <span className="shrink-0 text-slate-300">|</span>
+            <span className="shrink-0 font-normal text-slate-800">{draft.subCategory}</span>
+          </>
+        )}
+      </div>
+      {draft.selectedQualificationIds.length > 0 && (
+        <div className="flex shrink-0 items-center gap-0.5">
+          {draft.selectedQualificationIds.map((id) => (
+            <QualificationBadge key={id} id={id} className="h-[30px] w-auto max-w-[32px] shrink-0 object-contain" />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Shared page chrome (header + continuation band + data area + footer) used by pages 2+. */
 function SheetPageFrame({
   draft,
   pageNumber,
@@ -2777,25 +3360,17 @@ function SheetPageFrame({
       style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
     >
       <div className="relative h-[1056px] overflow-hidden bg-white">
-        <header className="relative">
-          <img
-            src={`${import.meta.env.BASE_URL}images/ikio-fin-header.png`}
-            alt=""
-            className="block w-full"
-          />
-          <div className="pointer-events-none absolute inset-0">
-            <SheetHeaderOverlayValue value={draft.headerProjectName} className="left-[35.2%] top-[44%] w-[25%]" />
-            <SheetHeaderOverlayValue value={draft.headerCatNumber} className="left-[63%] top-[44%] w-[23%]" />
-            <SheetHeaderOverlayValue value={draft.headerNote} className="left-[31.5%] top-[64%] w-[28.5%]" />
-            <SheetHeaderOverlayValue value={draft.headerFixtureSchedule} className="left-[62.8%] top-[64%] w-[23.5%]" />
-          </div>
-        </header>
+        {/* Breathing space above the header (matches page 1) */}
+        <div className="h-[20px] w-full" />
+        <SheetHeader draft={draft} showFields={false} />
+        {/* Continuation band (product name + category + icons), auto from page 1 */}
+        <SheetPageBand draft={draft} />
 
-        <div className="mx-auto flex h-[864px] w-[727px] flex-col overflow-hidden">
+        <div className="mx-auto flex h-[844px] w-[727px] flex-col overflow-hidden pt-3">
           {children}
         </div>
 
-        <SheetFooter pageNumber={pageNumber} />
+        <SheetFooter pageNumber={pageNumber} note={draft.footerNote} />
       </div>
     </div>
   );
@@ -2804,16 +3379,16 @@ function SheetPageFrame({
 /** Large blue section heading with an accent underline (matches the IKIO template). */
 function SheetPageHeading({ title, trailing }: { title: string; trailing?: string }) {
   return (
-    <div className="mb-2.5">
+    <div className="mb-3 mt-1">
       <div className="flex items-end gap-2">
-        <h2 className="text-[18px] font-bold leading-none text-[#1f5f3f]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+        <h2 className="text-[13px] font-bold leading-none tracking-[0.01em] text-[#00a651]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
           {title}
         </h2>
         {isSpecified(trailing) && (
-          <span className="pb-[2px] text-[9px] font-semibold text-slate-500">{trailing}</span>
+          <span className="pb-[1px] text-[8px] font-semibold text-slate-500">{trailing}</span>
         )}
       </div>
-      <div className="mt-1.5 h-[3px] w-[132px] bg-[#2f8258]" />
+      <div className="mt-1.5 h-[2.5px] w-[99px] bg-[#00a651]" />
       <div className="h-px w-full bg-slate-200" />
     </div>
   );
@@ -2822,7 +3397,7 @@ function SheetPageHeading({ title, trailing }: { title: string; trailing?: strin
 function SheetNote({ children }: { children: React.ReactNode }) {
   return (
     <p className="mt-2 text-[8px] leading-[1.3] text-slate-500">
-      <span className="font-bold text-[#2f8258]">Note: </span>
+      <span className="font-bold text-[#00a651]">Note: </span>
       {children}
     </p>
   );
@@ -2830,7 +3405,7 @@ function SheetNote({ children }: { children: React.ReactNode }) {
 
 const SPEC_COLUMNS: Array<{ label: string; unit: string }> = [
   { label: "Part Number", unit: "" },
-  { label: "Power Selectable (Options)", unit: "W" },
+  { label: "Power Selectable", unit: "W" },
   { label: "Voltage", unit: "V" },
   { label: "Lumen Output", unit: "lm" },
   { label: "Efficacy", unit: "lm/W" },
@@ -2841,7 +3416,7 @@ const SPEC_COLUMNS: Array<{ label: string; unit: string }> = [
   { label: "Light Distribution", unit: "" },
 ];
 
-const SPEC_COL_WIDTHS = ["19%", "9%", "9%", "10%", "8%", "5%", "8%", "6%", "7%", "11%"];
+const SPEC_COL_WIDTHS = ["25%", "8%", "8%", "9%", "7%", "5%", "7%", "6%", "6%", "9%"];
 
 function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
   return (
@@ -2853,20 +3428,28 @@ function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
       </colgroup>
       <thead>
         <tr>
-          {SPEC_COLUMNS.map((column) => (
+          {SPEC_COLUMNS.map((column, i, arr) => (
             <th
               key={column.label}
-              className="border border-[#256b47] bg-[#2f8258] px-1.5 py-1 text-left align-top text-[8.5px] font-bold uppercase leading-[1.12] text-white"
+              className={cn(
+                "border border-[#414042] bg-[#414042] px-1 py-1 text-center align-middle text-[8px] font-bold uppercase leading-[1.1] text-white",
+                i === 0 && "border-l-0",
+                i === arr.length - 1 && "border-r-0",
+              )}
             >
               {column.label}
             </th>
           ))}
         </tr>
         <tr>
-          {SPEC_COLUMNS.map((column) => (
+          {SPEC_COLUMNS.map((column, i, arr) => (
             <th
               key={column.label}
-              className="border border-[#cfe3d7] bg-[#eaf4ee] px-1.5 py-[2px] text-left text-[8.5px] font-semibold text-[#2f8258]"
+              className={cn(
+                "border border-[#d6d6d8] bg-[#eeeeef] px-1 py-1.5 text-center align-middle text-[7px] font-bold leading-none text-slate-900",
+                i === 0 && "border-l-0",
+                i === arr.length - 1 && "border-r-0",
+              )}
             >
               {column.unit}
             </th>
@@ -2878,41 +3461,47 @@ function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
           const options = group.options.length > 0 ? group.options : [{ power: "", lumen: "" }];
           const span = options.length;
           return options.map((option, index) => (
-            <tr key={`${group.id}-${index}`} className="align-top">
+            <tr key={`${group.id}-${index}`} className="align-middle">
               {index === 0 && (
-                <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] font-bold leading-[1.2] text-slate-900">
+                <td rowSpan={span} className="whitespace-nowrap border border-l-0 border-slate-200 px-1 py-1.5 text-center text-[7px] font-bold leading-[1.2] text-slate-900">
                   {group.partNumber}
                 </td>
               )}
-              <td className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+              <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
                 {option.power}
               </td>
               {index === 0 && (
-                <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
                   {group.voltage}
                 </td>
               )}
-              <td className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+              <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
                 {option.lumen}
               </td>
               {index === 0 && (
                 <>
-                  <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
                     {group.efficacy}
                   </td>
-                  <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
                     {group.cri}
                   </td>
-                  <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
                     {group.current}
                   </td>
-                  <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
-                    {group.cct}
+                  <td rowSpan={span} className="whitespace-pre-line border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.4] text-slate-800">
+                    {(() => {
+                      // Show each CCT on its own line regardless of separator (/, -, space, comma).
+                      const tokens = group.cct.match(/\d[\d.]*\s*K\b/gi);
+                      return tokens && tokens.length > 1
+                        ? tokens.map((token) => token.replace(/\s+/g, "")).join("\n")
+                        : group.cct;
+                    })()}
                   </td>
-                  <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
                     {group.thd}
                   </td>
-                  <td rowSpan={span} className="border border-slate-200 px-1.5 py-[3px] text-[8.5px] leading-[1.2] text-slate-800">
+                  <td rowSpan={span} className="border border-r-0 border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
                     {group.lightDistribution}
                   </td>
                 </>
@@ -2929,28 +3518,62 @@ function SheetSpecificationsPage({
   draft,
   pageNumber,
   resolveImage,
+  dimensionItems,
+  showDimensions,
 }: {
   draft: EditorDraft;
   pageNumber: number;
   resolveImage: (id: string | null) => SourceImage | null;
+  dimensionItems: DimensionItem[];
+  showDimensions: boolean;
 }) {
   const groups = draft.specGroups.filter(specGroupHasContent);
   return (
     <SheetPageFrame draft={draft} pageNumber={pageNumber}>
-      <div className="flex h-[864px] w-[727px] flex-col overflow-hidden">
-        {/* Top: Product Specifications */}
-        <section className="h-[400px] overflow-hidden">
+      <div className="flex h-full w-[727px] flex-col overflow-hidden">
+        {/* Product Specifications — takes only the height it needs */}
+        <section className="shrink-0 overflow-hidden">
           <SheetPageHeading title="Product Specifications" />
           <SpecificationsTable groups={groups} />
           {isSpecified(draft.specsNote) && <SheetNote>{draft.specsNote}</SheetNote>}
         </section>
 
-        <div className="h-[24px]" />
+        {/* Dimensions — the first drawings; the rest flow onto continuation pages. Hidden
+            here (moved entirely to its own page) when the specs table is too tall. */}
+        {showDimensions && (
+          <>
+            <div className="h-[28px] shrink-0" />
+            <section className="min-h-0 flex-1 overflow-hidden pb-3">
+              <DimensionsSection items={dimensionItems} resolveImage={resolveImage} imageHeightClass="h-[190px]" />
+            </section>
+          </>
+        )}
+      </div>
+    </SheetPageFrame>
+  );
+}
 
-        {/* Bottom half: Dimensions */}
-        <section className="h-[440px] overflow-hidden">
-          <DimensionsSection draft={draft} resolveImage={resolveImage} imageHeightClass="h-[150px]" />
-        </section>
+/** Continuation page holding dimension drawings that don't fit under the specs table. */
+function SheetDimensionsPage({
+  draft,
+  pageNumber,
+  resolveImage,
+  items,
+}: {
+  draft: EditorDraft;
+  pageNumber: number;
+  resolveImage: (id: string | null) => SourceImage | null;
+  items: DimensionItem[];
+}) {
+  return (
+    <SheetPageFrame draft={draft} pageNumber={pageNumber}>
+      <div className="flex h-full w-[727px] flex-col overflow-hidden">
+        <DimensionsSection
+          items={items}
+          resolveImage={resolveImage}
+          imageHeightClass="h-[210px]"
+          title="Dimensions"
+        />
       </div>
     </SheetPageFrame>
   );
@@ -2972,7 +3595,36 @@ const ORDERING_COL_WIDTHS: Record<string, string> = {
   Manufacturer: "13%",
 };
 
-function OrderingDecoderTable({ columns }: { columns: OrderingColumn[] }) {
+/** Options for a column = its entries that have a code. */
+function orderingCodeOptions(column: OrderingColumn): OrderingEntry[] {
+  return column.entries.filter((entry) => isSpecified(entry.code));
+}
+
+/** The chosen code for a column: single-option columns auto-resolve; multi-option
+ *  columns stay blank until the user explicitly selects one (no auto-fallback). */
+function selectedOrderingCode(column: OrderingColumn, selection: Record<string, string>): string {
+  const options = orderingCodeOptions(column);
+  if (options.length === 0) return "";
+  if (options.length === 1) return options[0].code;
+  const chosen = selection[column.id];
+  return chosen && options.some((option) => option.code === chosen) ? chosen : "";
+}
+
+/** Assemble the full part number from each column's chosen code, in group order. */
+function buildOrderingCode(columns: OrderingColumn[], selection: Record<string, string>): string {
+  return ORDERING_GROUP_ORDER.flatMap((group) => columns.filter((column) => column.group === group))
+    .map((column) => selectedOrderingCode(column, selection))
+    .filter(Boolean)
+    .join("-");
+}
+
+function OrderingDecoderTable({
+  columns,
+  selection,
+}: {
+  columns: OrderingColumn[];
+  selection: Record<string, string>;
+}) {
   const ordered = ORDERING_GROUP_ORDER.flatMap((group) => columns.filter((column) => column.group === group));
   const groupSpans = ORDERING_GROUP_ORDER.map((group) => ({
     group,
@@ -2988,21 +3640,51 @@ function OrderingDecoderTable({ columns }: { columns: OrderingColumn[] }) {
       </colgroup>
       <thead>
         <tr>
-          {groupSpans.map((entry) => (
+          {groupSpans.map((entry, i, arr) => (
             <th
               key={entry.group}
               colSpan={entry.span}
-              className="border border-[#256b47] bg-[#2f8258] px-1.5 py-1 text-left text-[8.5px] font-bold uppercase leading-[1.1] text-white"
+              className={cn(
+                "border border-[#414042] bg-[#414042] px-1 py-1 text-center text-[8px] font-bold uppercase leading-[1.1] text-white",
+                i === 0 && "border-l-0",
+                i === arr.length - 1 && "border-r-0",
+              )}
             >
               {ORDERING_GROUP_LABELS[entry.group]}
             </th>
           ))}
         </tr>
+        {/* Selection row (between the group heads and the column heads): single-option
+            columns show their auto value; multi-option columns (highlighted) show the
+            user's chosen option. */}
+        <tr className="align-middle">
+          {ordered.map((column, i, arr) => {
+            const isMulti = orderingCodeOptions(column).length > 1;
+            const code = selectedOrderingCode(column, selection);
+            return (
+              <td
+                key={column.id}
+                className={cn(
+                  "border border-slate-200 px-1 py-[3px] text-center text-[7.5px] font-bold text-slate-900",
+                  isMulti ? "bg-[#e2e2e4]" : "bg-[#f6f6f7]",
+                  i === 0 && "border-l-0",
+                  i === arr.length - 1 && "border-r-0",
+                )}
+              >
+                {code || " "}
+              </td>
+            );
+          })}
+        </tr>
         <tr>
-          {ordered.map((column) => (
+          {ordered.map((column, i, arr) => (
             <th
               key={column.id}
-              className="border border-[#cfe3d7] bg-[#eaf4ee] px-1 py-[3px] text-left align-top text-[7.5px] font-bold uppercase leading-[1.1] text-[#1f5f3f]"
+              className={cn(
+                "border border-[#d6d6d8] bg-[#eeeeef] px-1 py-1 text-center align-middle text-[7px] font-bold uppercase leading-[1.1] text-slate-900",
+                i === 0 && "border-l-0",
+                i === arr.length - 1 && "border-r-0",
+              )}
             >
               {column.header}
               {isSpecified(column.unit) ? ` (${column.unit})` : ""}
@@ -3012,16 +3694,23 @@ function OrderingDecoderTable({ columns }: { columns: OrderingColumn[] }) {
       </thead>
       <tbody>
         <tr className="align-top">
-          {ordered.map((column) => (
-            <td key={column.id} className="border border-slate-200 px-1.5 py-1 align-top">
-              <div className="flex flex-col gap-1">
+          {ordered.map((column, i, arr) => (
+            <td
+              key={column.id}
+              className={cn(
+                "border border-slate-200 px-1.5 py-3 align-top",
+                i === 0 && "border-l-0",
+                i === arr.length - 1 && "border-r-0",
+              )}
+            >
+              <div className="flex flex-col gap-3">
                 {column.entries
                   .filter((entry) => isSpecified(entry.code) || isSpecified(entry.description))
                   .map((entry, index) => (
-                    <div key={index} className="leading-[1.15]">
-                      <div className="text-[8.5px] font-bold text-slate-900">{entry.code}</div>
+                    <div key={index} className="leading-[1.3]">
+                      <div className="text-[7px] font-bold text-slate-900">{entry.code}</div>
                       {isSpecified(entry.description) && (
-                        <div className="text-[7.5px] text-slate-600">{entry.description}</div>
+                        <div className="text-[6.5px] text-slate-600">{entry.description}</div>
                       )}
                     </div>
                   ))}
@@ -3045,10 +3734,14 @@ function AccessoriesTable({ rows, resolveImage }: { rows: AccessoryRow[]; resolv
       </colgroup>
       <thead>
         <tr>
-          {["Product Code", "Description", "Image", "Download"].map((label) => (
+          {["Product Code", "Description", "Image", "Download"].map((label, i, arr) => (
             <th
               key={label}
-              className="border border-[#256b47] bg-[#2f8258] px-1 py-1 text-left text-[7.5px] font-bold uppercase leading-[1.1] text-white"
+              className={cn(
+                "border border-[#414042] bg-[#414042] px-1 py-1.5 text-center text-[7px] font-bold uppercase leading-[1.1] text-white",
+                i === 0 && "border-l-0",
+                i === arr.length - 1 && "border-r-0",
+              )}
             >
               {label}
             </th>
@@ -3060,13 +3753,13 @@ function AccessoriesTable({ rows, resolveImage }: { rows: AccessoryRow[]; resolv
           const image = resolveImage(row.imageId);
           return (
             <tr key={row.id} className="align-middle">
-              <td className="border border-slate-200 px-1.5 py-1 text-[8px] font-bold leading-[1.15] text-slate-900">
+              <td className="whitespace-nowrap border border-l-0 border-slate-200 px-1.5 py-2.5 text-[7px] font-bold leading-[1.15] text-slate-900">
                 {row.code}
               </td>
-              <td className="border border-slate-200 px-1.5 py-1 text-[8px] leading-[1.2] text-slate-700">
+              <td className="border border-slate-200 px-1.5 py-2.5 text-[7px] leading-[1.2] text-slate-700">
                 {row.description}
               </td>
-              <td className="border border-slate-200 px-1.5 py-1">
+              <td className="border border-slate-200 px-1.5 py-2.5">
                 <div className="flex h-[34px] items-center justify-center overflow-hidden">
                   {image ? (
                     <img src={image.dataUrl} alt={row.code} className="h-full w-full object-contain" />
@@ -3075,9 +3768,9 @@ function AccessoriesTable({ rows, resolveImage }: { rows: AccessoryRow[]; resolv
                   )}
                 </div>
               </td>
-              <td className="border border-slate-200 px-1.5 py-1 text-center text-[8px]">
+              <td className="border border-r-0 border-slate-200 px-1.5 py-2.5 text-center text-[7px]">
                 {isSpecified(row.downloadUrl) ? (
-                  <a href={row.downloadUrl} className="font-semibold text-[#2f8258] underline">
+                  <a href={row.downloadUrl} className="font-semibold text-[#00a651] underline">
                     Download
                   </a>
                 ) : (
@@ -3108,13 +3801,13 @@ function SheetOrderingPage({
 
   return (
     <SheetPageFrame draft={draft} pageNumber={pageNumber}>
-      <div className="flex h-[864px] w-[727px] flex-col overflow-hidden">
+      <div className="flex h-full w-[727px] flex-col overflow-hidden">
         <section className="mb-5">
           <SheetPageHeading
             title="Product Ordering Information"
             trailing={isSpecified(draft.orderingExample) ? `Typical order example: ${draft.orderingExample}` : undefined}
           />
-          <OrderingDecoderTable columns={draft.orderingColumns} />
+          <OrderingDecoderTable columns={draft.orderingColumns} selection={draft.orderingSelection} />
           {isSpecified(draft.orderingNote) && <SheetNote>{draft.orderingNote}</SheetNote>}
         </section>
 
@@ -3134,28 +3827,58 @@ function SheetOrderingPage({
   );
 }
 
+// Page 2 shows the specs table plus the first couple of drawings; the rest flow onto
+// dedicated continuation pages so nothing is clipped.
+const DIMS_ON_SPEC_PAGE = 2;
+const DIMS_PER_CONTINUATION_PAGE = 4;
+
+function getDimensionPagination(draft: EditorDraft) {
+  const dims = draft.dimensionItems.filter(dimensionItemHasContent);
+  // Estimate the specs-table height (in rows). A tall table leaves no room under it,
+  // so push ALL drawings to their own continuation page instead of cramming them.
+  const specRows = draft.specGroups
+    .filter(specGroupHasContent)
+    .reduce((sum, group) => sum + Math.max(1, group.options.length), 0);
+  const roomOnSpecPage = specRows <= 16 ? DIMS_ON_SPEC_PAGE : 0;
+
+  const onSpecPage = dims.slice(0, roomOnSpecPage);
+  const overflow = dims.slice(roomOnSpecPage);
+  const continuationPages: DimensionItem[][] = [];
+  for (let i = 0; i < overflow.length; i += DIMS_PER_CONTINUATION_PAGE) {
+    continuationPages.push(overflow.slice(i, i + DIMS_PER_CONTINUATION_PAGE));
+  }
+  // Show the Dimensions section on page 2 only when there's room, or when there are no
+  // drawings at all (so the empty placeholder layout still appears). If a tall specs table
+  // pushed every drawing to its own page, keep page 2 to just the specs table.
+  const showOnSpecPage = dims.length === 0 || roomOnSpecPage > 0;
+  return { onSpecPage, continuationPages, showOnSpecPage };
+}
+
 function DimensionsSection({
-  draft,
+  items: providedItems,
   resolveImage,
   imageHeightClass,
+  title = "Dimensions",
 }: {
-  draft: EditorDraft;
+  items: DimensionItem[];
   resolveImage: (id: string | null) => SourceImage | null;
   imageHeightClass: string;
+  title?: string;
 }) {
-  const filled = draft.dimensionItems.filter(dimensionItemHasContent);
   // Show placeholder slots so the fixed layout is visible before any drawing is added.
   const items =
-    filled.length > 0
-      ? filled
+    providedItems.length > 0
+      ? providedItems
       : [
           { id: "dim-placeholder-0", label: "", imageId: null, width: "", height: "", depth: "" },
           { id: "dim-placeholder-1", label: "", imageId: null, width: "", height: "", depth: "" },
         ];
+  // A single dimension is centered on the page; two or more use the paired grid.
+  const single = items.length === 1;
   return (
     <>
-      <SheetPageHeading title="Dimensions" />
-      <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+      <SheetPageHeading title={title} />
+      <div className={cn("grid gap-x-8 gap-y-4", single ? "grid-cols-1 justify-items-center" : "grid-cols-2")}>
         {items.map((item) => {
           const image = resolveImage(item.imageId);
           const dims = [
@@ -3164,11 +3887,23 @@ function DimensionsSection({
             item.depth && `D ${item.depth}`,
           ].filter(Boolean);
           return (
-            <div key={item.id} className="flex flex-col">
+            <div key={item.id} className={cn("flex flex-col", single ? "w-1/2 items-center" : "w-full")}>
               {isSpecified(item.label) && (
-                <div className="mb-1 text-[10px] font-bold text-[#1f5f3f]">{item.label}</div>
+                <div className="mb-1 text-[10px] font-bold text-slate-900">
+                  {(() => {
+                    const colon = item.label.indexOf(":");
+                    if (colon < 0) return <span className="text-[#00a651]">{item.label}</span>;
+                    // Size prefix (e.g. "4'") green; the code/description after the colon black.
+                    return (
+                      <>
+                        <span className="text-[#00a651]">{item.label.slice(0, colon)}</span>
+                        {item.label.slice(colon)}
+                      </>
+                    );
+                  })()}
+                </div>
               )}
-              <div className={cn("flex w-full items-center justify-center overflow-hidden rounded-sm bg-slate-50", imageHeightClass)}>
+              <div className={cn("flex w-full items-center justify-center overflow-hidden bg-white", imageHeightClass)}>
                 {image ? (
                   <img src={image.dataUrl} alt={item.label} className="h-full w-full object-contain" />
                 ) : (
@@ -3202,13 +3937,37 @@ function SheetPreview({
   const resolveImage = (id: string | null) =>
     (id ? sourceImages.find((image) => image.id === id) : null) ?? null;
 
+  const { onSpecPage, continuationPages, showOnSpecPage } = getDimensionPagination(draft);
+  // Page numbers: 1 = main, 2 = specs+dims, 3.. = dimension continuation pages, then ordering last.
+  const orderingPageNumber = 3 + continuationPages.length;
+
   return (
     <div className="flex flex-col items-center gap-8">
       <SheetPageOne draft={draft} selectedImage={selectedImage} spec={spec} />
-      <SheetSpecificationsPage draft={draft} pageNumber={2} resolveImage={resolveImage} />
-      <SheetOrderingPage draft={draft} pageNumber={3} resolveImage={resolveImage} />
+      <SheetSpecificationsPage
+        draft={draft}
+        pageNumber={2}
+        resolveImage={resolveImage}
+        dimensionItems={onSpecPage}
+        showDimensions={showOnSpecPage}
+      />
+      {continuationPages.map((items, index) => (
+        <SheetDimensionsPage
+          key={`dim-page-${index}`}
+          draft={draft}
+          pageNumber={3 + index}
+          resolveImage={resolveImage}
+          items={items}
+        />
+      ))}
+      <SheetOrderingPage draft={draft} pageNumber={orderingPageNumber} resolveImage={resolveImage} />
     </div>
   );
+}
+
+/** Total rendered pages: main + specs + dimension continuation pages + ordering. */
+function getPreviewPageCount(draft: EditorDraft) {
+  return 3 + getDimensionPagination(draft).continuationPages.length;
 }
 
 function SecondPageImagePicker({
@@ -3236,6 +3995,54 @@ function SecondPageImagePicker({
   );
 }
 
+const DEFAULT_DESCRIPTION_PROMPT =
+  "Rewrite the product description in a professional, spec-grounded tone (~400 characters), highlighting the wattage/lumen/CCT options and ideal applications.";
+const DEFAULT_FEATURES_PROMPT =
+  "Write 4 benefit-oriented feature bullets (~100 characters each) grounded in the product's real specs.";
+
+/** Inline AI helper with an editable prompt + Generate button for a copy field. */
+function AiCopyAssistant({
+  label,
+  prompt,
+  onPromptChange,
+  busy,
+  onGenerate,
+}: {
+  label: string;
+  prompt: string;
+  onPromptChange: (value: string) => void;
+  busy: boolean;
+  onGenerate: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-primary/30 bg-primary/5 p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="flex items-center gap-1.5 text-[11px] font-semibold text-primary"
+        >
+          <Sparkles className="h-3.5 w-3.5" />
+          AI rewrite {label} {open ? "▾" : "▸"}
+        </button>
+        <Button type="button" disabled={busy} onClick={onGenerate} className="h-7 gap-1 px-3 text-[11px]">
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wand2 className="h-3 w-3" />}
+          {busy ? "Generating…" : "Generate"}
+        </Button>
+      </div>
+      {open && (
+        <Textarea
+          value={prompt}
+          onChange={(event) => onPromptChange(event.target.value)}
+          placeholder="Tell the AI how to write it…"
+          className="mt-2 min-h-[64px] text-[12px]"
+        />
+      )}
+    </div>
+  );
+}
+
 export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   const [productNameRecommendations, setProductNameRecommendations] = useState<string[]>(() => buildProductNameRecommendations(spec));
   const [draft, setDraft] = useState<EditorDraft>(() => buildEditorDraft(spec, buildProductNameRecommendations(spec)));
@@ -3243,6 +4050,9 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   const [overviewDropIndex, setOverviewDropIndex] = useState<number | null>(null);
   const [isImageEditorOpen, setIsImageEditorOpen] = useState(false);
   const [editingImageId, setEditingImageId] = useState<string | null>(null);
+  // Whether the current edit should also become the page-1 product image (true for the
+  // product image, false when editing a dimension/accessory drawing).
+  const [editingImageSetsSelection, setEditingImageSetsSelection] = useState(true);
   const [isCropDialogOpen, setIsCropDialogOpen] = useState(false);
   const [croppingPageId, setCroppingPageId] = useState<string | null>(null);
   const [pendingImageTarget, setPendingImageTarget] = useState<
@@ -3255,6 +4065,9 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   // never overwrites persisted edits with the freshly-built baseline.
   const hydratedSpecIdRef = useRef<string | null>(null);
   const [previewScale, setPreviewScale] = useState(1);
+  const [descriptionPrompt, setDescriptionPrompt] = useState(DEFAULT_DESCRIPTION_PROMPT);
+  const [featuresPrompt, setFeaturesPrompt] = useState(DEFAULT_FEATURES_PROMPT);
+  const [aiBusy, setAiBusy] = useState<null | "description" | "features">(null);
   const isWideWorkspace = useMediaQuery("(min-width: 1280px)");
   const sourcePages = spec.sourcePages ?? [];
   const sourcePdfUrl = `/api/extract/${spec.id}/source-pdf#toolbar=0&navpanes=0&view=FitH`;
@@ -3272,13 +4085,52 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     // Hydrate any saved edits for this extraction from IndexedDB.
     hydratedSpecIdRef.current = null;
     let cancelled = false;
-    loadDraft<EditorDraft>(draftKey(spec.id)).then((saved) => {
+    loadDraft<EditorDraft>(draftKey(spec.id)).then(async (localSaved) => {
+      if (cancelled) return;
+      // Prefer the server-saved draft (survives browser data clears / other devices),
+      // falling back to the local IndexedDB copy when offline.
+      let saved: EditorDraft | null | undefined = localSaved;
+      try {
+        const draftResponse = await fetch(`/api/extract/${spec.id}/draft`, { credentials: "include" });
+        if (draftResponse.ok) {
+          const data = (await draftResponse.json()) as { draft?: EditorDraft | null };
+          if (data?.draft) saved = data.draft;
+        }
+      } catch {
+        /* offline — keep the local copy */
+      }
       if (cancelled) return;
       if (saved) {
         // Merge over the fresh baseline so fields added in newer versions keep defaults.
         setDraft({ ...fresh, ...saved });
       }
       hydratedSpecIdRef.current = String(spec.id);
+
+      // Reserve globally-unique names from the backend registry so no two products repeat
+      // a name. Falls back silently to the local suggestions if the backend is unavailable.
+      fetch("/api/product-names/reserve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          key: buildProductNameRegistryKey(spec),
+          candidates: buildProductNameCandidates(spec),
+          count: 3,
+        }),
+      })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data: { names?: string[] } | null) => {
+          if (cancelled || !data?.names?.length) return;
+          const reserved = data.names;
+          setProductNameRecommendations(reserved);
+          // Only migrate the untouched default title — never a user's edited/chosen name.
+          setDraft((current) =>
+            current.title === nextRecommendations[0] ? { ...current, title: reserved[0] } : current,
+          );
+        })
+        .catch(() => {
+          /* offline / backend down — keep the local recommendations */
+        });
     });
 
     return () => {
@@ -3286,12 +4138,21 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     };
   }, [spec]);
 
-  // Autosave the draft to IndexedDB (debounced) once hydration for this spec is done.
+  // Autosave the draft (debounced) once hydration for this spec is done — to IndexedDB for
+  // instant local recall AND to the server so the hand-tweaks persist across devices/restarts.
   useEffect(() => {
     if (hydratedSpecIdRef.current !== String(spec.id)) return undefined;
     const handle = window.setTimeout(() => {
       void saveDraft(draftKey(spec.id), draft);
-    }, 500);
+      void fetch(`/api/extract/${spec.id}/draft`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ draft }),
+      }).catch(() => {
+        /* offline — the IndexedDB copy still holds the edits */
+      });
+    }, 800);
     return () => window.clearTimeout(handle);
   }, [draft, spec.id]);
 
@@ -3341,12 +4202,29 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     setDraft((current) => ({ ...current, [key]: value }));
   };
 
-  const previewPageCount = 3;
+  // When the warranty label is typed (e.g. "5 Year"), auto-fill the warranty copy with the
+  // matching standard statement — but never overwrite copy the user has manually edited.
+  const updateWarrantyLabel = (value: string) => {
+    setDraft((current) => {
+      const next: EditorDraft = { ...current, warrantyLabel: value };
+      const years = Number(value.match(/\d+/)?.[0] ?? "");
+      const isDerivedCopy =
+        !isSpecified(current.warrantyCopy) ||
+        /^This product is backed by a limited \d+-year manufacturer/i.test(normalizeText(current.warrantyCopy));
+      if (Number.isFinite(years) && years > 0 && isDerivedCopy) {
+        next.warrantyCopy = buildWarrantyStatement(years);
+      }
+      return next;
+    });
+  };
+
+  const previewPageCount = getPreviewPageCount(draft);
   const totalPreviewHeight =
     previewPageCount * SHEET_PREVIEW_HEIGHT + (previewPageCount - 1) * PREVIEW_PAGE_GAP;
 
-  const openImageEditor = (imageId: string) => {
-    updateDraft("selectedImageId", imageId);
+  const openImageEditor = (imageId: string, setsSelection = true) => {
+    if (setsSelection) updateDraft("selectedImageId", imageId);
+    setEditingImageSetsSelection(setsSelection);
     setEditingImageId(imageId);
     setIsImageEditorOpen(true);
   };
@@ -3394,7 +4272,8 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   const saveEditedImage = (imageId: string, dataUrl: string) => {
     setDraft((current) => ({
       ...current,
-      selectedImageId: imageId,
+      // Only re-point the product image when editing the product image itself.
+      ...(editingImageSetsSelection ? { selectedImageId: imageId } : {}),
       editedImageDataUrls: {
         ...current.editedImageDataUrls,
         [imageId]: dataUrl,
@@ -3591,6 +4470,13 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   };
 
   // ---- Page 3: Ordering decoder ----
+  const updateOrderingSelection = (columnId: string, code: string) => {
+    setDraft((current) => ({
+      ...current,
+      orderingSelection: { ...current.orderingSelection, [columnId]: code },
+    }));
+  };
+
   const updateOrderingEntry = (columnIndex: number, entryIndex: number, patch: Partial<OrderingEntry>) => {
     setDraft((current) => ({
       ...current,
@@ -3714,11 +4600,29 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     setOverviewDropIndex(null);
   };
 
+
   const getPrintablePages = () =>
     Array.from(previewRef.current?.querySelectorAll<HTMLElement>(".sheet-print-root") ?? []).filter(
       (element) => element.getAttribute("data-page-empty") !== "true",
     );
 
+  const waitForSheetImages = async (sheets: HTMLElement[]) => {
+    const images = sheets.flatMap((sheet) => Array.from(sheet.querySelectorAll("img")));
+    await Promise.all(
+      images.map((image) =>
+        image.complete
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => {
+              image.addEventListener("load", () => resolve(), { once: true });
+              image.addEventListener("error", () => resolve(), { once: true });
+            }),
+      ),
+    );
+  };
+
+  // One-click, works everywhere (including embedded webviews): captures each page
+  // exactly as it appears in the preview and auto-downloads to the Downloads folder.
+  // The look is pixel-identical to the preview; the text is not selectable/editable.
   const handleDownloadPdf = async () => {
     const sheets = getPrintablePages();
     if (sheets.length === 0) {
@@ -3728,51 +4632,117 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
 
     const toastId = toast.loading("Generating PDF...");
     try {
-      // Wait for every image across all pages (header/footer/product) to load,
-      // otherwise the capture can miss them.
-      const images = sheets.flatMap((sheet) => Array.from(sheet.querySelectorAll("img")));
-      await Promise.all(
-        images.map((image) =>
-          image.complete
-            ? Promise.resolve()
-            : new Promise<void>((resolve) => {
-                image.addEventListener("load", () => resolve(), { once: true });
-                image.addEventListener("error", () => resolve(), { once: true });
-              }),
-        ),
-      );
-
-      const [{ toPng }, { jsPDF }] = await Promise.all([
-        import("html-to-image"),
-        import("jspdf"),
-      ]);
-
+      await waitForSheetImages(sheets);
+      const [{ toPng }, { jsPDF }] = await Promise.all([import("html-to-image"), import("jspdf")]);
       const pdf = new jsPDF({ unit: "in", format: "letter", orientation: "portrait" });
 
       for (let i = 0; i < sheets.length; i += 1) {
-        // html-to-image reads computed styles (resolved to rgb), so it renders the
-        // Tailwind v4 oklch palette correctly where html2canvas would fail.
         const dataUrl = await toPng(sheets[i], {
-          pixelRatio: 2,
+          pixelRatio: 3,
           cacheBust: true,
           backgroundColor: "#ffffff",
           width: 816,
           height: 1056,
           style: { transform: "none", margin: "0", boxShadow: "none" },
         });
-
-        if (i > 0) {
-          pdf.addPage();
-        }
+        if (i > 0) pdf.addPage();
         pdf.addImage(dataUrl, "PNG", 0, 0, 8.5, 11, undefined, "FAST");
       }
 
       const filename = `${draft.title.replace(/[^a-z0-9]/gi, "_").toLowerCase() || "spec_sheet"}.pdf`;
       pdf.save(filename);
-      toast.success("PDF downloaded.", { id: toastId });
+      toast.success("PDF saved to your Downloads folder.", { id: toastId });
     } catch (error) {
       console.error("PDF export failed", error);
       toast.error("Could not generate the PDF. Please try again.", { id: toastId });
+    }
+  };
+
+  // Editable route: prints the real sheet HTML so the PDF looks exactly like the
+  // preview AND keeps text editable. Requires a browser whose print dialog offers a
+  // "Save as PDF" destination (Chrome/Edge) — not available in some embedded webviews.
+  const handleEditablePdf = async () => {
+    const sheets = getPrintablePages();
+    if (sheets.length === 0) {
+      toast.error("The sheet preview is not ready yet.");
+      return;
+    }
+
+    try {
+      await waitForSheetImages(sheets);
+
+      const printRoot = document.createElement("div");
+      printRoot.className = "print-only-root";
+      sheets.forEach((sheet) => {
+        const clone = sheet.cloneNode(true) as HTMLElement;
+        clone.style.transform = "none";
+        clone.style.margin = "0 auto";
+        clone.style.boxShadow = "none";
+        printRoot.appendChild(clone);
+      });
+      document.body.appendChild(printRoot);
+      document.body.classList.add("printing");
+
+      const cleanup = () => {
+        document.body.classList.remove("printing");
+        printRoot.remove();
+        window.removeEventListener("afterprint", cleanup);
+      };
+      window.addEventListener("afterprint", cleanup);
+
+      toast.message(
+        "In the print dialog, set the destination to \"Save as PDF\". If you only see printers, open this app in Chrome or Edge — then the text stays editable.",
+        { duration: 9000 },
+      );
+
+      window.setTimeout(() => {
+        window.print();
+        window.setTimeout(cleanup, 1000);
+      }, 60);
+    } catch (error) {
+      console.error("PDF export failed", error);
+      toast.error("Could not open the print dialog. Please try again.");
+    }
+  };
+
+  const runAiContent = async (kind: "description" | "features", instruction: string) => {
+    setAiBusy(kind);
+    const toastId = toast.loading(`Generating ${kind}…`);
+    try {
+      const specsSummary = draft.overviewRows
+        .filter((row) => isSpecified(row.label) && isSpecified(row.value))
+        .slice(0, 24)
+        .map((row) => `${row.label}: ${row.value}`)
+        .join("; ");
+      const product = {
+        name: draft.title,
+        category: draft.categoryLabel,
+        subCategory: draft.subCategory,
+        specs: specsSummary,
+        current: kind === "description" ? draft.description : draft.featuresText,
+      };
+      const response = await fetch("/api/ai-content", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ kind, instruction, product }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = (await response.json()) as { text?: string; features?: string[] };
+      if (kind === "description" && isSpecified(data.text ?? "")) {
+        updateDraft("description", String(data.text).trim());
+        toast.success("Description updated.", { id: toastId });
+      } else if (kind === "features" && Array.isArray(data.features) && data.features.length > 0) {
+        updateDraft("featuresText", data.features.filter(Boolean).slice(0, 4).join("\n"));
+        toast.success("Features updated.", { id: toastId });
+      } else {
+        toast.error("AI returned no usable content.", { id: toastId });
+      }
+    } catch (error) {
+      console.error("AI content generation failed", error);
+      toast.error("AI generation failed. Check the backend/model.", { id: toastId });
+    } finally {
+      setAiBusy(null);
     }
   };
 
@@ -3810,6 +4780,11 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               value={draft.headerNote}
               onChange={(event) => updateDraft("headerNote", event.target.value)}
               placeholder="Note"
+            />
+            <Input
+              value={draft.footerNote}
+              onChange={(event) => updateDraft("footerNote", event.target.value)}
+              placeholder="Footer note (shown above the footer bar)"
             />
           </section>
 
@@ -3852,7 +4827,17 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
             <Input
               value={draft.categoryLabel}
               onChange={(event) => updateDraft("categoryLabel", event.target.value)}
-              placeholder="Category label"
+              placeholder="Category (e.g. Indoor / Outdoor / HazLoc Lighting)"
+            />
+            <Input
+              value={draft.subCategory}
+              onChange={(event) => updateDraft("subCategory", event.target.value)}
+              placeholder="Sub-category (e.g. Panel, Linear High Bay)"
+            />
+            <Input
+              value={draft.skuNumber}
+              onChange={(event) => updateDraft("skuNumber", event.target.value)}
+              placeholder="SKU / Part number (shown under the image)"
             />
           </section>
 
@@ -3974,6 +4959,16 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                 Drag rows to reorder
               </div>
             </div>
+            {/* Source-grounding legend: each value is checked against the vendor PDF text. */}
+            {isSpecified(spec.sourceText) && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-border/60 bg-card/30 px-3 py-2 text-[10px] text-muted-foreground">
+                <span className="font-semibold uppercase tracking-wide">Source check:</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-500" /> found</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-500" /> partial</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-full bg-rose-500" /> not in PDF — verify</span>
+                <span className="text-muted-foreground/70">(hover a dot for the source snippet)</span>
+              </div>
+            )}
             <div className="space-y-3">
               {draft.overviewRows.map((row, index) => (
                 <div
@@ -4004,18 +4999,22 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                     value={row.label}
                     onChange={(event) => updateOverviewRow(index, "label", event.target.value)}
                   />
-                  {row.value.includes("\n") ? (
-                    <Textarea
-                      value={row.value}
-                      onChange={(event) => updateOverviewRow(index, "value", event.target.value)}
-                      className="min-h-[84px]"
-                    />
-                  ) : (
-                    <Input
-                      value={row.value}
-                      onChange={(event) => updateOverviewRow(index, "value", event.target.value)}
-                    />
-                  )}
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <ConfidenceBadge value={row.value} sourceText={spec.sourceText} />
+                    {row.value.includes("\n") ? (
+                      <Textarea
+                        value={row.value}
+                        onChange={(event) => updateOverviewRow(index, "value", event.target.value)}
+                        className="min-h-[84px] flex-1"
+                      />
+                    ) : (
+                      <Input
+                        value={row.value}
+                        onChange={(event) => updateOverviewRow(index, "value", event.target.value)}
+                        className="min-w-0 flex-1"
+                      />
+                    )}
+                  </div>
                   <Button
                     type="button"
                     variant="outline"
@@ -4050,11 +5049,25 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               placeholder="Product description"
               className="min-h-[120px]"
             />
+            <AiCopyAssistant
+              label="description"
+              prompt={descriptionPrompt}
+              onPromptChange={setDescriptionPrompt}
+              busy={aiBusy === "description"}
+              onGenerate={() => runAiContent("description", descriptionPrompt)}
+            />
             <Textarea
               value={draft.featuresText}
               onChange={(event) => updateDraft("featuresText", event.target.value)}
               placeholder="One feature per line"
               className="min-h-[130px]"
+            />
+            <AiCopyAssistant
+              label="features"
+              prompt={featuresPrompt}
+              onPromptChange={setFeaturesPrompt}
+              busy={aiBusy === "features"}
+              onGenerate={() => runAiContent("features", featuresPrompt)}
             />
             <Textarea
               value={draft.applicationAreasText}
@@ -4069,7 +5082,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
             />
             <Input
               value={draft.warrantyLabel}
-              onChange={(event) => updateDraft("warrantyLabel", event.target.value)}
+              onChange={(event) => updateWarrantyLabel(event.target.value)}
               placeholder="Warranty label"
             />
             <Textarea
@@ -4192,6 +5205,64 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               onChange={(event) => updateDraft("orderingExample", event.target.value)}
               placeholder="Typical order example (e.g. IK-LHB2-02-...)"
             />
+
+            {/* Build order code: single-option columns auto-fill; multi-option columns are selectable. */}
+            <div className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
+              <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+                Build Order Code (Selection)
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {draft.orderingColumns.map((column) => {
+                  const options = orderingCodeOptions(column);
+                  if (options.length === 0) return null;
+                  const value = selectedOrderingCode(column, draft.orderingSelection);
+                  const isMulti = options.length > 1;
+                  return (
+                    <label key={column.id} className="flex flex-col gap-1 text-[11px]">
+                      <span className="font-semibold text-muted-foreground">
+                        {column.header}
+                        {isMulti ? "" : " (auto)"}
+                      </span>
+                      {isMulti ? (
+                        <select
+                          value={value}
+                          onChange={(event) => updateOrderingSelection(column.id, event.target.value)}
+                          className="h-9 rounded-md border border-primary/40 bg-background px-2 text-sm"
+                        >
+                          <option value="">Select…</option>
+                          {options.map((option, i) => (
+                            <option key={i} value={option.code}>
+                              {option.code}
+                              {isSpecified(option.description) ? ` — ${option.description}` : ""}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="flex h-9 items-center rounded-md border border-border/50 bg-muted/40 px-2 text-sm text-muted-foreground">
+                          {value || "—"}
+                        </div>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="flex items-center gap-2 pt-1">
+                <div className="min-w-0 flex-1 truncate rounded-md bg-primary/5 px-2 py-1.5 text-[12px] font-semibold text-primary">
+                  {buildOrderingCode(draft.orderingColumns, draft.orderingSelection) || "—"}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 shrink-0"
+                  onClick={() =>
+                    updateDraft("orderingExample", buildOrderingCode(draft.orderingColumns, draft.orderingSelection))
+                  }
+                >
+                  Use as example
+                </Button>
+              </div>
+            </div>
+
             <div className="space-y-3">
               {draft.orderingColumns.map((column, columnIndex) => (
                 <div key={column.id} className="space-y-1.5 rounded-2xl border border-border/70 bg-card/40 p-3">
@@ -4310,6 +5381,17 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                       <Upload className="h-3.5 w-3.5" />
                       Upload
                     </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={!row.imageId}
+                      onClick={() => row.imageId && openImageEditor(row.imageId, false)}
+                      className="h-10 shrink-0 gap-1 rounded-xl px-3 text-[12px]"
+                      title="Edit this image — crop, erase, pen, background & adjustments"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      Edit
+                    </Button>
                   </div>
                 </div>
               ))}
@@ -4380,6 +5462,17 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                     >
                       <Upload className="h-3.5 w-3.5" />
                       Upload
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={!item.imageId}
+                      onClick={() => item.imageId && openImageEditor(item.imageId, false)}
+                      className="h-10 shrink-0 gap-1 rounded-xl px-3 text-[12px]"
+                      title="Edit this drawing — crop, erase, pen, background & adjustments"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      Edit
                     </Button>
                   </div>
                   <div className="grid grid-cols-3 gap-2">
@@ -4537,6 +5630,10 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
           <Button className="gap-2" onClick={handleDownloadPdf}>
             <FileText className="h-4 w-4" />
             Download PDF
+          </Button>
+          <Button variant="outline" className="gap-2" onClick={handleEditablePdf}>
+            <FileText className="h-4 w-4" />
+            Editable PDF (Print)
           </Button>
         </div>
       </div>

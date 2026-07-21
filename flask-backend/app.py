@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import io
 import json
 import os
@@ -16,6 +17,30 @@ import requests
 app = Flask(__name__)
 CORS(app)
 
+
+def _load_dotenv() -> None:
+    """Load KEY=VALUE lines from flask-backend/.env into the environment (no dependency).
+    Existing environment variables always win, so START-WINDOWS.bat settings are preserved."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.exists(env_path):
+        return
+    try:
+        with open(env_path, encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        pass
+
+
+_load_dotenv()
+
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "ollama").strip().lower()
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").strip()
@@ -26,9 +51,49 @@ GROQ_URL = os.environ.get("GROQ_URL", "https://api.groq.com/openai/v1").strip().
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 GROQ_TIMEOUT_SECONDS = int(os.environ.get("GROQ_TIMEOUT_SECONDS", "120").strip())
-PDF_RENDER_SCALE = float(os.environ.get("PDF_RENDER_SCALE", "1.35").strip())
+
+GEMINI_URL = os.environ.get("GEMINI_URL", "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest").strip()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GEMINI_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TIMEOUT_SECONDS", "180").strip())
+PDF_RENDER_SCALE = float(os.environ.get("PDF_RENDER_SCALE", "3.0").strip())
 MAX_PROMPT_CHARS = int(os.environ.get("MAX_PROMPT_CHARS", "36000").strip())
 ENABLE_PADDLE_OCR = os.environ.get("ENABLE_PADDLE_OCR", "1").strip().lower() not in {"0", "false", "no"}
+
+# Cache extraction results by PDF content so the same file is never re-analyzed (saves
+# LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
+ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
+EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
+CACHE_VERSION = "v1"
+
+
+def _extraction_cache_path(pdf_bytes: bytes) -> str:
+    digest = hashlib.sha256(CACHE_VERSION.encode() + pdf_bytes).hexdigest()
+    return os.path.join(EXTRACTION_CACHE_DIR, f"{digest}.json")
+
+
+def load_cached_extraction(pdf_bytes: bytes) -> "dict[str, Any] | None":
+    if not ENABLE_EXTRACTION_CACHE:
+        return None
+    path = _extraction_cache_path(pdf_bytes)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return None
+
+
+def save_cached_extraction(pdf_bytes: bytes, result: "dict[str, Any]") -> None:
+    if not ENABLE_EXTRACTION_CACHE:
+        return
+    try:
+        os.makedirs(EXTRACTION_CACHE_DIR, exist_ok=True)
+        with open(_extraction_cache_path(pdf_bytes), "w", encoding="utf-8") as handle:
+            json.dump(result, handle)
+    except Exception as exc:  # noqa: BLE001 - cache write is best-effort
+        print(f"[cache] save failed: {exc}", flush=True)
 
 SYSTEM_PROMPT = """You are an expert lighting specification analyst building IKIO-style technical data sheet drafts from vendor PDFs.
 
@@ -38,24 +103,46 @@ Return ONLY valid JSON with this exact structure:
 {
   "productName": "Vendor-source product name, cleaned for IKIO TDS use",
   "alternateName": "Alternate vendor/product naming if present",
-  "productDescription": "Max 380 chars. Must reflect source PDF, key wattage/lumen/control details, and application intent.",
-  "productFeatures": ["Feature 1", "Feature 2", "Feature 3", "Feature 4", "Feature 5"],
+  "productDescription": "A cohesive paragraph of around 400 characters (360-430). Must reflect source PDF, key wattage/lumen/control details, and application intent.",
+  "productFeatures": ["Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars"],
   "applicationAreas": ["Area 1", "Area 2", "Area 3", "Area 4", "Area 5", "Area 6"],
   "productCategory": "panel/downlight/track/flood/street/high_bay/low_bay/linear/unknown",
+  "subCategory": "More specific sub-type or series name (e.g. 'Tri-Proof Light', 'Linear High Bay'). Best guess from the source if not explicit.",
   "isProductFamily": true,
+  "orderingInfo": {
+    "Brand": [{"code": "IK", "description": "IKIO"}],
+    "Family/Version": [{"code": "value", "description": "meaning"}],
+    "Size": [{"code": "value", "description": "meaning"}],
+    "Power": [{"code": "value", "description": "meaning"}],
+    "Voltage": [{"code": "value", "description": "meaning"}],
+    "Dimming": [{"code": "value", "description": "meaning"}],
+    "CCT": [{"code": "value", "description": "meaning"}],
+    "Distribution": [{"code": "value", "description": "meaning"}],
+    "Driver": [{"code": "value", "description": "meaning"}],
+    "Finish": [{"code": "value", "description": "meaning"}],
+    "Manufacturer": [{"code": "value", "description": "meaning"}]
+  },
+  "orderingExample": "Full assembled example ordering/part number if present, else best guess like IK-LHB2-02-...",
+  "accessories": [
+    {"code": "Accessory product code", "description": "Accessory description"}
+  ],
+  "dimensions": [
+    {"label": "Fixture/variant label", "width": "value in", "height": "value in", "depth": "value in"}
+  ],
   "variantOverview": {
     "parameters": ["Fixture Type", "Power", "Lumen Output", "CCT", "Efficacy"],
     "matrix": [
-      ["Variant label", "value", "value", "value", "value"]
+      ["60W package", "20W/30W/40W/50W/60W", "2800lm/4200lm/5600lm/7000lm/8400lm", "3000K/4000K/5000K", "140lm/W"],
+      ["120W package", "40W/60W/80W/100W/120W", "5600lm/8400lm/11200lm/14000lm/16800lm", "3000K/4000K/5000K", "140lm/W"]
     ]
   },
   "variants": [
     {
-      "label": "Variant label",
+      "label": "Variant/package label (NOT a part number)",
       "fixtureType": "value",
-      "power": "value",
-      "lumenOutput": "value",
-      "cct": "value",
+      "power": "Every selectable wattage, slash-separated, e.g. 20W/30W/40W/50W/60W",
+      "lumenOutput": "Every lumen value in the SAME order, e.g. 2800lm/4200lm/5600lm/7000lm/8400lm",
+      "cct": "3000K/4000K/5000K",
       "efficacy": "value"
     }
   ],
@@ -137,8 +224,31 @@ Rules:
     "600 x 600 mm" → "23.62 x 23.62 in"
     "1200 mm" → "47.24 in"
     "300x120 mm" → "11.81 x 4.72 in"
+- US STANDARD UNITS (mandatory): Output every measurement in US units with the correct symbol.
+    Temperature -> Fahrenheit: convert °C to °F (F = C*9/5+32), e.g. "-20°C to 45°C" -> "-4°F to 113°F". Always use the ° symbol and "F".
+    Weight -> pounds: convert kg to lbs (1 kg = 2.20462 lbs), e.g. "6.5 kg" -> "14.33 lbs". Always end with " lbs".
+    Length / dimensions -> inches (and feet where natural, e.g. "4'"): convert mm/cm (1 in = 25.4 mm). Use the " (inch) and ' (foot) symbols or "in".
+    If a source value is already in US units, keep it and just fix the symbol/spacing.
+- BEST-EFFORT: Every form field should end up with SOMETHING. If the source doesn't state a value, infer the most likely value from the product type/specs rather than leaving it blank — the user will verify flagged values. Only use "Not Specified" when no reasonable inference exists.
+- NEVER put a vendor part number, model code, SKU, or series code (e.g. "PT02", "SS-PT02", "PT02-60W",
+  "S0150") into Power, Lumen Output, Voltage, Current, Efficacy, technicalSpecs, variants, or
+  variantOverview.matrix. Those fields must contain ONLY real measured values with units (W, lm, V, A, lm/W).
+- SELECTABLE WATTAGES: for multi-wattage fixtures, extract the FULL list of individual wattages and pair each
+  with its lumen output — never a part number, never a single collapsed value. Example: source
+  "WATTAGES: 60/50/40/30/20W" with lumens "8400/7000/5600/4200/2800 lm" -> Power "20W/30W/40W/50W/60W",
+  Lumen Output "2800/4200/5600/7000/8400 lm", keeping the wattage<->lumen order aligned. If there are two
+  wattage families (e.g. a 60W package and a 120W package), return one variant per family in variantOverview.matrix
+  with that family's individual wattages in the Power cell.
+- CCT / Color Temperature must contain ONLY Kelvin values (e.g. "3000K/4000K/5000K") — NEVER power (W),
+  lumen, or "for X W" qualifiers. List each distinct CCT once.
 - If a value is clearly selectable, format compactly, for example "20W/25W/30W" or "3000K/4000K/5000K".
 - Keep descriptions and features grounded in the source PDF.
+- productFeatures: return EXACTLY 4 features (no more, no fewer). Take the vendor's real features/specs and rewrite EACH as a complete, benefit-oriented sentence of about 100 characters (aim 90-115). NEVER return a bare fragment. Expand short bullets — e.g. source "Samsung 2835 chips" -> "Built with premium Samsung 2835 LED chips for consistent brightness and dependable long-term output." and "4KV surge protection" -> "Integrated 4 kV surge protection safeguards the driver against voltage spikes for reliable operation." Every claim must stay grounded in the source PDF.
+- productDescription: write a single cohesive paragraph of around 400 characters (target 360-430). Ground it in the source PDF.
+- orderingInfo: Fill EVERY column with at least one {code, description} option. If the vendor PDF has a part-number / ordering decoder, copy its exact codes and meanings for each field. If it does NOT, best-effort DERIVE options from the real specs: Power codes from the wattage packages, CCT codes from the color temperatures, Voltage from the input voltage, etc. Use short codes (e.g. "50K" for 5000K, "MV" for 120-277V, "WH" for White, "D" for Dimmable). Never leave orderingInfo empty.
+- orderingExample: assemble one concrete example part number by joining one chosen code from each column with "-".
+- accessories: List any accessories, controllers, sensors, mounting/emergency kits mentioned. Each needs a product code (best-effort like "IK-ACC-...") and a short description. Return [] only if the PDF truly has none.
+- dimensions: For each fixture size/variant, give a label and its width/height/depth in inches (convert mm using 1in=25.4mm, 2 decimals). Use "Not Specified" for any missing axis.
 - Return JSON only.
 """
 
@@ -278,10 +388,14 @@ def get_paddle_ocr():
 
 
 def pil_image_to_data_url(image) -> str:
+    # High-quality JPEG keeps the high-resolution source pages small enough to hold in
+    # memory (PNG at 3x would be many MB/page). Crops are captured from these at native
+    # resolution, so q95 gives sharp crops with a manageable payload.
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
+    rgb = image.convert("RGB") if image.mode not in ("RGB", "L") else image
+    rgb.save(buffer, format="JPEG", quality=95)
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
+    return f"data:image/jpeg;base64,{encoded}"
 
 
 def render_pdf_pages(pdf_path: str) -> list[dict[str, Any]]:
@@ -443,7 +557,32 @@ def normalize_temperature_value(value: str) -> str:
     text = re.sub(r"(?<!\d)-\s+(\d)", r"-\1", text)
     text = re.sub(r"\(\s+", "(", text)
     text = re.sub(r"\s+\)", ")", text)
+
+    # US standard: convert every Celsius reading to Fahrenheit (F = C*9/5 + 32).
+    def _c_to_f(match: "re.Match[str]") -> str:
+        celsius = float(match.group(1))
+        return f"{round(celsius * 9 / 5 + 32)}°F"
+
+    text = re.sub(r"(-?\d+(?:\.\d+)?)\s*°?\s*C\b", _c_to_f, text)
     return text
+
+
+def normalize_weight_value(value: str) -> str:
+    """US standard: convert kilograms/grams to pounds and normalize the 'lbs' unit."""
+    text = normalize_whitespace(value)
+    if not text:
+        return "Not Specified"
+
+    def _kg_to_lbs(match: "re.Match[str]") -> str:
+        return f"{round(float(match.group(1)) * 2.20462, 2)} lbs"
+
+    def _g_to_lbs(match: "re.Match[str]") -> str:
+        return f"{round(float(match.group(1)) * 0.00220462, 2)} lbs"
+
+    text = re.sub(r"(?i)(\d+(?:\.\d+)?)\s*(?:kg|kilograms?)\b", _kg_to_lbs, text)
+    text = re.sub(r"(?i)(\d+(?:\.\d+)?)\s*(?:grams?|gm)\b", _g_to_lbs, text)
+    text = re.sub(r"(?i)(\d+(?:\.\d+)?)\s*(?:lbs?|pounds?)\b", r"\1 lbs", text)
+    return normalize_whitespace(text)
 
 
 def normalize_unit_spacing(value: str) -> str:
@@ -484,13 +623,14 @@ def unique_preserve_order(values: list[str]) -> list[str]:
 
 
 def normalize_color_temperature_value(value: str) -> str:
-    segments = [
-        re.sub(r"(?i)(\d{3,5})\s*k\b", r"\1K", normalize_unit_spacing(segment))
-        for segment in re.split(r"(?:\r?\n|[|;])+", value)
-        if normalize_whitespace(segment)
-    ]
-    unique_segments = unique_preserve_order(segments)
-    return " | ".join(unique_segments) if unique_segments else "Not Specified"
+    # CCT must contain ONLY color temperatures. Extract every "<digits>K" token and drop any
+    # power/lumen/other content that leaked in (e.g. "40W/60W: 3000K-4000K" -> "3000K/4000K/5000K").
+    kelvin_tokens: list[str] = []
+    for number in re.findall(r"(?i)(\d{3,5})\s*k\b", value or ""):
+        token = f"{number}K"
+        if token not in kelvin_tokens:
+            kelvin_tokens.append(token)
+    return "/".join(kelvin_tokens) if kelvin_tokens else "Not Specified"
 
 
 def infer_length_feet_label(value: str) -> str:
@@ -519,6 +659,18 @@ def infer_length_feet_label(value: str) -> str:
     return text
 
 
+def strip_catalog_code(value: str) -> str:
+    """Remove leaked vendor part-number / model-code prefixes, per line, so an electrical
+    value never shows a SKU fragment. 'PT02-60W' -> '60W', '02-120W' -> '120W'. A real range
+    like '20-60W' (starts with a normal digit, no letter, no leading zero) is left intact."""
+    cleaned_lines = []
+    for line in str(value).split("\n"):
+        cleaned_lines.append(
+            re.sub(r"^\s*(?:[A-Za-z][A-Za-z0-9]*|0\d+)\s*[-–]\s*", "", line).strip()
+        )
+    return "\n".join(cleaned_lines)
+
+
 def normalize_spec_value(parameter: str, value: str) -> str:
     text = normalize_unit_spacing(value)
     if parameter == "Color Temperature":
@@ -527,6 +679,10 @@ def normalize_spec_value(parameter: str, value: str) -> str:
         return format_beam_angle(text)
     if "Temperature" in parameter:
         return normalize_temperature_value(text)
+    if parameter == "Weight":
+        return normalize_weight_value(text)
+    if parameter in ("Power", "Lumen Output", "Current", "Efficacy"):
+        text = strip_catalog_code(text)
     return text
 
 
@@ -729,10 +885,16 @@ def repair_variant_overview(variant_overview: dict[str, list[Any]]) -> dict[str,
 def derive_variant_overview(technical_specs: list[dict[str, str]], current: dict[str, Any]) -> dict[str, Any]:
     variant_overview = normalize_variant_overview(current.get("variantOverview"))
     if variant_overview["matrix"]:
+        # Scrub SKU fragments from the Power column (index 2) that feeds the spec table.
+        params = variant_overview.get("parameters", [])
+        power_idx = params.index("Power") if "Power" in params else 2
+        for row in variant_overview["matrix"]:
+            if isinstance(row, list) and len(row) > power_idx:
+                row[power_idx] = strip_catalog_code(str(row[power_idx]))
         return variant_overview
 
     lookup = {item["parameter"]: item["specification"] for item in technical_specs}
-    power_lines = [line.strip() for line in re.split(r"[\r\n]+", lookup.get("Power", "")) if line.strip()]
+    power_lines = [strip_catalog_code(line.strip()) for line in re.split(r"[\r\n]+", lookup.get("Power", "")) if line.strip()]
     lumen_lines = [line.strip() for line in re.split(r"[\r\n]+", lookup.get("Lumen Output", "")) if line.strip()]
     cct = lookup.get("Color Temperature", "Not Specified")
     efficacy = lookup.get("Efficacy", "Not Specified")
@@ -773,6 +935,9 @@ def normalize_variants(value: Any) -> list[dict[str, Any]]:
             normalized_item["fixtureType"] = infer_length_feet_label(str(normalized_item.get("fixtureType", "")))
         if "cct" in normalized_item:
             normalized_item["cct"] = normalize_color_temperature_value(str(normalized_item.get("cct", "")))
+        for code_field in ("power", "lumenOutput"):
+            if code_field in normalized_item:
+                normalized_item[code_field] = strip_catalog_code(str(normalized_item[code_field]))
         normalized_variants.append(normalized_item)
     return normalized_variants
 
@@ -899,16 +1064,223 @@ def call_groq(document_text: str) -> dict[str, Any]:
     return json.loads(ensure_json_string(content))
 
 
+def _gemini_generate(system_prompt: str, user_message: str) -> dict[str, Any]:
+    if not GEMINI_API_KEY:
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set. Export GEMINI_API_KEY (get a key at "
+            "https://aistudio.google.com/apikey) and set LLM_PROVIDER=gemini."
+        )
+    url = f"{GEMINI_URL}/models/{GEMINI_MODEL}:generateContent"
+    payload = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+        "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
+    }
+    response = requests.post(
+        url,
+        json=payload,
+        headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+        timeout=GEMINI_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    data = response.json()
+    candidates = data.get("candidates", [])
+    if not candidates:
+        raise RuntimeError(f"Gemini returned no candidates: {str(data)[:300]}")
+    parts = candidates[0].get("content", {}).get("parts", [])
+    content = "".join(part.get("text", "") for part in parts if isinstance(part, dict))
+    return json.loads(ensure_json_string(content))
+
+
+def call_gemini(document_text: str) -> dict[str, Any]:
+    return _gemini_generate(SYSTEM_PROMPT, build_user_message(document_text))
+
+
+REVIEW_SYSTEM_PROMPT = """You are a senior QA reviewer for IKIO lighting technical data sheets.
+You receive (1) the vendor source text and (2) a first-pass JSON extraction of it. Cross-check the
+extraction against the source like a careful human would, then return a CORRECTED JSON with the
+EXACT same keys/structure.
+
+Fix these problems specifically:
+- CONTRADICTIONS: any value that conflicts with productDescription or with other fields. Example:
+  Power shows "02-60W" (a catalog/part-number fragment) but the description says selectable "20W to 120W" —
+  the real selectable wattages are correct; replace the fragment with "20W/.../120W".
+- SKU LEAKAGE: Power, Lumen Output, Voltage, Current, Efficacy must be real measured values, NEVER
+  catalog/part-number codes (e.g. "PT02", "S0150", "02", "PTO2-60W"). Strip any code fragments.
+- SELECTABLE PACKAGES: when a fixture offers multiple wattages/lumens/CCTs, format compactly like
+  "20W/60W/120W" and keep the power<->lumen relationship intact.
+- POWER<->LUMEN COUNT: in variantOverview.matrix and variants, the Power cell MUST list the same number of
+  values as the Lumen Output cell, aligned in order. If Lumen Output has 5 values (e.g.
+  "2800lm/4200lm/5600lm/7000lm/8400lm") but Power has 1 (e.g. "60W"), find the full wattage list in the source
+  (e.g. "60/50/40/30/20W") and expand Power to "20W/30W/40W/50W/60W". Never leave Power as a single value or a
+  part number when multiple lumen packages exist.
+- MISSING VALUES that clearly appear in the source text.
+- US UNITS with symbols: temperature in °F, weight in lbs, dimensions in inches.
+Keep every value that is already correct — only change what is wrong or missing. Return JSON only."""
+
+
+def _ollama_chat_json(system_prompt: str, user_message: str) -> dict[str, Any]:
+    payload = {
+        "model": resolve_ollama_model(),
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0.1},
+    }
+    response = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    content = response.json().get("message", {}).get("content", "")
+    return json.loads(ensure_json_string(content))
+
+
+def _llm_chat_json(system_prompt: str, user_message: str) -> dict[str, Any]:
+    """Single JSON chat completion via the active provider, falling back to local Ollama."""
+    if LLM_PROVIDER in ("gemini", "groq"):
+        try:
+            if LLM_PROVIDER == "gemini":
+                return _gemini_generate(system_prompt, user_message)
+            payload = {
+                "model": GROQ_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+            }
+            response = requests.post(
+                f"{GROQ_URL}/chat/completions",
+                json=payload,
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                timeout=GROQ_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            content = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            return json.loads(ensure_json_string(content))
+        except Exception as exc:  # noqa: BLE001 - fall back to local model
+            print(f"[review] {LLM_PROVIDER} failed ({str(exc)[:120]}); using local Ollama for review.", flush=True)
+    return _ollama_chat_json(system_prompt, user_message)
+
+
+def review_extraction(raw_result: dict[str, Any], source_text: str) -> dict[str, Any]:
+    """Second 'reviewer agent' pass: cross-check the first extraction against the source and
+    correct contradictions/SKU-leakage/units. Falls back to the first result on any failure."""
+    if os.environ.get("ENABLE_REVIEW", "1").strip().lower() not in ("1", "true", "yes", "on"):
+        return raw_result
+    try:
+        user_message = (
+            "Vendor source text:\n"
+            f"{source_text[:MAX_PROMPT_CHARS]}\n\n"
+            "First-pass extraction JSON to review and correct:\n"
+            f"{json.dumps(raw_result, ensure_ascii=False)[:20000]}\n\n"
+            "Return the corrected JSON with the same structure."
+        )
+        reviewed = _llm_chat_json(REVIEW_SYSTEM_PROMPT, user_message)
+        if isinstance(reviewed, dict) and (reviewed.get("productName") or reviewed.get("technicalSpecs")):
+            # Merge so any key the reviewer dropped falls back to the first pass.
+            return {**raw_result, **reviewed}
+    except Exception as exc:  # noqa: BLE001 - reviewer is best-effort
+        print(f"[review] skipped: {exc}", flush=True)
+    return raw_result
+
+
 def call_llm(document_text: str) -> dict[str, Any]:
-    if LLM_PROVIDER == "groq":
-        return call_groq(document_text)
-    return call_ollama(document_text)
+    try:
+        if LLM_PROVIDER == "gemini":
+            return call_gemini(document_text)
+        if LLM_PROVIDER == "groq":
+            return call_groq(document_text)
+        return call_ollama(document_text)
+    except Exception as exc:  # noqa: BLE001 - resilience: never hard-fail if a fallback exists
+        if LLM_PROVIDER != "ollama":
+            print(
+                f"[llm] provider '{LLM_PROVIDER}' failed ({str(exc)[:160]}); falling back to local Ollama.",
+                flush=True,
+            )
+            return call_ollama(document_text)
+        raise
+
+
+ORDERING_FIELD_KEYS = [
+    "Brand",
+    "Family/Version",
+    "Size",
+    "Power",
+    "Voltage",
+    "Dimming",
+    "CCT",
+    "Distribution",
+    "Driver",
+    "Finish",
+    "Manufacturer",
+]
+
+
+def _clean_code_entries(entries: Any) -> list[dict[str, str]]:
+    cleaned: list[dict[str, str]] = []
+    if isinstance(entries, list):
+        for entry in entries:
+            if isinstance(entry, dict):
+                code = normalize_whitespace(str(entry.get("code", "")))
+                desc = normalize_whitespace(str(entry.get("description", "")))
+            elif isinstance(entry, str):
+                code, desc = normalize_whitespace(entry), ""
+            else:
+                continue
+            if code or desc:
+                cleaned.append({"code": code, "description": desc})
+    return cleaned
+
+
+def normalize_ordering_info(value: Any) -> dict[str, list[dict[str, str]]]:
+    src = value if isinstance(value, dict) else {}
+    return {key: _clean_code_entries(src.get(key)) for key in ORDERING_FIELD_KEYS}
+
+
+def normalize_accessories(value: Any) -> list[dict[str, str]]:
+    return _clean_code_entries(value)[:12]
+
+
+def normalize_dimensions_list(value: Any) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    if isinstance(value, list):
+        for entry in value:
+            if not isinstance(entry, dict):
+                continue
+            row = {
+                "label": normalize_whitespace(str(entry.get("label", ""))),
+                "width": normalize_whitespace(str(entry.get("width", ""))),
+                "height": normalize_whitespace(str(entry.get("height", ""))),
+                "depth": normalize_whitespace(str(entry.get("depth", ""))),
+            }
+            if any(row.values()):
+                result.append(row)
+    return result[:8]
+
+
+def derive_name_from_text(source_text: str) -> str:
+    """Best-effort vendor name: the first prominent, title-like line of the source."""
+    for raw in (source_text or "").splitlines():
+        line = normalize_whitespace(raw)
+        if not line or line.upper().startswith("[PAGE"):
+            continue
+        letters = sum(1 for ch in line if ch.isalpha())
+        if 3 <= len(line) <= 60 and letters >= 3:
+            return line
+    return ""
 
 
 def post_process_extraction(model_output: dict[str, Any], source_text: str, source_pages: list[dict[str, Any]], notes: list[str]) -> dict[str, Any]:
     technical_specs = normalize_technical_specs(model_output.get("technicalSpecs"))
 
-    product_name = normalize_whitespace(str(model_output.get("productName", ""))) or "Unknown Product"
+    product_name = (
+        normalize_whitespace(str(model_output.get("productName", "")))
+        or derive_name_from_text(source_text)
+        or "Unknown Product"
+    )
     alternate_name = normalize_whitespace(str(model_output.get("alternateName", ""))) or "Not Specified"
     description = normalize_whitespace(str(model_output.get("productDescription", ""))) or "Not Specified"
     category = normalize_whitespace(str(model_output.get("productCategory", ""))) or infer_product_category(source_text)
@@ -917,16 +1289,24 @@ def post_process_extraction(model_output: dict[str, Any], source_text: str, sour
         "productName": product_name,
         "alternateName": alternate_name,
         "productDescription": description,
-        "productFeatures": normalize_string_list(model_output.get("productFeatures"), "See source vendor PDF for product features.", 5),
+        "productFeatures": normalize_string_list(model_output.get("productFeatures"), "See source vendor PDF for product features.", 4),
         "applicationAreas": normalize_string_list(model_output.get("applicationAreas"), "General commercial lighting", 6),
         "productCategory": category,
+        "subCategory": normalize_whitespace(str(model_output.get("subCategory", ""))),
         "isProductFamily": bool(model_output.get("isProductFamily", False)),
+        "orderingInfo": normalize_ordering_info(model_output.get("orderingInfo")),
+        "orderingExample": normalize_whitespace(str(model_output.get("orderingExample", ""))),
+        "accessories": normalize_accessories(model_output.get("accessories")),
+        "dimensions": normalize_dimensions_list(model_output.get("dimensions")),
         "technicalSpecs": technical_specs,
         "categorySpecificSpecs": normalize_technical_specs(model_output.get("categorySpecificSpecs")),
         "notes": normalize_string_list(model_output.get("notes"), "Generated from vendor PDF source.", 8) + notes,
         "vendorInfo": normalize_vendor_info(model_output.get("vendorInfo")),
         "sourceImages": [],
         "sourcePages": source_pages,
+        # Raw extracted PDF text (capped) so the editor can flag which values are
+        # actually grounded in the vendor source.
+        "sourceText": (source_text or "")[:60000],
         "variants": normalize_variants(model_output.get("variants")),
     }
 
@@ -937,6 +1317,134 @@ def post_process_extraction(model_output: dict[str, Any], source_text: str, sour
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
+
+
+AI_DESCRIPTION_SYSTEM = (
+    'You write IKIO lighting PRODUCT DESCRIPTIONS. Return ONLY JSON: {"text": "..."}. '
+    "Write one cohesive paragraph of about 400 characters (360-430), grounded in the provided specs, "
+    "highlighting the wattage/lumen/CCT options, controls, build quality, and ideal applications. "
+    "Do not invent unsupported claims and never include vendor part numbers. Follow the user's instruction."
+)
+AI_FEATURES_SYSTEM = (
+    'You write IKIO lighting product FEATURES. Return ONLY JSON: {"features": ["...", "...", "...", "..."]}. '
+    "Exactly 4 benefit-oriented sentences, each about 100 characters (90-115), grounded in the provided specs. "
+    "No part numbers, no bare fragments. Follow the user's instruction."
+)
+
+
+@app.route("/ai-content", methods=["POST"])
+def ai_content():
+    """Generate/rewrite the Product Description or Features from a user-editable prompt."""
+    data = request.get_json(silent=True) or {}
+    kind = str(data.get("kind", "description")).strip().lower()
+    instruction = normalize_whitespace(str(data.get("instruction", "")))
+    product = data.get("product") if isinstance(data.get("product"), dict) else {}
+
+    context_lines = []
+    for label, key in (
+        ("Product name", "name"),
+        ("Category", "category"),
+        ("Sub-category", "subCategory"),
+        ("Key specs", "specs"),
+        ("Current text", "current"),
+    ):
+        value = normalize_whitespace(str(product.get(key, "")))
+        if value:
+            context_lines.append(f"{label}: {value}")
+    context = "\n".join(context_lines) or "No additional context provided."
+
+    is_features = kind == "features"
+    system_prompt = AI_FEATURES_SYSTEM if is_features else AI_DESCRIPTION_SYSTEM
+    default_instruction = (
+        "Write 4 strong, benefit-oriented feature bullets."
+        if is_features
+        else "Write a polished ~400 character product description."
+    )
+    user_message = f"{instruction or default_instruction}\n\nProduct context:\n{context}"
+
+    try:
+        out = _llm_chat_json(system_prompt, user_message)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": "AI generation failed", "detail": str(exc)[:200]}), 502
+
+    if is_features:
+        raw = out.get("features") if isinstance(out, dict) else None
+        features = (
+            [normalize_whitespace(str(item)) for item in raw if isinstance(item, str) and str(item).strip()][:4]
+            if isinstance(raw, list)
+            else []
+        )
+        return jsonify({"features": features})
+
+    text = normalize_whitespace(str(out.get("text", "")) if isinstance(out, dict) else "")
+    return jsonify({"text": text})
+
+
+PRODUCT_NAME_STORE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "product-names.json")
+
+
+def _load_name_registry() -> "dict[str, Any]":
+    try:
+        with open(PRODUCT_NAME_STORE, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return {"assigned": data.get("assigned") or {}, "used": data.get("used") or []}
+    except Exception:
+        return {"assigned": {}, "used": []}
+
+
+def _save_name_registry(registry: "dict[str, Any]") -> None:
+    try:
+        os.makedirs(os.path.dirname(PRODUCT_NAME_STORE), exist_ok=True)
+        with open(PRODUCT_NAME_STORE, "w", encoding="utf-8") as handle:
+            json.dump(registry, handle)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[names] save failed: {exc}", flush=True)
+
+
+@app.route("/product-names/reserve", methods=["POST"])
+def reserve_product_names():
+    """Reserve globally-unique product names so no two products share a name. The frontend
+    sends a product key + ordered candidate names; we hand back the first N not already used."""
+    data = request.get_json(silent=True) or {}
+    key = normalize_whitespace(str(data.get("key", "")))
+    count = max(1, int(data.get("count", 3) or 3))
+    candidates = [
+        normalize_whitespace(str(item))
+        for item in (data.get("candidates") if isinstance(data.get("candidates"), list) else [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+
+    registry = _load_name_registry()
+    already = [name for name in (registry["assigned"].get(key) or []) if name]
+    if key and len(already) >= count:
+        return jsonify({"names": already[:count]})
+
+    used_lower = {str(name).lower() for name in registry["used"]}
+    chosen = already[:count]
+    seen = {name.lower() for name in chosen}
+    for candidate in candidates:
+        if len(chosen) >= count:
+            break
+        low = candidate.lower()
+        if low in seen or low in used_lower:
+            continue
+        chosen.append(candidate)
+        seen.add(low)
+
+    suffix = 2
+    base = candidates[0] if candidates else "Product"
+    while len(chosen) < count:
+        fallback = f"{base} {suffix}"
+        if fallback.lower() not in seen and fallback.lower() not in used_lower:
+            chosen.append(fallback)
+            seen.add(fallback.lower())
+        suffix += 1
+
+    if key:
+        registry["assigned"][key] = chosen[:count]
+    registry["used"] = sorted({*registry["used"], *chosen})
+    _save_name_registry(registry)
+    return jsonify({"names": chosen[:count]})
 
 
 @app.route("/process-pdf", methods=["POST"])
@@ -951,6 +1459,15 @@ def process_pdf():
     pdf_bytes = file.read()
     if not pdf_bytes:
         return jsonify({"error": "Empty file"}), 400
+
+    # Return the saved result if this exact PDF was analyzed before (unless force=1).
+    force = str(request.form.get("force") or request.args.get("force") or "").strip().lower() in {"1", "true", "yes"}
+    if not force:
+        cached = load_cached_extraction(pdf_bytes)
+        if cached is not None:
+            print(f"[cache] hit for {file.filename!r} — returning saved result (no re-analysis).", flush=True)
+            cached["cached"] = True
+            return jsonify(cached)
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(pdf_bytes)
@@ -969,7 +1486,27 @@ def process_pdf():
             ), 422
 
         raw_result = call_llm(extracted_text)
-        result = post_process_extraction(raw_result, extracted_text, source_pages, extraction_notes)
+        # Second "reviewer agent" pass: cross-check and correct before mapping into the form.
+        reviewed_result = review_extraction(raw_result, extracted_text)
+
+        # Diagnostics: surface what the model returned (pre/post review) vs. text fed in.
+        try:
+            print(
+                f"[extract] file={file.filename!r} text_chars={len(extracted_text)} "
+                f"name={str(reviewed_result.get('productName',''))[:60]!r} "
+                f"features={len(reviewed_result.get('productFeatures') or [])} "
+                f"applications={len(reviewed_result.get('applicationAreas') or [])} "
+                f"technicalSpecs={len(reviewed_result.get('technicalSpecs') or [])} "
+                f"reviewed={reviewed_result is not raw_result} "
+                f"text_head={normalize_whitespace(extracted_text)[:200]!r}",
+                flush=True,
+            )
+        except Exception:
+            pass
+
+        result = post_process_extraction(reviewed_result, extracted_text, source_pages, extraction_notes)
+        # Save so this exact PDF is never analyzed from scratch again.
+        save_cached_extraction(pdf_bytes, result)
         return jsonify(result)
 
     except requests.exceptions.ConnectionError:
@@ -1016,7 +1553,11 @@ def process_pdf():
 if __name__ == "__main__":
     port = int(os.environ.get("FLASK_PORT", "5005").strip())
     print(f"Starting Flask backend on port {port}")
-    if LLM_PROVIDER == "groq":
+    if LLM_PROVIDER == "gemini":
+        print(f"Using Gemini model {GEMINI_MODEL}")
+        if not GEMINI_API_KEY:
+            print("WARNING: GEMINI_API_KEY is not set. Set it before processing PDFs.", file=sys.stderr)
+    elif LLM_PROVIDER == "groq":
         print(f"Using Groq at {GROQ_URL} with model {GROQ_MODEL}")
         if not GROQ_API_KEY:
             print("WARNING: GROQ_API_KEY is not set. Set it before processing PDFs.", file=sys.stderr)

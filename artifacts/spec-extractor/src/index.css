@@ -65,41 +65,54 @@
   margin: 0;
 }
 
+/* Off-screen container that only becomes visible while printing. The sheets are
+   cloned into it (at 1:1 scale, outside the preview's scale transform) so the
+   browser's "Save as PDF" produces a true text PDF with selectable, editable
+   text rather than a flattened image. */
+.print-only-root {
+  display: none;
+}
+
 @media print {
   html, body {
     background: white !important;
   }
 
-  body * {
-    visibility: hidden;
+  /* Hide the live app and any portal layers (toasts, dialogs); show only the
+     cloned sheets. */
+  body.printing > *:not(.print-only-root) {
+    display: none !important;
   }
 
-  .sheet-print-root,
-  .sheet-print-root * {
-    visibility: visible !important;
+  body.printing .print-only-root {
+    display: block !important;
   }
 
-  .sheet-print-root {
-    position: absolute;
-    left: 0;
-    top: 0;
+  .print-only-root .sheet-print-root {
+    position: relative !important;
+    margin: 0 auto !important;
     width: 8.5in !important;
     height: 11in !important;
     min-height: 11in !important;
     max-height: 11in !important;
-    margin: 0 !important;
     border: none !important;
     border-radius: 0 !important;
     box-shadow: none !important;
     overflow: hidden !important;
+    break-after: page;
+    page-break-after: always;
     print-color-adjust: exact;
     -webkit-print-color-adjust: exact;
   }
 
-  .sheet-editor-controls,
-  .sheet-preview-shell {
-    box-shadow: none !important;
-    border: none !important;
-    background: transparent !important;
+  .print-only-root .sheet-print-root:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  /* Force background colors/accents (header rule, footer bar, table fills) to print. */
+  .print-only-root .sheet-print-root * {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
   }
 }
