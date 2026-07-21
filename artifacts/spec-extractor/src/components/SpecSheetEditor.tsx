@@ -3104,9 +3104,11 @@ function buildPreviewVariantRows(spec: ExtendedExtractedSpec) {
 
 const OVERVIEW_LABEL_ACRONYMS = new Set([
   "AC",
+  "BUG",
   "CCT",
   "CRI",
   "DC",
+  "EPA",
   "IK",
   "IP",
   "LED",
@@ -3116,6 +3118,15 @@ const OVERVIEW_LABEL_ACRONYMS = new Set([
 ]);
 
 const canonicalOverviewLabelKey = (label: string) => label.replace(/\s+/g, " ").trim().toLowerCase();
+
+/** Ensure the first letter is capitalized and any known acronym stays uppercase, while otherwise
+ *  preserving the supplied wording (used for the canonical Indoor/Outdoor overview heads). */
+function capitalizeOverviewHead(label: string) {
+  const withAcronyms = label.replace(/[A-Za-z]+/g, (word) =>
+    OVERVIEW_LABEL_ACRONYMS.has(word.toUpperCase()) ? word.toUpperCase() : word,
+  );
+  return withAcronyms.replace(/[A-Za-z]/, (char) => char.toUpperCase());
+}
 
 // Exact canonical overview heads (from the Indoor/Outdoor master lists) keyed by a normalized form,
 // so formatOverviewLabel renders them VERBATIM — preserving the supplied caps/lowercase exactly
@@ -3144,9 +3155,10 @@ function overviewValuesFontClass(rows: OverviewRow[]) {
 
 function formatOverviewLabel(value: string) {
   const normalized = normalizeText(value);
-  // Canonical category heads render exactly as supplied (preserve the intended caps/lowercase).
+  // Canonical category heads: keep the supplied wording but capitalize the first letter and any
+  // known acronym (e.g. "voltage" -> "Voltage", "led light source" -> "LED light source").
   const canonicalExact = CANONICAL_OVERVIEW_LABELS.get(canonicalOverviewLabelKey(normalized));
-  if (canonicalExact) return canonicalExact;
+  if (canonicalExact) return capitalizeOverviewHead(canonicalExact);
   // If the user wrote it in ALL CAPS, that's intentional — keep their casing as-is.
   if (normalized && /[A-Za-z]/.test(normalized) && normalized === normalized.toUpperCase()) {
     return normalized;
