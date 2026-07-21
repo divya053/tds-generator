@@ -3389,6 +3389,11 @@ function SheetPageOne({
                   beneath it, then a divider, then "Category | Fixture Group" — all auto-filled
                   from the recognised fixture type. */}
               <div className="h-[110px] w-[413px] shrink-0 overflow-hidden" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                {isSpecified(draft.skuNumber) && (
+                  <div className="text-[9px] font-bold uppercase leading-[1.15] tracking-[0.04em] text-slate-700">
+                    {draft.skuNumber}
+                  </div>
+                )}
                 <h1 className="text-[25px] font-bold uppercase leading-[1.02] tracking-[-0.01em] text-[#00a651]">
                   {draft.title}
                 </h1>
@@ -5251,6 +5256,11 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                 ))}
               </div>
             </div>
+            <Input
+              value={draft.skuNumber}
+              onChange={(event) => updateDraft("skuNumber", event.target.value)}
+              placeholder="SKU No. (shown above the product name)"
+            />
             <Input
               value={draft.title}
               onChange={(event) => updateDraft("title", event.target.value)}
