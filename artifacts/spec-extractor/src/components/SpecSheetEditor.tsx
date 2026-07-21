@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Crop,
   ExternalLink,
+  EyeOff,
   FileImage,
   FileText,
   GripVertical,
@@ -41,6 +42,9 @@ type OverviewRow = {
   id: string;
   label: string;
   value: string;
+  // false = kept in the optional pool (not shown on the sheet) until the user opts to include it.
+  // undefined is treated as included (backward-compatible with older saved drafts).
+  included?: boolean;
 };
 
 // ---- Page 2: Product Specifications ----
@@ -284,6 +288,65 @@ const TEMPLATE_OVERVIEW_ROWS: OverviewTemplateRow[] = [
 ];
 
 const CATEGORY_OVERVIEW_TEMPLATES: Record<string, OverviewTemplateRow[]> = {
+  // Master overview heads for INDOOR products, in order. Anything the vendor PDF has that is NOT
+  // one of these becomes an optional (not-included) row the user can opt into.
+  indoor: [
+    createOverviewTemplateRow("Power (Selectable)", "Power", "Wattage"),
+    createOverviewTemplateRow("Voltage", "Input Voltage"),
+    createOverviewTemplateRow("Current"),
+    createOverviewTemplateRow("Power Factor"),
+    createOverviewTemplateRow("Total Harmonic Distortion (THD)", "THD"),
+    createOverviewTemplateRow("Surge Protection"),
+    createOverviewTemplateRow("Lumen Output", "Lumens"),
+    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
+    createOverviewTemplateRow("Color Temperature (CCT)", "CCT", "Color Temperature", "Color Temperature (Selectable)"),
+    createOverviewTemplateRow("Color Rendering (CRI)", "CRI", "Color Rendering Index"),
+    createOverviewTemplateRow("Beam Angle"),
+    createOverviewTemplateRow("Dimming Capability", "Dimming"),
+    createOverviewTemplateRow("Operating Temperature"),
+    createOverviewTemplateRow("Suitable Location"),
+    createOverviewTemplateRow("Ingress Protection Rating (IP)", "IP Rating"),
+    createOverviewTemplateRow("Average Life (Hours)", "Lifespan", "Lifespan (Hours)"),
+    createOverviewTemplateRow("Warranty (Years)", "Warranty"),
+    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
+    createOverviewTemplateRow("Driver"),
+    createOverviewTemplateRow("Housing", "Housing Material"),
+    createOverviewTemplateRow("Finish"),
+    createOverviewTemplateRow("Cover / Lens Material", "Lens", "Cover Material / Lens", "Cover/Lens Material"),
+    createOverviewTemplateRow("Cover Type"),
+    createOverviewTemplateRow("Power Supply"),
+  ],
+  // Master overview heads for OUTDOOR products, in order.
+  outdoor: [
+    createOverviewTemplateRow("Power (Selectable)", "Power", "Wattage"),
+    createOverviewTemplateRow("Voltage", "Input Voltage"),
+    createOverviewTemplateRow("Current"),
+    createOverviewTemplateRow("Power Factor"),
+    createOverviewTemplateRow("Total Harmonic Distortion (THD)", "THD"),
+    createOverviewTemplateRow("Surge Protection"),
+    createOverviewTemplateRow("Lumen Output", "Lumens"),
+    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
+    createOverviewTemplateRow("Color Temperature (CCT)", "CCT", "Color Temperature", "Color Temperature (Selectable)"),
+    createOverviewTemplateRow("Color Rendering (CRI)", "CRI", "Color Rendering Index"),
+    createOverviewTemplateRow("Beam Angle"),
+    createOverviewTemplateRow("Lighting Distribution", "Light Distribution"),
+    createOverviewTemplateRow("BUG Rating (Backlight, Uplight, and Glare)", "BUG Rating", "Backlight Uplight Glare"),
+    createOverviewTemplateRow("Dimming Capability", "Dimming"),
+    createOverviewTemplateRow("Operating Temperature"),
+    createOverviewTemplateRow("Suitable Location"),
+    createOverviewTemplateRow("Ingress Protection Rating (IP)", "IP Rating"),
+    createOverviewTemplateRow("Impact Protection Rating (IK)", "IK Rating"),
+    createOverviewTemplateRow("Average Life (Hours)", "Lifespan", "Lifespan (Hours)"),
+    createOverviewTemplateRow("Warranty (Years)", "Warranty"),
+    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
+    createOverviewTemplateRow("Driver"),
+    createOverviewTemplateRow("Housing", "Housing Material"),
+    createOverviewTemplateRow("Finish"),
+    createOverviewTemplateRow("Effective Projected Area (EPA)", "EPA", "Effective Projected Area"),
+    createOverviewTemplateRow("Cover / Lens Material", "Lens", "Cover Material / Lens", "Cover/Lens Material"),
+    createOverviewTemplateRow("Cover Type"),
+    createOverviewTemplateRow("Power Supply"),
+  ],
   panel: [
     createOverviewTemplateRow("Power (Selectable)", "Power", "Wattage"),
     createOverviewTemplateRow("Voltage", "Input Voltage"),
@@ -1267,8 +1330,17 @@ function normalizeSpecKey(value: string) {
 }
 
 function getOverviewTemplateRows(spec: ExtendedExtractedSpec) {
-  const source = `${getCategoryLabel(spec)} ${spec.productName}`.toLowerCase();
+  const source = `${getCategoryLabel(spec)} ${spec.productName} ${String(spec.subCategory ?? "")}`.toLowerCase();
 
+  // The Indoor / Outdoor master lists are the primary overview taxonomy. Resolve the broad
+  // category from the recognised fixture type first, then fall back to direct keyword hints.
+  const broad = (
+    predictFixtureProfile(spec.productName, String(spec.subCategory ?? ""), getCategoryLabel(spec))?.category ?? ""
+  ).toLowerCase();
+  if (broad.includes("outdoor") || source.includes("outdoor")) return CATEGORY_OVERVIEW_TEMPLATES.outdoor;
+  if (broad.includes("indoor") || source.includes("indoor")) return CATEGORY_OVERVIEW_TEMPLATES.indoor;
+
+  // Legacy per-fixture fallbacks when the broad category can't be determined.
   if (source.includes("downlight")) return CATEGORY_OVERVIEW_TEMPLATES.downlight;
   if (source.includes("low bay")) return CATEGORY_OVERVIEW_TEMPLATES.low_bay;
   if (source.includes("high bay")) return CATEGORY_OVERVIEW_TEMPLATES.high_bay;
@@ -1276,7 +1348,8 @@ function getOverviewTemplateRows(spec: ExtendedExtractedSpec) {
   if (source.includes("street")) return CATEGORY_OVERVIEW_TEMPLATES.street;
   if (source.includes("panel") || source.includes("troffer")) return CATEGORY_OVERVIEW_TEMPLATES.panel;
 
-  return TEMPLATE_OVERVIEW_ROWS;
+  // Default to the Indoor master list (the most common case).
+  return CATEGORY_OVERVIEW_TEMPLATES.indoor;
 }
 
 function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
@@ -1357,6 +1430,7 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
   const templateRows = template.map((row, index) => ({
     id: `template-${index}-${normalizeSpecKey(row.label)}`,
     label: row.label,
+    included: true,
     value:
       buildVariantOverviewValue(row.label) ||
       formatOverviewValue(row.label, getOverviewValue(spec, row.keys)) ||
@@ -1380,6 +1454,9 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
     .map((row, index) => ({
       id: `spec-${index}-${normalizeSpecKey(row.label)}`,
       label: row.label,
+      // Extra vendor specs that aren't one of the category's master heads start OUT of the
+      // overview; the user can opt them in from the "optional" pool in the editor.
+      included: false,
       value: normalizeSpecKey(row.label) === "sensor type"
         ? summarizeSensorTypeValue(row.value)
         : formatOverviewValue(row.label, row.value),
@@ -3263,6 +3340,7 @@ function SheetPageOne({
   const features = normalizePreviewFeatures(draft.featuresText);
   const applicationAreas = splitCommaList(draft.applicationAreasText);
   const filteredOverviewRows = draft.overviewRows
+    .filter((row) => row.included !== false)
     .filter((row) => isSpecified(row.label) && isSpecified(row.value))
     .filter((row) => !isExcludedOverviewLabel(row.label))
     .map((row) =>
@@ -4704,6 +4782,16 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     }));
   };
 
+  // Move a row between the sheet overview and the optional (not-included) pool.
+  const setOverviewIncluded = (index: number, included: boolean) => {
+    setDraft((current) => ({
+      ...current,
+      overviewRows: current.overviewRows.map((row, rowIndex) =>
+        rowIndex === index ? { ...row, included } : row,
+      ),
+    }));
+  };
+
   const addOverviewRow = () => {
     setDraft((current) => ({
       ...current,
@@ -4713,6 +4801,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
           id: `custom-${Date.now()}-${current.overviewRows.length}`,
           label: "",
           value: "",
+          included: true,
         },
       ],
     }));
@@ -5308,11 +5397,11 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               </div>
             )}
             <div className="space-y-3">
-              {draft.overviewRows.map((row, index) => (
+              {draft.overviewRows.map((row, index) => row.included === false ? null : (
                 <div
                   key={row.id}
                   className={cn(
-                    "grid grid-cols-[44px_132px_minmax(0,1fr)_44px] items-start gap-2 rounded-2xl border border-transparent p-2 transition-colors",
+                    "grid grid-cols-[44px_132px_minmax(0,1fr)_44px_44px] items-start gap-2 rounded-2xl border border-transparent p-2 transition-colors",
                     draggedOverviewIndex === index
                       ? "bg-primary/5"
                       : overviewDropIndex === index
@@ -5356,6 +5445,16 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                   <Button
                     type="button"
                     variant="outline"
+                    onClick={() => setOverviewIncluded(index, false)}
+                    className="h-10 w-10 rounded-xl border-border/70 p-0 text-muted-foreground hover:border-primary/40 hover:bg-primary/5 [&>svg]:!size-5"
+                    aria-label={`Move ${row.label || "overview row"} to optional`}
+                    title="Move to optional (hide from sheet)"
+                  >
+                    <EyeOff className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
                     onClick={() => removeOverviewRow(index)}
                     className="h-10 w-10 rounded-xl border-border/70 p-0 border-[#7a3b3b] bg-[#5f2a2a] text-red-100 hover:bg-[#743636] hover:text-red-50 [&>svg]:!size-5 [&>svg]:!text-red-100"
                     aria-label={`Delete ${row.label || "overview row"}`}
@@ -5374,6 +5473,50 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                 <Plus className="mr-2 h-4 w-4" />
                 Add Field
               </Button>
+
+              {/* Optional pool: extra values found in the vendor PDF that aren't one of the
+                  category's standard overview heads. The user opts them into the sheet. */}
+              {draft.overviewRows.some((row) => row.included === false && isSpecified(row.value)) && (
+                <div className="mt-2 space-y-2 rounded-2xl border border-border/60 bg-card/20 p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                    Optional fields — not included
+                  </div>
+                  <p className="text-[11px] leading-snug text-muted-foreground">
+                    Extra values from the vendor PDF that aren&apos;t standard overview heads for this
+                    category. Click <span className="font-semibold text-primary">Include</span> to add one to the sheet.
+                  </p>
+                  {draft.overviewRows.map((row, index) =>
+                    row.included === false && isSpecified(row.value) ? (
+                      <div
+                        key={row.id}
+                        className="flex items-center gap-2 rounded-xl border border-border/50 bg-background/60 p-2"
+                      >
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setOverviewIncluded(index, true)}
+                          className="h-8 shrink-0 gap-1 rounded-lg border-primary/40 bg-primary/5 px-2 text-[12px] text-primary hover:border-primary hover:bg-primary/10"
+                        >
+                          <Plus className="h-3.5 w-3.5" /> Include
+                        </Button>
+                        <span className="min-w-0 flex-1 truncate text-[12px] text-foreground">
+                          <span className="font-semibold">{formatOverviewLabel(row.label)}:</span> {row.value}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => removeOverviewRow(index)}
+                          className="h-8 w-8 shrink-0 rounded-lg border-border/70 p-0 border-[#7a3b3b] bg-[#5f2a2a] text-red-100 hover:bg-[#743636] [&>svg]:!size-4"
+                          aria-label="Delete optional field"
+                          title="Delete"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ) : null,
+                  )}
+                </div>
+              )}
             </div>
           </section>
 
