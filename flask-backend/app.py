@@ -1075,6 +1075,13 @@ def call_groq(document_text: str) -> dict[str, Any]:
 # Retry those (and other transient 5xx) a few times with exponential backoff before giving up.
 GEMINI_MAX_RETRIES = int(os.environ.get("GEMINI_MAX_RETRIES", "4").strip())
 _GEMINI_TRANSIENT_STATUS = {429, 500, 502, 503, 504}
+# When the primary model stays overloaded (503) through all retries, fail over to a sibling model.
+# Google overloads specific model endpoints independently, so a healthy sibling usually succeeds.
+GEMINI_FALLBACK_MODELS = [
+    m.strip()
+    for m in os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-flash-lite-latest,gemini-3-flash-preview").split(",")
+    if m.strip()
+]
 
 
 def _gemini_post(url: str, payload: dict[str, Any]) -> requests.Response:
@@ -1111,20 +1118,38 @@ def _gemini_generate(system_prompt: str, user_message: str) -> dict[str, Any]:
             "GEMINI_API_KEY is not set. Export GEMINI_API_KEY (get a key at "
             "https://aistudio.google.com/apikey) and set LLM_PROVIDER=gemini."
         )
-    url = f"{GEMINI_URL}/models/{GEMINI_MODEL}:generateContent"
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": [{"text": user_message}]}],
         "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
     }
-    response = _gemini_post(url, payload)
-    data = response.json()
-    candidates = data.get("candidates", [])
-    if not candidates:
-        raise RuntimeError(f"Gemini returned no candidates: {str(data)[:300]}")
-    parts = candidates[0].get("content", {}).get("parts", [])
-    content = "".join(part.get("text", "") for part in parts if isinstance(part, dict))
-    return json.loads(ensure_json_string(content))
+    # Try the configured model first, then fail over to siblings on sustained transient errors.
+    models = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
+    last_error: Exception | None = None
+    for index, model in enumerate(models):
+        url = f"{GEMINI_URL}/models/{model}:generateContent"
+        try:
+            response = _gemini_post(url, payload)
+        except requests.HTTPError as exc:
+            last_error = exc
+            status = exc.response.status_code if exc.response is not None else None
+            if status in _GEMINI_TRANSIENT_STATUS and index < len(models) - 1:
+                print(
+                    f"[gemini] model '{model}' failed ({status}) after retries; "
+                    f"failing over to '{models[index + 1]}'",
+                    flush=True,
+                )
+                continue
+            raise
+        data = response.json()
+        candidates = data.get("candidates", [])
+        if not candidates:
+            raise RuntimeError(f"Gemini returned no candidates: {str(data)[:300]}")
+        parts = candidates[0].get("content", {}).get("parts", [])
+        content = "".join(part.get("text", "") for part in parts if isinstance(part, dict))
+        return json.loads(ensure_json_string(content))
+    assert last_error is not None
+    raise last_error
 
 
 def call_gemini(document_text: str) -> dict[str, Any]:
