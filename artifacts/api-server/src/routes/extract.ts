@@ -6,7 +6,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 const router: IRouter = Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+// No file-size limit — any-size vendor PDF is accepted (memory storage; the VPS nginx
+// `client_max_body_size` must also be raised, e.g. `client_max_body_size 0;`).
+const upload = multer({ storage: multer.memoryStorage() });
 
 const FLASK_URL = (process.env.FLASK_URL ?? "http://localhost:5005").trim();
 

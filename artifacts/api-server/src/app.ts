@@ -28,9 +28,10 @@ app.use(
 );
 app.use(cors());
 app.use(cookieParser());
-// Large limit so editor drafts (which can embed cropped/edited image data URLs) save fine.
-app.use(express.json({ limit: "64mb" }));
-app.use(express.urlencoded({ extended: true, limit: "64mb" }));
+// Very large limit so editor drafts (embedded image data URLs) and AI image-edit payloads
+// (base64 images) always fit. File uploads go through multer (no limit), not these parsers.
+app.use(express.json({ limit: "1024mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1024mb" }));
 
 app.use("/api", router);
 

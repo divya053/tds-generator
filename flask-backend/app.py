@@ -61,6 +61,14 @@ GEMINI_URL = os.environ.get("GEMINI_URL", "https://generativelanguage.googleapis
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest").strip()
 # Image-capable model used for the in-editor "AI Edit" (e.g. converting mm dimensions to inches).
 GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image").strip()
+# Sibling image models to fail over to when the primary is overloaded (429/503) through all retries.
+GEMINI_IMAGE_FALLBACK_MODELS = [
+    m.strip()
+    for m in os.environ.get(
+        "GEMINI_IMAGE_FALLBACK_MODELS", "gemini-3.1-flash-image,nano-banana-pro-preview"
+    ).split(",")
+    if m.strip()
+]
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TIMEOUT_SECONDS", "180").strip())
 PDF_RENDER_SCALE = float(os.environ.get("PDF_RENDER_SCALE", "3.0").strip())
@@ -1163,7 +1171,6 @@ def _gemini_edit_image(image_b64: str, mime_type: str, prompt: str) -> tuple[str
             "GEMINI_API_KEY is not set. Export GEMINI_API_KEY (get a key at "
             "https://aistudio.google.com/apikey) and set LLM_PROVIDER=gemini."
         )
-    url = f"{GEMINI_URL}/models/{GEMINI_IMAGE_MODEL}:generateContent"
     payload = {
         "contents": [
             {
@@ -1175,22 +1182,39 @@ def _gemini_edit_image(image_b64: str, mime_type: str, prompt: str) -> tuple[str
             }
         ],
     }
-    response = _gemini_post(url, payload)
-    data = response.json()
-    candidates = data.get("candidates", [])
-    if not candidates:
-        raise RuntimeError(f"Gemini returned no candidates: {str(data)[:300]}")
-    parts = candidates[0].get("content", {}).get("parts", [])
-    for part in parts:
-        if not isinstance(part, dict):
+    # Try the configured image model first, then fail over to siblings on sustained transient errors.
+    models = [GEMINI_IMAGE_MODEL] + [m for m in GEMINI_IMAGE_FALLBACK_MODELS if m != GEMINI_IMAGE_MODEL]
+    last_error: Exception | None = None
+    for index, model in enumerate(models):
+        url = f"{GEMINI_URL}/models/{model}:generateContent"
+        has_next = index < len(models) - 1
+        try:
+            response = _gemini_post(url, payload)
+        except requests.HTTPError as exc:
+            last_error = exc
+            status = exc.response.status_code if exc.response is not None else None
+            if status in _GEMINI_TRANSIENT_STATUS and has_next:
+                print(f"[gemini] image model '{model}' failed ({status}); failing over to '{models[index + 1]}'", flush=True)
+                continue
+            raise
+        data = response.json()
+        parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            inline = part.get("inlineData") or part.get("inline_data")
+            if isinstance(inline, dict) and inline.get("data"):
+                out_mime = inline.get("mimeType") or inline.get("mime_type") or "image/png"
+                return str(inline["data"]), str(out_mime)
+        # No image from this model — try the next one, else surface any text it returned.
+        text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+        last_error = RuntimeError(f"'{model}' returned no image. {text[:200]}".strip())
+        if has_next:
+            print(f"[gemini] image model '{model}' returned no image; trying '{models[index + 1]}'", flush=True)
             continue
-        inline = part.get("inlineData") or part.get("inline_data")
-        if isinstance(inline, dict) and inline.get("data"):
-            out_mime = inline.get("mimeType") or inline.get("mime_type") or "image/png"
-            return str(inline["data"]), str(out_mime)
-    # No image came back — surface any text the model returned (often a refusal / explanation).
-    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
-    raise RuntimeError(f"Gemini returned no image. {text[:200]}".strip())
+        raise last_error
+    assert last_error is not None
+    raise last_error
 
 
 REVIEW_SYSTEM_PROMPT = """You are a senior QA reviewer for IKIO lighting technical data sheets.

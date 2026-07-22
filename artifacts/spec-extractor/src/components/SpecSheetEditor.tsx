@@ -3384,6 +3384,16 @@ function SheetPageOne({
     );
   // One shared value font-size so the whole Overview column stays symmetric.
   const overviewValueSize = overviewValuesFontClass(filteredOverviewRows);
+  // Adaptive row padding: more breathing room when few rows, tighter as the list grows so it
+  // still fits the fixed-height Overview box (auto-adjusts to whatever each vendor sheet yields).
+  const overviewRowPadClass =
+    filteredOverviewRows.length <= 12
+      ? "py-[6px]"
+      : filteredOverviewRows.length <= 16
+        ? "py-[4.5px]"
+        : filteredOverviewRows.length <= 20
+          ? "py-[3px]"
+          : "py-[2px]";
   const normalizedDescription = normalizePreviewDescription(draft.description);
   const visibleDescription = isSpecified(normalizedDescription);
   // Cap the sheet's Features list to 4 points so it never overflows behind the footer.
@@ -3506,12 +3516,13 @@ function SheetPageOne({
                   <tbody>
                     {filteredOverviewRows.map((row) => (
                       <tr key={row.id} className="border-b border-slate-200 align-top last:border-b-0">
-                        <td className="w-[44%] py-[1.5px] pr-2 text-[10px] font-bold leading-[1.05] text-slate-900" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                        <td className={cn("w-[44%] pr-2 text-[10px] font-bold leading-[1.2] text-slate-900", overviewRowPadClass)} style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
                           {formatOverviewLabel(row.label)}
                         </td>
                         <td
                           className={cn(
-                            "py-[1.5px] text-left font-normal whitespace-pre-line",
+                            "text-left font-normal leading-[1.2] whitespace-pre-line",
+                            overviewRowPadClass,
                             overviewValueSize,
                             isSpecified(row.value) ? "text-slate-800" : "italic text-slate-400",
                           )}
