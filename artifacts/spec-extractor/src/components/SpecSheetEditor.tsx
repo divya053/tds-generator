@@ -4653,16 +4653,20 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     if (!profile) return;
 
     const signature = `${spec.id}::${profile.id}`;
-    if (lastAutoPredictRef.current === signature) return;
+    // First time we detect THIS fixture for THIS spec, clean up any messy extracted values by
+    // overriding them with the canonical names. After that we only fill EMPTY fields — so clearing
+    // a field always re-populates it, but a value you hand-typed is left alone.
+    const firstApply = lastAutoPredictRef.current !== signature;
     lastAutoPredictRef.current = signature;
 
     setDraft((current) => {
       const patch: Partial<EditorDraft> = {};
-      // Category + sub-category are the two clean header lines — set them to the fixture's
-      // canonical names so the formatting is consistent (extraction often leaves them messy/blank).
-      if (current.categoryLabel !== profile.category) patch.categoryLabel = profile.category;
-      if (current.subCategory !== profile.subCategory) patch.subCategory = profile.subCategory;
-      // Application areas: only when the vendor extraction left them empty (keep real extracted ones).
+      if (!isSpecified(current.categoryLabel) || (firstApply && current.categoryLabel !== profile.category)) {
+        patch.categoryLabel = profile.category;
+      }
+      if (!isSpecified(current.subCategory) || (firstApply && current.subCategory !== profile.subCategory)) {
+        patch.subCategory = profile.subCategory;
+      }
       if (!isSpecified(current.applicationAreasText)) {
         patch.applicationAreasText = profile.applications.join(", ");
       }
