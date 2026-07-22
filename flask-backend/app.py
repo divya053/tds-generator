@@ -1255,7 +1255,77 @@ def _gemini_edit_image(image_b64: str, mime_type: str, prompt: str) -> tuple[str
     raise last_error
 
 
-REVIEW_SYSTEM_PROMPT = """You are a senior QA reviewer for IKIO lighting technical data sheets.
+def _gemini_annotate_image(image_b64: str, mime_type: str, prompt: str) -> list[dict[str, Any]]:
+    """Use the VISION-capable TEXT model (not image-generation) to locate each text label the
+    instruction targets and compute its replacement. Returns a list of
+    {original, replacement, box:[ymin,xmin,ymax,xmax] (0-1000)} so the frontend can overlay the
+    change on the canvas. Works on the standard text quota — no image-generation quota needed."""
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not set.")
+    system = (
+        "You are editing text on a product / technical image (often a dimension drawing). Look at the image "
+        "and find EVERY text label that the user's instruction asks to change. For EACH one, return an object with: "
+        '"original" (the exact text as printed), "replacement" (the new text after applying the instruction — '
+        "compute unit conversions precisely: inches->mm multiply by 25.4, mm->inches divide by 25.4, keep 0-2 "
+        'decimals and include the unit symbol), and "box" ([ymin,xmin,ymax,xmax] as integers 0-1000 normalized to '
+        "the image size, fitted tightly around that text). Preserve any leading symbol like Ø. Return ONLY JSON: "
+        '{"edits": [...]}. If nothing matches the instruction, return {"edits": []}. '
+        f"Instruction: {prompt}"
+    )
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": system},
+                    {"inline_data": {"mime_type": mime_type or "image/png", "data": image_b64}},
+                ],
+            }
+        ],
+        "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
+    }
+    models = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
+    last_error: Exception | None = None
+    for index, model in enumerate(models):
+        url = f"{GEMINI_URL}/models/{model}:generateContent"
+        try:
+            response = _gemini_post(url, payload)
+        except requests.HTTPError as exc:
+            last_error = exc
+            status = exc.response.status_code if exc.response is not None else None
+            if status in _GEMINI_TRANSIENT_STATUS and index < len(models) - 1:
+                continue
+            raise
+        parts = (response.json().get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+        content = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+        parsed = json.loads(ensure_json_string(content))
+        raw_edits = parsed.get("edits") if isinstance(parsed, dict) else None
+        edits: list[dict[str, Any]] = []
+        if isinstance(raw_edits, list):
+            for entry in raw_edits:
+                if not isinstance(entry, dict):
+                    continue
+                box = entry.get("box")
+                if not (isinstance(box, list) and len(box) == 4):
+                    continue
+                try:
+                    ymin, xmin, ymax, xmax = (float(v) for v in box)
+                except (TypeError, ValueError):
+                    continue
+                replacement = normalize_whitespace(str(entry.get("replacement", "")))
+                if not replacement:
+                    continue
+                edits.append({
+                    "original": normalize_whitespace(str(entry.get("original", ""))),
+                    "replacement": replacement,
+                    "box": [ymin, xmin, ymax, xmax],
+                })
+        return edits
+    assert last_error is not None
+    raise last_error
+
+
+REVIEW_SYSTEM_PROMPT ="""You are a senior QA reviewer for IKIO lighting technical data sheets.
 You receive (1) the vendor source text and (2) a first-pass JSON extraction of it. Cross-check the
 extraction against the source like a careful human would, then return a CORRECTED JSON with the
 EXACT same keys/structure.
@@ -1600,6 +1670,43 @@ def ai_image_edit():
         return jsonify({"error": "AI image edit failed", "detail": str(exc)[:300]}), 502
 
     return jsonify({"dataUrl": f"data:{out_mime};base64,{out_b64}"})
+
+
+@app.route("/ai-image-annotate", methods=["POST"])
+def ai_image_annotate():
+    """Locate the text labels an instruction targets and compute their replacements, using the
+    vision-capable TEXT model (no image-generation quota). Returns {edits:[{original,replacement,box}]}
+    for the frontend to overlay on the canvas. Ideal for unit conversions / label fixes."""
+    data = request.get_json(silent=True) or {}
+    data_url = str(data.get("imageDataUrl", "")).strip()
+    prompt = normalize_whitespace(str(data.get("prompt", "")))
+
+    if not data_url.startswith("data:") or "," not in data_url:
+        return jsonify({"error": "imageDataUrl must be a base64 data URL"}), 400
+    if not prompt:
+        return jsonify({"error": "A prompt describing the edit is required"}), 400
+    if LLM_PROVIDER != "gemini":
+        return jsonify({"error": "AI image edit requires LLM_PROVIDER=gemini"}), 400
+
+    header, b64 = data_url.split(",", 1)
+    mime_type = "image/png"
+    if header.startswith("data:") and ";" in header:
+        mime_type = header[len("data:"):header.index(";")] or "image/png"
+
+    try:
+        edits = _gemini_annotate_image(b64, mime_type, prompt)
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 429:
+            return jsonify({
+                "error": "Rate limit",
+                "detail": "The AI model is rate-limited (429). Wait a moment and try again, or enable billing on the key.",
+            }), 429
+        return jsonify({"error": "AI image edit failed", "detail": str(exc)[:300]}), 502
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": "AI image edit failed", "detail": str(exc)[:300]}), 502
+
+    return jsonify({"edits": edits})
 
 
 PRODUCT_NAME_STORE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "product-names.json")

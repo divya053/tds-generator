@@ -2506,28 +2506,52 @@ function ImageEditorDialog({
     if (!canvas || !image || !prompt || aiBusy) return;
     setAiBusy(true);
     setAiError(null);
-    const toastId = toast.loading("AI editing image…");
+    const toastId = toast.loading("AI reading the image…");
     try {
-      // Send the currently-composited canvas so the AI edits exactly what you see (including any
-      // manual text/erase already applied). The returned image bakes in the change.
+      // Uses the vision TEXT model (no image-generation quota): it returns the labels to change,
+      // their replacement text, and bounding boxes. We overlay each change as an erase box + text
+      // layer on the canvas, so it's applied locally and stays fully editable.
       const input = canvas.toDataURL("image/png");
-      const response = await fetch(apiUrl("/api/ai-image-edit"), {
+      const response = await fetch(apiUrl("/api/ai-image-annotate"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ imageDataUrl: input, prompt }),
       });
       const data = (await response.json().catch(() => null)) as
-        | { dataUrl?: string; error?: string; detail?: string }
+        | { edits?: Array<{ original?: string; replacement?: string; box?: number[] }>; error?: string; detail?: string }
         | null;
-      if (!response.ok || !data?.dataUrl) {
+      if (!response.ok) {
         throw new Error(data?.detail || data?.error || `HTTP ${response.status}`);
       }
-      // The result already contains the edit — make it the new base and reset the manual
-      // adjustments/layers (they're now baked into the returned image).
-      setBaseDataUrl(data.dataUrl);
-      setEditor(createImageEditorState());
-      toast.success("AI edit applied. Review it, then click Use In TDS.", { id: toastId });
+      const edits = Array.isArray(data?.edits) ? data!.edits! : [];
+      const usable = edits.filter(
+        (e) => e && Array.isArray(e.box) && e.box.length === 4 && isSpecified(String(e.replacement ?? "")),
+      );
+      if (usable.length === 0) {
+        toast.error("The AI found nothing matching that instruction in this image.", { id: toastId });
+        return;
+      }
+      const W = canvas.width;
+      const H = canvas.height;
+      const stamp = Date.now();
+      setEditor((current) => {
+        const eraseLayers = [...current.eraseLayers];
+        const textLayers = [...current.textLayers];
+        usable.forEach((edit, i) => {
+          const [ymin, xmin, ymax, xmax] = edit.box as number[];
+          const x = (Math.min(xmin, xmax) / 1000) * W;
+          const y = (Math.min(ymin, ymax) / 1000) * H;
+          const w = Math.max(10, (Math.abs(xmax - xmin) / 1000) * W);
+          const h = Math.max(10, (Math.abs(ymax - ymin) / 1000) * H);
+          const pad = h * 0.3;
+          // White box over the old text (dimension drawings are on white), then the new text.
+          eraseLayers.push({ id: `ai-erase-${stamp}-${i}`, x: x - pad, y: y - pad, width: w + pad * 2, height: h + pad * 2, color: "#ffffff" });
+          textLayers.push({ id: `ai-text-${stamp}-${i}`, x, y: y + h * 0.1, text: String(edit.replacement), color: "#111827", size: Math.max(11, Math.round(h * 0.85)) });
+        });
+        return { ...current, eraseLayers, textLayers };
+      });
+      toast.success(`Applied ${usable.length} change(s). Review/adjust, then Use In TDS.`, { id: toastId });
     } catch (error) {
       const message = error instanceof Error ? error.message : "AI image edit failed";
       setAiError(message);
@@ -2573,8 +2597,9 @@ function ImageEditorDialog({
                   <p className="text-[11px] leading-snug text-red-500">{aiError}</p>
                 ) : (
                   <p className="text-[11px] leading-snug text-muted-foreground">
-                    Edits the image you see now with Gemini (e.g. change units, fix a label). Review the
-                    result, then keep editing or click <span className="font-semibold">Use In TDS</span>.
+                    Finds text/dimension labels (e.g. convert units, fix a value) and applies each as an
+                    editable erase+text layer — no image-generation quota needed. Adjust or remove any via
+                    Layers, then click <span className="font-semibold">Use In TDS</span>.
                   </p>
                 )}
               </div>
