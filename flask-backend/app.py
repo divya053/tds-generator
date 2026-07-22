@@ -254,6 +254,14 @@ Rules:
   Lumen Output "2800/4200/5600/7000/8400 lm", keeping the wattage<->lumen order aligned. If there are two
   wattage families (e.g. a 60W package and a 120W package), return one variant per family in variantOverview.matrix
   with that family's individual wattages in the Power cell.
+- DISTINCT SIZES / LENGTHS (very important): if the fixture comes in multiple physical SIZES or LENGTHS and EACH
+  size has its OWN single wattage and its OWN lumen output — common for tri-proof / linear / batten / strip / vapor-tight
+  fixtures, e.g. 2ft/4ft/5ft (or 600mm/1200mm/1500mm) = 20W/36W/45W = 2600-2800lm / 4680-5040lm / 5850-6300lm — then
+  create ONE variantOverview.matrix row PER SIZE. Put ONLY that size's single wattage in its Power cell, ONLY that size's
+  own lumen output in its Lumen Output cell, and the size/length (e.g. "2FT (600mm)") in the Fixture Type cell. Read the
+  vendor's per-model/per-length table row by row and match each length to its exact wattage and lumen. NEVER dump the
+  combined list of all sizes' wattages or lumens into every row, and never repeat the same Power/Lumen on every row —
+  each row must show only its own size's values.
 - CCT / Color Temperature must contain ONLY Kelvin values (e.g. "3000K/4000K/5000K") — NEVER power (W),
   lumen, or "for X W" qualifiers. List each distinct CCT once.
 - If a value is clearly selectable, format compactly, for example "20W/25W/30W" or "3000K/4000K/5000K".
@@ -906,6 +914,19 @@ def derive_variant_overview(technical_specs: list[dict[str, str]], current: dict
         for row in variant_overview["matrix"]:
             if isinstance(row, list) and len(row) > power_idx:
                 row[power_idx] = strip_catalog_code(str(row[power_idx]))
+        # Safety net for the "repeated list" extraction error: if every row carries the SAME
+        # Power AND Lumen (index 3) — i.e. the combined list was pasted onto each size — collapse
+        # to a single row so the overview doesn't show the identical line N times.
+        matrix = variant_overview["matrix"]
+        lumen_idx = params.index("Lumen Output") if "Lumen Output" in params else 3
+        def _cell(row: list, idx: int) -> str:
+            return str(row[idx]).strip() if isinstance(row, list) and len(row) > idx else ""
+        if len(matrix) > 1 and all(
+            _cell(row, power_idx) == _cell(matrix[0], power_idx)
+            and _cell(row, lumen_idx) == _cell(matrix[0], lumen_idx)
+            for row in matrix
+        ):
+            variant_overview["matrix"] = [matrix[0]]
         return variant_overview
 
     lookup = {item["parameter"]: item["specification"] for item in technical_specs}
@@ -1230,11 +1251,18 @@ Fix these problems specifically:
   catalog/part-number codes (e.g. "PT02", "S0150", "02", "PTO2-60W"). Strip any code fragments.
 - SELECTABLE PACKAGES: when a fixture offers multiple wattages/lumens/CCTs, format compactly like
   "20W/60W/120W" and keep the power<->lumen relationship intact.
-- POWER<->LUMEN COUNT: in variantOverview.matrix and variants, the Power cell MUST list the same number of
-  values as the Lumen Output cell, aligned in order. If Lumen Output has 5 values (e.g.
-  "2800lm/4200lm/5600lm/7000lm/8400lm") but Power has 1 (e.g. "60W"), find the full wattage list in the source
-  (e.g. "60/50/40/30/20W") and expand Power to "20W/30W/40W/50W/60W". Never leave Power as a single value or a
-  part number when multiple lumen packages exist.
+- POWER<->LUMEN COUNT (selectable packages ONLY): when ONE fixture offers a selectable RANGE of wattages that
+  map 1:1 to a range of lumens, the Power cell must list the same number of values as the Lumen Output cell,
+  aligned in order. If Lumen Output has 5 values but Power has 1, find the full wattage list in the source and
+  expand Power to match.
+- DISTINCT SIZES / LENGTHS (do NOT expand or merge): if each variantOverview.matrix row is a different physical
+  SIZE / LENGTH with its OWN single wattage (e.g. row1 2FT=20W, row2 4FT=36W, row3 5FT=45W), KEEP each row's single
+  wattage and that size's own lumen(s). Do NOT expand a size's single wattage into the full list, and do NOT merge
+  sizes together.
+- REPEATED VARIANT ROWS (wrong — fix it): if EVERY variantOverview.matrix row has the SAME Power and the SAME
+  Lumen Output (the combined list of all variants repeated on each row), that is an extraction error. Re-read the
+  vendor's per-model/per-length table and split it so each row shows ONLY its own size/length's specific wattage
+  and lumen, matched from the source.
 - MISSING VALUES that clearly appear in the source text.
 - US UNITS with symbols: temperature in °F, weight in lbs, dimensions in inches.
 Keep every value that is already correct — only change what is wrong or missing. Return JSON only."""
