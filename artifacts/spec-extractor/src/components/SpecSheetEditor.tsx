@@ -1836,7 +1836,7 @@ const FIXTURE_PROFILES: FixtureProfile[] = [
   },
   {
     id: "track",
-    keywords: ["track light", "track head", "track spot"],
+    keywords: ["track light", "track head", "track spot", "track"],
     category: "Indoor Lighting",
     subCategory: "Track Light",
     group: "Track Lighting",
@@ -1944,20 +1944,26 @@ const FIXTURE_PROFILES: FixtureProfile[] = [
  *  win (so "linear high bay" beats "high bay"); ties break toward the earlier, more-specific
  *  profile in the ordered list. Returns null when nothing matches. */
 function predictFixtureProfile(...sources: Array<string | undefined>): FixtureProfile | null {
-  const haystack = sources.filter(Boolean).join(" ").toLowerCase();
-  if (!haystack.trim()) return null;
-
-  let best: { profile: FixtureProfile; score: number } | null = null;
-  for (const profile of FIXTURE_PROFILES) {
-    for (const keyword of profile.keywords) {
-      if (haystack.includes(keyword)) {
-        const score = keyword.length;
-        if (!best || score > best.score) best = { profile, score };
-        break;
+  // Check each source IN ORDER (the product name/title is passed first, then subtitle, category,
+  // sub-category). The first source that matches any fixture wins — so the IKIO product name
+  // ("Pegasus Track") decides the fixture type before incidental words in the messy vendor text
+  // ("...Surface Mount Down Light") can mislead it. Within one source, the longest keyword wins.
+  for (const source of sources) {
+    const haystack = (source ?? "").toLowerCase();
+    if (!haystack.trim()) continue;
+    let best: { profile: FixtureProfile; score: number } | null = null;
+    for (const profile of FIXTURE_PROFILES) {
+      for (const keyword of profile.keywords) {
+        if (haystack.includes(keyword)) {
+          const score = keyword.length;
+          if (!best || score > best.score) best = { profile, score };
+          break;
+        }
       }
     }
+    if (best) return best.profile;
   }
-  return best?.profile ?? null;
+  return null;
 }
 
 function countWords(value: string) {
