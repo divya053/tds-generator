@@ -1454,9 +1454,9 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
     .map((row, index) => ({
       id: `spec-${index}-${normalizeSpecKey(row.label)}`,
       label: row.label,
-      // Extra vendor specs that aren't one of the category's master heads start OUT of the
-      // overview; the user can opt them in from the "optional" pool in the editor.
-      included: false,
+      // Fully automatic: every extra vendor spec is shown in the overview by default. The user can
+      // still hide any row (eye-off), which moves it into the optional pool.
+      included: true,
       value: normalizeSpecKey(row.label) === "sensor type"
         ? summarizeSensorTypeValue(row.value)
         : formatOverviewValue(row.label, row.value),
@@ -5536,11 +5536,11 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               {draft.overviewRows.some((row) => row.included === false && isSpecified(row.value)) && (
                 <div className="mt-2 space-y-2 rounded-2xl border border-border/60 bg-card/20 p-3">
                   <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                    Optional fields — not included
+                    Hidden fields — not on the sheet
                   </div>
                   <p className="text-[11px] leading-snug text-muted-foreground">
-                    Extra values from the vendor PDF that aren&apos;t standard overview heads for this
-                    category. Click <span className="font-semibold text-primary">Include</span> to add one to the sheet.
+                    Rows you&apos;ve hidden from the overview. Click{" "}
+                    <span className="font-semibold text-primary">Include</span> to put one back on the sheet.
                   </p>
                   {draft.overviewRows.map((row, index) =>
                     row.included === false && isSpecified(row.value) ? (
