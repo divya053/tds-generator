@@ -79,7 +79,7 @@ ENABLE_PADDLE_OCR = os.environ.get("ENABLE_PADDLE_OCR", "1").strip().lower() not
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v1"
+CACHE_VERSION = "v2"
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -109,6 +109,18 @@ def save_cached_extraction(pdf_bytes: bytes, result: "dict[str, Any]") -> None:
             json.dump(result, handle)
     except Exception as exc:  # noqa: BLE001 - cache write is best-effort
         print(f"[cache] save failed: {exc}", flush=True)
+
+
+def purge_cached_extraction(pdf_bytes: bytes) -> bool:
+    """Delete the cached result for a PDF so re-uploading forces a fresh analysis."""
+    path = _extraction_cache_path(pdf_bytes)
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[cache] purge failed: {exc}", flush=True)
+    return False
 
 SYSTEM_PROMPT = """You are an expert lighting specification analyst building IKIO-style technical data sheet drafts from vendor PDFs.
 
@@ -248,6 +260,11 @@ Rules:
 - NEVER put a vendor part number, model code, SKU, or series code (e.g. "PT02", "SS-PT02", "PT02-60W",
   "S0150") into Power, Lumen Output, Voltage, Current, Efficacy, technicalSpecs, variants, or
   variantOverview.matrix. Those fields must contain ONLY real measured values with units (W, lm, V, A, lm/W).
+- WATTAGE / VALUE ACCURACY (critical): read every wattage, lumen, voltage and current EXACTLY as printed in the
+  vendor's specification / model table. Never substitute, round, guess, or carry a value over from a different
+  product, a different row, or the example in these instructions. If the model table lists 48W/60W/80W/100W/130W,
+  the Power values MUST be exactly those — do NOT output 20W. Cross-check each wattage against ITS OWN row's lumen
+  output and model number before writing it, and re-read the table if a value looks inconsistent.
 - SELECTABLE WATTAGES: for multi-wattage fixtures, extract the FULL list of individual wattages and pair each
   with its lumen output — never a part number, never a single collapsed value. Example: source
   "WATTAGES: 60/50/40/30/20W" with lumens "8400/7000/5600/4200/2800 lm" -> Power "20W/30W/40W/50W/60W",
@@ -1636,6 +1653,19 @@ def reserve_product_names():
     registry["used"] = sorted({*registry["used"], *chosen})
     _save_name_registry(registry)
     return jsonify({"names": chosen[:count]})
+
+
+@app.route("/cache/purge", methods=["POST"])
+def cache_purge():
+    """Purge the cached extraction for an uploaded PDF so a future upload re-analyzes it fresh.
+    Called when an extraction is deleted so nothing stale is served."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    pdf_bytes = request.files["file"].read()
+    if not pdf_bytes:
+        return jsonify({"error": "Empty file"}), 400
+    purged = purge_cached_extraction(pdf_bytes)
+    return jsonify({"purged": purged})
 
 
 @app.route("/process-pdf", methods=["POST"])

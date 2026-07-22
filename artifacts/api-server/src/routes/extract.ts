@@ -390,14 +390,36 @@ router.delete("/extract/:id", async (req, res) => {
     return;
   }
 
-  if (!extractionStore.delete(id)) {
+  const record = extractionStore.get(id);
+  if (!record) {
     res.status(404).json({ error: "Not found" });
     return;
   }
 
+  extractionStore.delete(id);
   draftStore.delete(id);
   persistDrafts();
   persistStore();
+
+  // Purge Flask's extraction cache for this PDF so re-uploading the same file re-analyzes
+  // from scratch (no stale cached result).
+  if (record.pdfBuffer && record.pdfBuffer.length > 0) {
+    try {
+      const form = new FormData();
+      form.append("file", record.pdfBuffer, {
+        filename: record.filename || "file.pdf",
+        contentType: "application/pdf",
+      });
+      await fetch(`${FLASK_URL}/cache/purge`, {
+        method: "POST",
+        body: form,
+        headers: form.getHeaders(),
+      });
+    } catch (err) {
+      req.log.warn({ err }, "Flask cache purge failed on delete");
+    }
+  }
+
   res.json({ message: "Deleted successfully" });
 });
 

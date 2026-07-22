@@ -5,6 +5,7 @@ import { FileText, Plus, Trash2, Zap, History, LogOut, PanelLeftClose, PanelLeft
 import { useGetExtractionHistory, useDeleteExtraction, getGetExtractionHistoryQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn, formatDate } from "@/lib/utils";
+import { draftKey, deleteDraft } from "@/lib/draft-store";
 import { toast } from "sonner";
 import { useAuth } from "./AuthProvider";
 import { Button } from "./ui";
@@ -42,6 +43,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
     e.stopPropagation();
     deleteDoc({ id }, {
       onSuccess: () => {
+        // Also clear the locally-cached editor draft (IndexedDB) so nothing stale remains.
+        void deleteDraft(draftKey(id));
         toast.success("Extraction deleted successfully");
         queryClient.invalidateQueries({ queryKey: getGetExtractionHistoryQueryKey() });
         if (location === `/spec/${id}`) {
