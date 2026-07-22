@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { LockKeyhole, ShieldCheck, Zap } from "lucide-react";
+import { LockKeyhole, Zap } from "lucide-react";
 import { Button, Card } from "@/components/ui";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/components/AuthProvider";
@@ -34,22 +34,14 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-6 py-10">
+    <div className="flex min-h-screen items-center justify-center px-4 py-10 sm:px-6">
       <motion.div
         initial={{ opacity: 0, y: 18 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.35, ease: "easeOut" }}
-        className="w-full max-w-5xl"
+        className="w-full max-w-md"
       >
-        <div className="grid gap-8 lg:grid-cols-[0.5fr_520px]">
-          <div>
-            
-           
-            
-           
-          </div>
-
-          <Card className="overflow-hidden border-primary/10 bg-card/80">
+        <Card className="overflow-hidden border-primary/10 bg-card/80">
             <div className="border-b border-border/60 px-7 py-6">
               <div className="flex items-center gap-3">
                 <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-tr from-primary to-blue-500 text-primary-foreground shadow-[0_0_24px_rgba(6,182,212,0.28)]">
@@ -101,8 +93,7 @@ export default function LoginPage() {
                 {isSubmitting ? "Signing In..." : "Sign In"}
               </Button>
             </form>
-          </Card>
-        </div>
+        </Card>
       </motion.div>
     </div>
   );

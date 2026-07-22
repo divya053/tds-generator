@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
-import { FileText, Plus, Trash2, Zap, History, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { FileText, Plus, Trash2, Zap, History, LogOut, PanelLeftClose, PanelLeftOpen, Menu, X } from "lucide-react";
 import { useGetExtractionHistory, useDeleteExtraction, getGetExtractionHistoryQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn, formatDate } from "@/lib/utils";
@@ -19,6 +19,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const isSpecWorkspace = /^\/spec\/\d+/.test(location);
   const storageKey = isSpecWorkspace ? "ikio-sidebar-hidden-spec" : "ikio-sidebar-hidden-general";
   const [isSidebarHidden, setIsSidebarHidden] = useState(isSpecWorkspace);
+  // Off-canvas drawer state for small screens (below md). Desktop uses isSidebarHidden.
+  const [isMobileOpen, setIsMobileOpen] = useState(false);
 
   useEffect(() => {
     if (error && typeof error === "object" && "status" in error && error.status === 401) {
@@ -37,6 +39,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
     setIsSidebarHidden(savedState === "true");
   }, [isSpecWorkspace, storageKey]);
+
+  // Close the mobile drawer whenever the route changes (e.g. after picking a doc).
+  useEffect(() => {
+    setIsMobileOpen(false);
+  }, [location]);
+
+  // Prevent the page behind the drawer from scrolling while it is open on mobile.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.body.style.overflow = isMobileOpen ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [isMobileOpen]);
 
   const handleDelete = (e: React.MouseEvent, id: number) => {
     e.preventDefault();
@@ -87,9 +103,45 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </Button>
       )}
 
-      {/* Glassmorphic Sidebar */}
+      {/* Mobile top bar (below md) — hosts the logo and the drawer toggle */}
+      <header className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-border/60 bg-background/85 px-4 py-3 backdrop-blur-xl md:hidden">
+        <Link href="/" className="flex min-w-0 items-center gap-2.5">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-blue-600 shadow-[0_0_20px_rgba(6,182,212,0.3)]">
+            <Zap className="h-4 w-4 text-primary-foreground" fill="currentColor" />
+          </div>
+          <div className="min-w-0">
+            <div className="truncate font-display text-sm font-bold leading-none tracking-tight text-foreground">IKIO TDS Generator</div>
+            <div className="mt-1 text-[9px] font-bold uppercase tracking-[0.2em] text-primary opacity-80">IKIO LED Lighting</div>
+          </div>
+        </Link>
+        <Button
+          variant="outline"
+          className="h-10 w-10 shrink-0 px-0"
+          onClick={() => setIsMobileOpen(true)}
+          aria-label="Open menu"
+        >
+          <Menu className="h-4 w-4 text-primary" />
+        </Button>
+      </header>
+
+      {/* Backdrop for the mobile drawer */}
+      {isMobileOpen && (
+        <button
+          type="button"
+          aria-label="Close menu"
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden"
+          onClick={() => setIsMobileOpen(false)}
+        />
+      )}
+
+      {/* Glassmorphic Sidebar — off-canvas drawer on mobile, collapsible column on md+ */}
       <aside className={cn(
-        "z-20 flex w-full flex-col border-b border-border/80 bg-background/60 backdrop-blur-2xl shadow-[4px_0_24px_rgba(0,0,0,0.2)] md:sticky md:top-0 md:h-screen md:shrink-0 md:overflow-hidden md:border-b-0 md:transition-[width,transform,opacity,border-color] md:duration-300",
+        "flex flex-col bg-background/95 backdrop-blur-2xl shadow-[4px_0_24px_rgba(0,0,0,0.2)]",
+        // Mobile: fixed off-canvas drawer that slides in from the left
+        "fixed inset-y-0 left-0 z-50 h-full w-[86%] max-w-[340px] border-r border-border/80 transition-transform duration-300 ease-out",
+        isMobileOpen ? "translate-x-0" : "-translate-x-full",
+        // Desktop: in-flow sticky sidebar with width-collapse toggle
+        "md:sticky md:top-0 md:z-20 md:h-screen md:max-w-none md:translate-x-0 md:shrink-0 md:overflow-hidden md:bg-background/60 md:transition-[width,transform,opacity,border-color] md:duration-300",
         isSidebarHidden
           ? "md:w-0 md:-translate-x-4 md:border-r-0 md:opacity-0 md:pointer-events-none"
           : "md:w-[320px] md:border-r md:opacity-100",
@@ -111,6 +163,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
             aria-label="Hide sidebar"
           >
             <PanelLeftClose className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            className="h-10 w-10 px-0 md:hidden"
+            onClick={() => setIsMobileOpen(false)}
+            aria-label="Close menu"
+          >
+            <X className="h-4 w-4" />
           </Button>
         </div>
 

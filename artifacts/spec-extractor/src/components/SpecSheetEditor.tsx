@@ -5515,7 +5515,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                 <div
                   key={row.id}
                   className={cn(
-                    "grid grid-cols-[44px_132px_minmax(0,1fr)_44px_44px] items-start gap-2 rounded-2xl border border-transparent p-2 transition-colors",
+                    "flex items-start gap-2 rounded-2xl border border-transparent p-2 transition-colors",
                     draggedOverviewIndex === index
                       ? "bg-primary/5"
                       : overviewDropIndex === index
@@ -5530,37 +5530,40 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                     draggable
                     onDragStart={handleOverviewDragStart(index)}
                     onDragEnd={handleOverviewDragEnd}
-                    className="inline-flex h-10 items-center justify-center rounded-xl border border-border/70 bg-background text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 cursor-grab active:cursor-grabbing"
+                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-background text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 cursor-grab active:cursor-grabbing"
                     aria-label={`Drag ${row.label || "overview row"} to reorder`}
                     title="Drag to reorder"
                   >
                     <GripVertical className="h-4 w-4" />
                   </button>
-                  <Input
-                    value={row.label}
-                    onChange={(event) => updateOverviewRow(index, "label", event.target.value)}
-                  />
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <ConfidenceBadge value={row.value} sourceText={spec.sourceText} />
-                    {row.value.includes("\n") ? (
-                      <Textarea
-                        value={row.value}
-                        onChange={(event) => updateOverviewRow(index, "value", event.target.value)}
-                        className="min-h-[84px] flex-1"
-                      />
-                    ) : (
-                      <Input
-                        value={row.value}
-                        onChange={(event) => updateOverviewRow(index, "value", event.target.value)}
-                        className="min-w-0 flex-1"
-                      />
-                    )}
+                  <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-start">
+                    <Input
+                      value={row.label}
+                      onChange={(event) => updateOverviewRow(index, "label", event.target.value)}
+                      className="sm:w-[132px] sm:shrink-0"
+                    />
+                    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                      <ConfidenceBadge value={row.value} sourceText={spec.sourceText} />
+                      {row.value.includes("\n") ? (
+                        <Textarea
+                          value={row.value}
+                          onChange={(event) => updateOverviewRow(index, "value", event.target.value)}
+                          className="min-h-[84px] flex-1"
+                        />
+                      ) : (
+                        <Input
+                          value={row.value}
+                          onChange={(event) => updateOverviewRow(index, "value", event.target.value)}
+                          className="min-w-0 flex-1"
+                        />
+                      )}
+                    </div>
                   </div>
                   <Button
                     type="button"
                     variant="outline"
                     onClick={() => setOverviewIncluded(index, false)}
-                    className="h-10 w-10 rounded-xl border-border/70 p-0 text-muted-foreground hover:border-primary/40 hover:bg-primary/5 [&>svg]:!size-5"
+                    className="h-10 w-10 shrink-0 rounded-xl border-border/70 p-0 text-muted-foreground hover:border-primary/40 hover:bg-primary/5 [&>svg]:!size-5"
                     aria-label={`Move ${row.label || "overview row"} to optional`}
                     title="Move to optional (hide from sheet)"
                   >
@@ -5570,7 +5573,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                     type="button"
                     variant="outline"
                     onClick={() => removeOverviewRow(index)}
-                    className="h-10 w-10 rounded-xl border-border/70 p-0 border-[#7a3b3b] bg-[#5f2a2a] text-red-100 hover:bg-[#743636] hover:text-red-50 [&>svg]:!size-5 [&>svg]:!text-red-100"
+                    className="h-10 w-10 shrink-0 rounded-xl border-border/70 p-0 border-[#7a3b3b] bg-[#5f2a2a] text-red-100 hover:bg-[#743636] hover:text-red-50 [&>svg]:!size-5 [&>svg]:!text-red-100"
                     aria-label={`Delete ${row.label || "overview row"}`}
                     title="Delete row"
                   >
@@ -6206,7 +6209,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
             <Sparkles className="h-3.5 w-3.5" />
             Visual Sheet Editor
           </div>
-          <h1 className="mt-3 text-3xl font-display font-bold text-foreground">
+          <h1 className="mt-3 break-words text-2xl font-display font-bold text-foreground sm:text-3xl">
             {draft.title}
           </h1>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
@@ -6218,10 +6221,10 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <Button
             variant="outline"
-            className="gap-2"
+            className="flex-1 gap-2 sm:flex-none"
             onClick={() => {
               // Rebuild the draft from scratch (new overview template, SKU, etc.) and allow the
               // fixture auto-prediction to re-fill category / sub-category / group.
@@ -6232,11 +6235,11 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
             <RotateCcw className="h-4 w-4" />
             Reset
           </Button>
-          <Button className="gap-2" onClick={handleDownloadPdf}>
+          <Button className="flex-1 gap-2 sm:flex-none" onClick={handleDownloadPdf}>
             <FileText className="h-4 w-4" />
             Download PDF
           </Button>
-          <Button variant="outline" className="gap-2" onClick={handleEditablePdf}>
+          <Button variant="outline" className="flex-1 gap-2 sm:flex-none" onClick={handleEditablePdf}>
             <FileText className="h-4 w-4" />
             Editable PDF (Print)
           </Button>
