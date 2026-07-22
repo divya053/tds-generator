@@ -130,7 +130,7 @@ Return ONLY valid JSON with this exact structure:
 {
   "productName": "Vendor-source product name, cleaned for IKIO TDS use",
   "alternateName": "Alternate vendor/product naming if present",
-  "productDescription": "One concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value. Grounded in the source PDF.",
+  "productDescription": "One concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value (400-450 characters). Grounded in the source PDF.",
   "productFeatures": ["Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars"],
   "applicationAreas": ["Area 1", "Area 2", "Area 3", "Area 4", "Area 5", "Area 6"],
   "productCategory": "panel/downlight/track/flood/street/high_bay/low_bay/linear/unknown",
@@ -284,7 +284,7 @@ Rules:
 - If a value is clearly selectable, format compactly, for example "20W/25W/30W" or "3000K/4000K/5000K".
 - Keep descriptions and features grounded in the source PDF.
 - productFeatures: return EXACTLY 4 features (no more, no fewer). Take the vendor's real features/specs and rewrite EACH as a complete, benefit-oriented sentence of about 100 characters (aim 90-115). NEVER return a bare fragment. Expand short bullets — e.g. source "Samsung 2835 chips" -> "Built with premium Samsung 2835 LED chips for consistent brightness and dependable long-term output." and "4KV surge protection" -> "Integrated 4 kV surge protection safeguards the driver against voltage spikes for reliable operation." Every claim must stay grounded in the source PDF.
-- productDescription: write one concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value. Ground it in the source PDF.
+- productDescription: write one concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value (400-450 characters). Ground it in the source PDF.
 - orderingInfo: Fill EVERY column with at least one {code, description} option. If the vendor PDF has a part-number / ordering decoder, copy its exact codes and meanings for each field. If it does NOT, best-effort DERIVE options from the real specs: Power codes from the wattage packages, CCT codes from the color temperatures, Voltage from the input voltage, etc. Use short codes (e.g. "50K" for 5000K, "MV" for 120-277V, "WH" for White, "D" for Dimmable). Never leave orderingInfo empty.
 - orderingExample: assemble one concrete example part number by joining one chosen code from each column with "-".
 - accessories: List any accessories, controllers, sensors, mounting/emergency kits mentioned. Each needs a product code (best-effort like "IK-ACC-...") and a short description. Return [] only if the PDF truly has none.
@@ -1566,7 +1566,7 @@ def health():
 AI_DESCRIPTION_SYSTEM = (
     'You write IKIO lighting PRODUCT DESCRIPTIONS. Return ONLY JSON: {"text": "..."}. '
     "Write one concise paragraph covering what the product is, where it is used, its main performance "
-    "or design advantage, and its broader project value. Ground it in the provided specs. "
+    "or design advantage, and its broader project value (400-450 characters). Ground it in the provided specs. "
     "Do not invent unsupported claims and never include vendor part numbers. Follow the user's instruction."
 )
 AI_FEATURES_SYSTEM = (
@@ -1602,7 +1602,7 @@ def ai_content():
     default_instruction = (
         "Write 4 strong, benefit-oriented feature bullets."
         if is_features
-        else "One concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value."
+        else "One concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value (400-450 characters)."
     )
     user_message = f"{instruction or default_instruction}\n\nProduct context:\n{context}"
 

@@ -4460,7 +4460,7 @@ function SecondPageImagePicker({
 }
 
 const DEFAULT_DESCRIPTION_PROMPT =
-  "One concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value.";
+  "One concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value(400-450 characters).";
 const DEFAULT_FEATURES_PROMPT =
   "Write 4 benefit-oriented feature bullets (~100 characters each) grounded in the product's real specs.";
 
@@ -4531,6 +4531,8 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   // Signature of the last fixture profile we auto-applied, so re-detecting the same fixture
   // (or a user clearing the field) never re-fills it — it applies once per detected type.
   const lastAutoPredictRef = useRef<string | null>(null);
+  // Spec id that still needs its description auto-generated (fresh extraction, no saved draft).
+  const pendingAutoDescribeRef = useRef<string | null>(null);
   const [previewScale, setPreviewScale] = useState(1);
   const [descriptionPrompt, setDescriptionPrompt] = useState(DEFAULT_DESCRIPTION_PROMPT);
   const [featuresPrompt, setFeaturesPrompt] = useState(DEFAULT_FEATURES_PROMPT);
@@ -4578,6 +4580,10 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
           saved.title, saved.subtitle, saved.categoryLabel, saved.subCategory,
         );
         if (savedProfile) lastAutoPredictRef.current = `${spec.id}::${savedProfile.id}`;
+      } else {
+        // Fresh extraction with no saved edits — auto-generate the description from the
+        // recommended product name so the user doesn't have to click Generate.
+        pendingAutoDescribeRef.current = String(spec.id);
       }
       hydratedSpecIdRef.current = String(spec.id);
 
@@ -5259,6 +5265,22 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
       setAiBusy(null);
     }
   };
+
+  // Auto-generate the description once for a fresh extraction, using the (settled) recommended
+  // product name — so the user never has to click Generate. The 1.2s debounce lets the reserved
+  // unique name arrive first; re-scheduling on title change means it always uses the final name.
+  useEffect(() => {
+    if (pendingAutoDescribeRef.current !== String(spec.id)) return undefined;
+    if (hydratedSpecIdRef.current !== String(spec.id)) return undefined;
+    if (!isSpecified(draft.title) || aiBusy) return undefined;
+    const handle = window.setTimeout(() => {
+      if (pendingAutoDescribeRef.current !== String(spec.id)) return;
+      pendingAutoDescribeRef.current = null;
+      void runAiContent("description", descriptionPrompt);
+    }, 1200);
+    return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec.id, draft.title, aiBusy]);
 
   const renderControlsPanel = (className?: string) => (
     <Card className={cn("sheet-editor-controls flex h-full min-h-0 flex-col overflow-hidden", className)}>
