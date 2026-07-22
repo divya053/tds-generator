@@ -1466,7 +1466,9 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
     .filter(
       (row, index, rows) =>
         isSpecified(row.label) &&
-        isSpecified(row.value) &&
+        // Keep the category's master heads even when the vendor PDF had no value, so the editor
+        // lists every necessary head to fill; the sheet still only renders heads that have a value.
+        (isSpecified(row.value) || row.included === true) &&
         rows.findIndex((candidate) => normalizeSpecKey(candidate.label) === normalizeSpecKey(row.label)) === index,
     )
     .map((row) =>
@@ -1871,6 +1873,14 @@ const FIXTURE_PROFILES: FixtureProfile[] = [
     subCategory: "Area / Shoebox Light",
     group: "Area Lights",
     applications: ["Parking Lots", "Roadways", "Campuses", "Car Dealerships", "Pathways"],
+  },
+  {
+    id: "post_top",
+    keywords: ["post top", "post-top", "posttop", "post top light", "post-top luminaire"],
+    category: "Outdoor Lighting",
+    subCategory: "Post Top Light",
+    group: "Post Top Lights",
+    applications: ["Walkways", "Parks", "Campuses", "Plazas", "Streetscapes", "Parking Lots"],
   },
   {
     id: "street",
@@ -6144,7 +6154,12 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
           <Button
             variant="outline"
             className="gap-2"
-            onClick={() => setDraft(buildEditorDraft(spec))}
+            onClick={() => {
+              // Rebuild the draft from scratch (new overview template, SKU, etc.) and allow the
+              // fixture auto-prediction to re-fill category / sub-category / group.
+              lastAutoPredictRef.current = null;
+              setDraft(buildEditorDraft(spec));
+            }}
           >
             <RotateCcw className="h-4 w-4" />
             Reset
