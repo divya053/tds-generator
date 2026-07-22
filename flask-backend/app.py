@@ -1582,6 +1582,20 @@ def ai_image_edit():
     )
     try:
         out_b64, out_mime = _gemini_edit_image(b64, mime_type, instruction)
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 429:
+            return jsonify({
+                "error": "Image model rate limit",
+                "detail": (
+                    "All Gemini image models are rate-limited (429) — your API key's image-generation "
+                    "quota is exhausted. Wait for the quota to reset (per-minute limits clear quickly; "
+                    "the free daily limit resets at midnight US-Pacific), or enable billing on the key's "
+                    "Google Cloud project to raise the limit. You can also cover/retype the dimension "
+                    "manually with the Erase Box + Add Text tools."
+                ),
+            }), 429
+        return jsonify({"error": "AI image edit failed", "detail": str(exc)[:300]}), 502
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": "AI image edit failed", "detail": str(exc)[:300]}), 502
 
