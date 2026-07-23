@@ -174,6 +174,8 @@ type EditorDraft = {
   subCategory: string;
   skuNumber: string;
   overviewRows: OverviewRow[];
+  // Overview text size on the sheet: null = auto-fit to the box; a number = manual px override.
+  overviewFontPx: number | null;
   description: string;
   featuresText: string;
   applicationAreasText: string;
@@ -235,6 +237,7 @@ type ImageEditorState = {
   contrast: number;
   saturation: number;
   removeBackground: boolean;
+  imageScale: number;
   textLayers: ImageTextLayer[];
   eraseLayers: ImageEraseLayer[];
 };
@@ -311,7 +314,7 @@ const CATEGORY_OVERVIEW_TEMPLATES: Record<string, OverviewTemplateRow[]> = {
     createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
     createOverviewTemplateRow("Driver"),
     createOverviewTemplateRow("Housing", "Housing Material"),
-    createOverviewTemplateRow("Finish"),
+    createOverviewTemplateRow("Finish", "Finish Options", "Finishes", "Finish Color", "Finish Colours", "Available Finishes"),
     createOverviewTemplateRow("Cover / Lens Material", "Lens", "Cover Material / Lens", "Cover/Lens Material"),
     createOverviewTemplateRow("Cover Type"),
     createOverviewTemplateRow("Power Supply"),
@@ -341,7 +344,7 @@ const CATEGORY_OVERVIEW_TEMPLATES: Record<string, OverviewTemplateRow[]> = {
     createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
     createOverviewTemplateRow("Driver"),
     createOverviewTemplateRow("Housing", "Housing Material"),
-    createOverviewTemplateRow("Finish"),
+    createOverviewTemplateRow("Finish", "Finish Options", "Finishes", "Finish Color", "Finish Colours", "Available Finishes"),
     createOverviewTemplateRow("Effective Projected Area (EPA)", "EPA", "Effective Projected Area", "Effective Protected Area"),
     createOverviewTemplateRow("Cover / Lens Material", "Lens", "Cover Material / Lens", "Cover/Lens Material"),
     createOverviewTemplateRow("Cover Type"),
@@ -359,12 +362,11 @@ const OVERVIEW_EXCLUDED_PARAMETERS = new Set([
   "product type",
 ]);
 
-// Overview rows to hide entirely (in addition to the set above): colour-options rows should
-// never appear. (Dimming Capability IS shown — it carries the dimmable / 0-10V value.)
+// Overview rows to hide entirely: only the redundant Product Category / Product Type heads.
+// (Color Options / Finish Options and Dimming Capability ARE shown when the vendor lists them.)
 function isExcludedOverviewLabel(label: string) {
   const key = normalizeSpecKey(label);
-  if (OVERVIEW_EXCLUDED_PARAMETERS.has(key)) return true;
-  return key.includes("color option") || key.includes("colour option");
+  return OVERVIEW_EXCLUDED_PARAMETERS.has(key);
 }
 
 // Rows whose values represent a physical size and should be shown in ft/in.
@@ -395,8 +397,10 @@ function isCctLabel(label: string) {
   return /color\s*temp|\bcct\b/i.test(label ?? "");
 }
 
-/** Keep only the Kelvin tokens in a CCT value, dropping any power/lumen pollution.
- *  "40W/60W: 3000K-4000K-5000K | 300W: 4000K-5000K" -> "3000K/4000K/5000K". */
+/** Keep only the Kelvin tokens in a CCT value, dropping any power/lumen pollution. Multiple CCTs
+ *  are selectable, so they're joined with " - " (the selectable convention, matching Power); a
+ *  single value is shown as-is.
+ *  "40W/60W: 3000K-4000K-5000K | 300W: 4000K-5000K" -> "3000K - 4000K - 5000K". */
 function extractCctValue(value: string) {
   const tokens = String(value ?? "").match(/\d[\d.]*\s*K\b/gi);
   if (!tokens || tokens.length === 0) return value;
@@ -405,7 +409,8 @@ function extractCctValue(value: string) {
     const normalized = token.replace(/\s+/g, "").toUpperCase();
     if (!seen.includes(normalized)) seen.push(normalized);
   }
-  return seen.join("/");
+  // 2+ distinct CCTs => field-selectable; show them dash-joined and flag it as selectable.
+  return seen.length > 1 ? `${seen.join(" - ")} (Selectable)` : seen.join(" - ");
 }
 
 /** True for overview labels that represent beam angle. */
@@ -516,6 +521,7 @@ function createImageEditorState(): ImageEditorState {
     contrast: 100,
     saturation: 100,
     removeBackground: false,
+    imageScale: 100,
     textLayers: [],
     eraseLayers: [],
   };
@@ -1171,6 +1177,27 @@ function deriveEstimatedOverviewValue(spec: ExtendedExtractedSpec, label: string
   return "";
 }
 
+/** Efficacy computed directly from the fixture's own Power and Lumen lists (Efficacy = Lumens / Power,
+ *  whole lm/W). Requires the two lists to be aligned (equal length) so each power pairs with its own
+ *  lumen. Returns a dash-joined list of the distinct efficacies (selectable style), or a "min - max
+ *  lm/W" range when there are many. Empty when the lists aren't aligned. */
+function deriveEfficacyFromPowerLumen(spec: ExtendedExtractedSpec) {
+  const wattages = parseWattages(spec);
+  const lumens = parseLumens(spec);
+  if (wattages.length < 1 || wattages.length !== lumens.length) return "";
+
+  const values = uniquePreserveOrder(
+    wattages
+      .map((wattage, index) => (wattage > 0 ? Math.round(lumens[index] / wattage) : NaN))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .map((value) => String(value)),
+  ).map(Number);
+  if (values.length === 0) return "";
+  if (values.length === 1) return `${values[0]} lm/W`;
+  if (values.length <= 8) return `${values.join(" - ")} lm/W`;
+  return `${Math.min(...values)} - ${Math.max(...values)} lm/W`;
+}
+
 function getCategoryLabel(spec: ExtendedExtractedSpec) {
   return normalizeText(spec.productCategory) || normalizeText(getSpecValueFromSpec(spec, ["Product Type"]));
 }
@@ -1276,15 +1303,22 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
     return values.join("\n");
   };
 
-  const templateRows = template.map((row, index) => ({
-    id: `template-${index}-${normalizeSpecKey(row.label)}`,
-    label: row.label,
-    included: true,
-    value:
-      buildVariantOverviewValue(row.label) ||
-      formatOverviewValue(row.label, getOverviewValue(spec, row.keys)) ||
-      deriveEstimatedOverviewValue(spec, row.label),
-  }));
+  const templateRows = template.map((row, index) => {
+    // Efficacy: compute from this fixture's own Power & Lumen lists first, so it's always correct
+    // per power/lumen (falls back to the vendor's stated efficacy when the lists aren't aligned).
+    const efficacyFromPowerLumen =
+      normalizeSpecKey(row.label) === "efficacy" ? deriveEfficacyFromPowerLumen(spec) : "";
+    return {
+      id: `template-${index}-${normalizeSpecKey(row.label)}`,
+      label: row.label,
+      included: true,
+      value:
+        efficacyFromPowerLumen ||
+        buildVariantOverviewValue(row.label) ||
+        formatOverviewValue(row.label, getOverviewValue(spec, row.keys)) ||
+        deriveEstimatedOverviewValue(spec, row.label),
+    };
+  });
 
   const templateKeys = new Set(
     template.flatMap((row) => row.keys.map((key) => normalizeSpecKey(key))),
@@ -1303,8 +1337,8 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
     .map((row, index) => ({
       id: `spec-${index}-${normalizeSpecKey(row.label)}`,
       label: row.label,
-      // Fully automatic: every extra vendor spec is shown in the overview by default. The user can
-      // still hide any row (eye-off), which moves it into the optional pool.
+      // Show every extracted vendor spec by default — never hide content. The user can still hide
+      // any row (eye-off) to move it into the optional pool. The Overview auto-fits so nothing clips.
       included: true,
       value: normalizeSpecKey(row.label) === "sensor type"
         ? summarizeSensorTypeValue(row.value)
@@ -1374,15 +1408,25 @@ function toTitleCase(value: string) {
 }
 
 function deriveTypeCore(spec: ExtendedExtractedSpec) {
-  const source = `${getCategoryLabel(spec)} ${spec.productName}`.toLowerCase();
+  // Read the recognised fixture profile from the PRODUCT NAME first. The backend's coarse category
+  // enum (panel/flood/street/…) has no "area" value, so it mislabels area lights as "flood" — which
+  // used to turn an "Area Light" into a "Stadium Flood Light". The profile's own sub-category/group
+  // is the reliable signal; only fall back to the raw category label when nothing matched.
+  const profile = predictFixtureProfile(spec.productName, String(spec.subCategory ?? ""), getCategoryLabel(spec));
+  const source = (
+    profile
+      ? `${profile.subCategory} ${profile.group} ${spec.productName}`
+      : `${getCategoryLabel(spec)} ${spec.productName}`
+  ).toLowerCase();
 
   if (source.includes("back-lit") || source.includes("back lit")) return "Back-Lit Panel";
   if (source.includes("panel")) return "Panel Light";
+  // Area BEFORE flood/stadium so an area/shoebox luminaire is never mistaken for a flood light.
+  if (source.includes("area")) return "Area Light";
   if (source.includes("stadium") || source.includes("flood")) return "Stadium Flood Light";
   if (source.includes("high bay")) return "High Bay Light";
   if (source.includes("post top")) return "Post Top Light";
   if (source.includes("wall pack")) return "Wall Pack";
-  if (source.includes("area light") || source.includes("area")) return "Area Light";
   if (source.includes("street")) return "Street Light";
   if (source.includes("canopy")) return "Canopy Light";
   if (source.includes("troffer")) return "Troffer";
@@ -2096,6 +2140,7 @@ function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendation
     subCategory: isSpecified(spec.subCategory) ? String(spec.subCategory).trim() : "",
     skuNumber: getSpecValueFromSpec(spec, ["Part Number", "SKU", "Catalog Number", "Cat Number", "Model"]) || "",
     overviewRows: buildOverviewRows(spec),
+    overviewFontPx: null,
     description: buildNormalizedDescription(spec),
     featuresText: buildNormalizedFeatures(spec).join("\n"),
     applicationAreasText: spec.applicationAreas.join(", "),
@@ -2192,8 +2237,15 @@ function ImageEditorDialog({
       context.clearRect(0, 0, canvas.width, canvas.height);
       context.fillStyle = editor.backgroundColor;
       context.fillRect(0, 0, canvas.width, canvas.height);
+      // Scale the product up/down inside the frame (centered): <100% pads with background,
+      // >100% zooms in (cropped by the canvas bounds).
+      const imageScale = (editor.imageScale ?? 100) / 100;
+      const drawWidth = canvas.width * imageScale;
+      const drawHeight = canvas.height * imageScale;
+      const drawX = (canvas.width - drawWidth) / 2;
+      const drawY = (canvas.height - drawHeight) / 2;
       context.filter = `brightness(${editor.brightness}%) contrast(${editor.contrast}%) saturate(${editor.saturation}%)`;
-      context.drawImage(source, 0, 0, canvas.width, canvas.height);
+      context.drawImage(source, drawX, drawY, drawWidth, drawHeight);
       context.filter = "none";
 
       if (editor.removeBackground) {
@@ -2519,6 +2571,43 @@ function ImageEditorDialog({
                     className="w-full"
                   />
                 </label>
+                <div className="block space-y-1 text-sm">
+                  <span>Size: {editor.imageScale}%</span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-8 w-8 shrink-0 p-0 text-lg leading-none"
+                      onClick={() => updateEditor("imageScale", Math.max(20, editor.imageScale - 10))}
+                      aria-label="Make image smaller"
+                      title="Make smaller"
+                    >
+                      −
+                    </Button>
+                    <input
+                      type="range"
+                      min="20"
+                      max="300"
+                      value={editor.imageScale}
+                      onChange={(event) => updateEditor("imageScale", Number(event.target.value))}
+                      className="w-full"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-8 w-8 shrink-0 p-0 text-lg leading-none"
+                      onClick={() => updateEditor("imageScale", Math.min(300, editor.imageScale + 10))}
+                      aria-label="Make image larger"
+                      title="Make larger"
+                    >
+                      +
+                    </Button>
+                  </div>
+                  <p className="text-[11px] leading-snug text-muted-foreground">
+                    Resize the product inside the frame — smaller adds background padding, larger zooms in.
+                    Reset to 100% for the original size.
+                  </p>
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -3027,21 +3116,6 @@ const CANONICAL_OVERVIEW_LABELS = new Map<string, string>(
   ),
 );
 
-/** One uniform value font-size for the whole Overview, chosen so the longest value line
- *  (e.g. Lumen Output) fits on a single row. Every value uses the same size so the column
- *  stays symmetric and aligned with the labels — only shrinking when a long list requires it. */
-function overviewValuesFontClass(rows: OverviewRow[]) {
-  const maxLineLength = rows.reduce((max, row) => {
-    const lineMax = String(row.value ?? "")
-      .split("\n")
-      .reduce((rowMax, line) => Math.max(rowMax, line.trim().length), 0);
-    return Math.max(max, lineMax);
-  }, 0);
-  if (maxLineLength <= 32) return "text-[9px] leading-[1.12]";
-  if (maxLineLength <= 44) return "text-[8px] leading-[1.18]";
-  if (maxLineLength <= 58) return "text-[7.5px] leading-[1.22]";
-  return "text-[6.5px] leading-[1.28]";
-}
 
 function formatOverviewLabel(value: string) {
   const normalized = normalizeText(value);
@@ -3085,6 +3159,18 @@ function formatOverviewLabel(value: string) {
       return lowerPart.charAt(0).toUpperCase() + lowerPart.slice(1);
     })
     .join(" ");
+}
+
+/** Render an overview head with the bracketed portion in normal (non-bold) weight — the head cell
+ *  is bold, so the "(THD)", "(Selectable)", "(EPA)" etc. parts get font-normal to stand apart. */
+function renderOverviewHead(label: string) {
+  return label.split(/(\([^)]*\))/g).map((part, index) =>
+    part.startsWith("(") ? (
+      <span key={index} className="font-normal">{part}</span>
+    ) : (
+      <span key={index}>{part}</span>
+    ),
+  );
 }
 
 function isSpecified(value: string | null | undefined) {
@@ -3209,10 +3295,12 @@ function QualificationBadge({
   id,
   selected: _selected = false,
   className,
+  style,
 }: {
   id: QualificationBadgeId;
   selected?: boolean;
   className?: string;
+  style?: React.CSSProperties;
 }) {
   const badge = QUALIFICATION_BADGES.find((item) => item.id === id);
   if (!badge) return null;
@@ -3222,6 +3310,7 @@ function QualificationBadge({
       src={`${import.meta.env.BASE_URL}images/badges/${badge.imageFile}`}
       alt={badge.label}
       className={cn("block h-[60px] w-auto max-w-[82px] object-contain", className)}
+      style={style}
     />
   );
 }
@@ -3273,18 +3362,31 @@ function SheetPageOne({
     .map((row) =>
       ({ ...row, value: normalizeOverviewRowValue(row.label, row.value) }),
     );
-  // One shared value font-size so the whole Overview column stays symmetric.
-  const overviewValueSize = overviewValuesFontClass(filteredOverviewRows);
-  // Adaptive row padding: more breathing room when few rows, tighter as the list grows so it
-  // still fits the fixed-height Overview box (auto-adjusts to whatever each vendor sheet yields).
-  const overviewRowPadClass =
-    filteredOverviewRows.length <= 12
-      ? "py-[6px]"
-      : filteredOverviewRows.length <= 16
-        ? "py-[4.5px]"
-        : filteredOverviewRows.length <= 20
-          ? "py-[3px]"
-          : "py-[2px]";
+  // Overview auto-fit: measure the rendered table against the fixed box and grow the font to fill
+  // the space, or shrink it to fit — so EVERYTHING is shown (never clipped) while using as much of
+  // the box as possible. Padding scales with the font so the column stays balanced top-to-bottom.
+  // Manual override from the editor (Overview → Text size). null = auto-fit.
+  const manualOverviewFontPx =
+    typeof draft.overviewFontPx === "number" && draft.overviewFontPx > 0 ? draft.overviewFontPx : null;
+  // Auto-fit the Overview to the fixed box by sizing the font to the total content height. We count
+  // display lines INCLUDING multi-line values (Power/Lumen lists) and a rough wrap estimate for long
+  // lines, so the whole column fills the box top-to-bottom without clipping. padY scales with font.
+  const overviewRowCount = Math.max(1, filteredOverviewRows.length);
+  const overviewValueColChars = 30; // ~chars that fit on one value line in the 313px column
+  const overviewTotalLines = filteredOverviewRows.reduce((sum, row) => {
+    const linesForRow = String(row.value ?? "")
+      .split("\n")
+      .reduce((n, line) => n + Math.max(1, Math.ceil(line.trim().length / overviewValueColChars)), 0);
+    return sum + Math.max(1, linesForRow);
+  }, 0);
+  // height ≈ font*(1.3*lines + rows)  [padY = font*0.5 per side => +font per row]. Solve for font.
+  const overviewUsableHeight = 508;
+  const overviewAutoFontPx = Math.max(
+    6,
+    Math.min(14.5, overviewUsableHeight / (1.3 * overviewTotalLines + overviewRowCount)),
+  );
+  const overviewFontPx = manualOverviewFontPx ?? overviewAutoFontPx;
+  const overviewPadYpx = Math.max(1.5, overviewFontPx * 0.5);
   const normalizedDescription = normalizePreviewDescription(draft.description);
   const visibleDescription = isSpecified(normalizedDescription);
   // Cap the sheet's Features list to 4 points so it never overflows behind the footer.
@@ -3372,17 +3474,32 @@ function SheetPageOne({
               {/* Product certification badges: left-aligned in the left column (up to the overview).
                   Boxes are sized so ~8 fit the column, and each icon is scaled up to look larger
                   and overlap its PNG padding, tightening the visible spacing. */}
-              {visibleQualificationIds.length > 0 && (
-                <div className="mt-2 flex h-[58px] w-[413px] items-center gap-0 overflow-hidden">
-                  {visibleQualificationIds.map((badgeId) => (
-                    <QualificationBadge key={badgeId} id={badgeId} className="h-[50px] w-auto max-w-[50px] shrink-0 scale-[1.15] object-contain" />
-                  ))}
-                </div>
-              )}
+              {visibleQualificationIds.length > 0 && (() => {
+                // Size every badge so the whole selected set fits the 413px column — no clipping.
+                // Cap at 56px when there are few; shrink evenly as more badges are added.
+                const badgeGap = 5;
+                const count = visibleQualificationIds.length;
+                const badgeMaxWidth = Math.max(
+                  22,
+                  Math.min(56, Math.floor((413 - (count - 1) * badgeGap) / count)),
+                );
+                return (
+                  <div className="mt-2 flex h-[58px] w-[413px] items-center overflow-hidden" style={{ gap: `${badgeGap}px` }}>
+                    {visibleQualificationIds.map((badgeId) => (
+                      <QualificationBadge
+                        key={badgeId}
+                        id={badgeId}
+                        className="shrink-0 object-contain"
+                        style={{ height: "52px", width: "auto", maxWidth: `${badgeMaxWidth}px`, maxHeight: "56px" }}
+                      />
+                    ))}
+                  </div>
+                );
+              })()}
 
               {/* DLC qualification disclaimer: shown only when a DLC badge is selected. */}
               {showDlcNote && (
-                <div className="mt-4 w-[413px] text-[8px] font-normal italic leading-[1.35] text-slate-600" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                <div className="mt-4 mb-4 w-[413px] text-[8px] font-normal italic leading-[1.35] text-slate-600" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
                   <div>Not all product variations listed on the page are DLC qualified.</div>
                   <div>
                     Visit{" "}
@@ -3402,24 +3519,36 @@ function SheetPageOne({
 
             {/* Right column - Overview: 313 x 573 px */}
             {filteredOverviewRows.length > 0 && (
-              <div className="h-[573px] w-[313px] overflow-hidden bg-slate-50 px-4 pb-2.5 pt-3">
-                <h3 className="mb-3 border-b border-slate-300 pb-1 text-[13px] font-bold uppercase tracking-[0.08em] text-[#00a651]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+              <div className="flex h-[573px] w-[313px] flex-col overflow-hidden bg-slate-50 px-4 pb-2.5 pt-3">
+                <h3 className="mb-3 shrink-0 border-b border-slate-300 pb-1 text-[13px] font-bold uppercase tracking-[0.08em] text-[#00a651]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
                   Overview
                 </h3>
+                <div className="min-h-0 flex-1 overflow-hidden">
                 <table className="w-full border-collapse">
                   <tbody>
                     {filteredOverviewRows.map((row) => (
-                      <tr key={row.id} className="border-b border-slate-200 align-top last:border-b-0">
-                        <td className={cn("w-[44%] pr-2 text-[9px] font-bold leading-[1.2] text-slate-900", overviewRowPadClass)} style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
-                          {formatOverviewLabel(row.label)}
+                      <tr key={row.id} className="border-b border-slate-200 align-middle last:border-b-0">
+                        <td
+                          className="w-[44%] pr-2 font-bold leading-[1.2] text-slate-900"
+                          style={{
+                            fontFamily: "Arial, Helvetica, sans-serif",
+                            fontSize: `${overviewFontPx}px`,
+                            paddingTop: `${overviewPadYpx}px`,
+                            paddingBottom: `${overviewPadYpx}px`,
+                          }}
+                        >
+                          {renderOverviewHead(formatOverviewLabel(row.label))}
                         </td>
                         <td
                           className={cn(
-                            "text-justify font-normal leading-[1.2] whitespace-pre-line [text-align-last:left]",
-                            overviewRowPadClass,
-                            overviewValueSize,
+                            "text-left font-normal leading-[1.2] whitespace-pre-line",
                             isSpecified(row.value) ? "text-slate-800" : "italic text-slate-400",
                           )}
+                          style={{
+                            fontSize: `${overviewFontPx}px`,
+                            paddingTop: `${overviewPadYpx}px`,
+                            paddingBottom: `${overviewPadYpx}px`,
+                          }}
                         >
                           {row.value}
                         </td>
@@ -3427,6 +3556,7 @@ function SheetPageOne({
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
             )}
           </div>
@@ -3600,7 +3730,7 @@ function currentRevisionLabel() {
 /** Footer built from real, selectable text (not a baked image). */
 function SheetFooter({ pageNumber, note }: { pageNumber: number; note?: string }) {
   return (
-    <footer className="absolute inset-x-0 bottom-0 h-[64px] w-full bg-[#6d6e71]">
+    <footer className="absolute inset-x-0 bottom-0 h-[64px] w-full bg-[#414042]">
       {/* Grey bar spans the full page width; inner content stays aligned to the 727px body margins. */}
       <div
         className="mx-auto flex h-full w-[727px] select-text items-center gap-4"
@@ -4329,9 +4459,9 @@ function SecondPageImagePicker({
 }
 
 const DEFAULT_DESCRIPTION_PROMPT =
-  "One concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value(400-450 characters).";
+  "One concise paragraph (400-450 characters) covering what the product is, where it is used, its main performance or design advantage, and its broader project value. Do NOT restate specific numeric spec values that already appear on the sheet (power, lumens, CCT, voltage, current, efficacy, CRI, IP/IK, lifespan, warranty) — keep it qualitative and benefit-focused. Use US terminology: say 'power', never 'wattage'.";
 const DEFAULT_FEATURES_PROMPT =
-  "Write 4 benefit-oriented feature bullets (~100 characters each) grounded in the product's real specs.";
+  "Write 4 benefit-oriented feature bullets (~100 characters each) grounded in the product's real specs. Do NOT restate spec numbers already shown on the sheet (power, lumens, CCT, voltage, efficacy, CRI, IP/IK) — describe what each feature does for the user, not the raw values. Use US terminology: say 'power', never 'wattage'.";
 
 /** Inline AI helper with an editable prompt + Generate button for a copy field. */
 function AiCopyAssistant({
@@ -5361,6 +5491,46 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               </h2>
               <div className="text-[10px] font-medium text-muted-foreground">
                 Drag rows to reorder
+              </div>
+            </div>
+            {/* Overview text size: Auto-fits to the box by default; override manually if needed. */}
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-border/60 bg-card/30 px-3 py-2">
+              <span className="text-[11px] font-semibold text-muted-foreground">
+                Overview text size
+                <span className="ml-1.5 font-normal text-foreground">
+                  {draft.overviewFontPx == null ? "Auto-fit" : `${draft.overviewFontPx}px`}
+                </span>
+              </span>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-7 w-7 p-0 text-base leading-none"
+                  onClick={() => updateDraft("overviewFontPx", Math.max(5, Math.round(((draft.overviewFontPx ?? 10) - 0.5) * 2) / 2))}
+                  title="Smaller"
+                  aria-label="Decrease overview text size"
+                >
+                  −
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-7 w-7 p-0 text-base leading-none"
+                  onClick={() => updateDraft("overviewFontPx", Math.min(18, Math.round(((draft.overviewFontPx ?? 10) + 0.5) * 2) / 2))}
+                  title="Larger"
+                  aria-label="Increase overview text size"
+                >
+                  +
+                </Button>
+                <Button
+                  type="button"
+                  variant={draft.overviewFontPx == null ? "default" : "outline"}
+                  className="h-7 px-2 text-[11px]"
+                  onClick={() => updateDraft("overviewFontPx", null)}
+                  title="Auto-fit the overview text to the box"
+                >
+                  Auto
+                </Button>
               </div>
             </div>
             {/* Source-grounding legend: each value is checked against the vendor PDF text. */}

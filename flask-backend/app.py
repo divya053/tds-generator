@@ -73,6 +73,10 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TIMEOUT_SECONDS", "180").strip())
 PDF_RENDER_SCALE = float(os.environ.get("PDF_RENDER_SCALE", "3.0").strip())
 MAX_PROMPT_CHARS = int(os.environ.get("MAX_PROMPT_CHARS", "36000").strip())
+# Multimodal extraction: also send the rendered page images to Gemini so it analyzes the PDF
+# visually (product type, finish swatches, diagrams, tables, labels) — not just the extracted text.
+LLM_VISION = os.environ.get("LLM_VISION", "1").strip().lower() not in {"0", "false", "no"}
+LLM_VISION_MAX_PAGES = int(os.environ.get("LLM_VISION_MAX_PAGES", "8").strip())
 ENABLE_PADDLE_OCR = os.environ.get("ENABLE_PADDLE_OCR", "1").strip().lower() not in {"0", "false", "no"}
 
 # Cache extraction results by PDF content so the same file is never re-analyzed (saves
@@ -126,6 +130,8 @@ SYSTEM_PROMPT = """You are an expert lighting specification analyst building IKI
 
 Your job is to read the vendor source carefully, understand the real product family/fixture availability first, and then map the data into IKIO-standard fields without inventing unsupported claims.
 
+You are given BOTH the extracted vendor TEXT and the RENDERED PAGE IMAGES of the same PDF. Analyze them together: use the images to read anything the text is missing, garbled or out of order — the true product type/name, finish colour swatches, ordering/spec/decoder tables, dimension diagrams, certification icons and small labels — and cross-check the text against what you actually see on the page. When the text and the image disagree, trust what is clearly shown in the document image. Correctly identify the fixture TYPE from the whole page (e.g. an area / shoebox / site luminaire is an "area" light, NOT a flood light) — do not guess from a single ambiguous word.
+
 Return ONLY valid JSON with this exact structure:
 {
   "productName": "Vendor-source product name, cleaned for IKIO TDS use",
@@ -133,7 +139,7 @@ Return ONLY valid JSON with this exact structure:
   "productDescription": "One concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value (400-450 characters). Grounded in the source PDF.",
   "productFeatures": ["Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars"],
   "applicationAreas": ["Area 1", "Area 2", "Area 3", "Area 4", "Area 5", "Area 6"],
-  "productCategory": "panel/downlight/track/flood/street/high_bay/low_bay/linear/unknown",
+  "productCategory": "panel/downlight/track/flood/area/street/high_bay/low_bay/linear/wall_pack/canopy/post_top/stadium/bollard/unknown",
   "subCategory": "More specific sub-type or series name (e.g. 'Tri-Proof Light', 'Linear High Bay'). Best guess from the source if not explicit.",
   "isProductFamily": true,
   "orderingInfo": {
@@ -287,8 +293,9 @@ Rules:
 - productDescription: write one concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value (400-450 characters). Ground it in the source PDF.
 - orderingInfo: Fill EVERY column with at least one {code, description} option. If the vendor PDF has a part-number / ordering decoder, copy its exact codes and meanings for each field. If it does NOT, best-effort DERIVE options from the real specs: Power codes from the wattage packages, CCT codes from the color temperatures, Voltage from the input voltage, etc. Use short codes (e.g. "50K" for 5000K, "MV" for 120-277V, "WH" for White, "D" for Dimmable). Never leave orderingInfo empty.
 - orderingExample: assemble one concrete example part number by joining one chosen code from each column with "-".
-- accessories: List any accessories, controllers, sensors, mounting/emergency kits mentioned. Each needs a product code (best-effort like "IK-ACC-...") and a short description. Return [] only if the PDF truly has none.
+- accessories: Read the vendor's Accessories / Ordering / Options / Mounting section ROW BY ROW and extract EVERY accessory as a separate item — mounting brackets/arms/slipfitters, poles, photocells/sensors, surge protectors, wire guards, glare shields, occupancy/daylight controllers, emergency battery kits, etc. For each, copy the vendor's EXACT ordering/part code when printed (otherwise best-effort like "IK-ACC-...") and a short description of what it is. Do NOT skip rows, do NOT merge multiple accessories into one, and do NOT invent accessories the PDF doesn't list. Return [] only if the PDF truly has none.
 - dimensions: For each fixture size/variant, give a label and its width/height/depth in inches (convert mm using 1in=25.4mm, 2 decimals). Use "Not Specified" for any missing axis.
+- Finish Options (technicalSpecs): list EVERY available housing finish the vendor offers, joined with ", " — read the finish colour swatches AND any "available in ..." / "Finish:" sentence (e.g. "Black, Dark Bronze, Silver Gray, White"). If the vendor also names a coating/treatment (e.g. "corrosion-resistant powder coat"), append it after the colours. Capture ALL finishes, not just the first. Use "Not Specified" only when the PDF truly gives none.
 - Return JSON only.
 """
 
@@ -1158,15 +1165,42 @@ def _gemini_post(url: str, payload: dict[str, Any]) -> requests.Response:
     raise last_error
 
 
-def _gemini_generate(system_prompt: str, user_message: str) -> dict[str, Any]:
+def _source_pages_to_image_parts(source_pages: list[dict[str, Any]] | None, max_pages: int) -> list[dict[str, Any]]:
+    """Convert rendered page data-URLs into Gemini inline_data image parts (for multimodal analysis)."""
+    parts: list[dict[str, Any]] = []
+    for page in (source_pages or [])[: max(0, max_pages)]:
+        data_url = str(page.get("dataUrl", ""))
+        if not data_url.startswith("data:") or "," not in data_url:
+            continue
+        header, _, b64 = data_url.partition(",")
+        if not b64:
+            continue
+        mime = "image/jpeg"
+        if ";" in header:
+            candidate = header[5:].split(";", 1)[0]
+            if candidate:
+                mime = candidate
+        parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+    return parts
+
+
+def _gemini_generate(
+    system_prompt: str,
+    user_message: str,
+    image_parts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     if not GEMINI_API_KEY:
         raise RuntimeError(
             "GEMINI_API_KEY is not set. Export GEMINI_API_KEY (get a key at "
             "https://aistudio.google.com/apikey) and set LLM_PROVIDER=gemini."
         )
+    user_parts: list[dict[str, Any]] = [{"text": user_message}]
+    if image_parts:
+        # Text first, then the page images, so the model reads the extracted text and the visuals together.
+        user_parts.extend(image_parts)
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
-        "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+        "contents": [{"role": "user", "parts": user_parts}],
         "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
     }
     # Try the configured model first, then fail over to siblings on sustained transient errors.
@@ -1198,8 +1232,15 @@ def _gemini_generate(system_prompt: str, user_message: str) -> dict[str, Any]:
     raise last_error
 
 
-def call_gemini(document_text: str) -> dict[str, Any]:
-    return _gemini_generate(SYSTEM_PROMPT, build_user_message(document_text))
+def call_gemini(document_text: str, source_pages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    image_parts = (
+        _source_pages_to_image_parts(source_pages, LLM_VISION_MAX_PAGES)
+        if (LLM_VISION and source_pages)
+        else None
+    )
+    if image_parts:
+        print(f"[gemini] multimodal extraction with {len(image_parts)} page image(s)", flush=True)
+    return _gemini_generate(SYSTEM_PROMPT, build_user_message(document_text), image_parts)
 
 
 def _gemini_edit_image(image_b64: str, mime_type: str, prompt: str) -> tuple[str, str]:
@@ -1426,10 +1467,10 @@ def review_extraction(raw_result: dict[str, Any], source_text: str) -> dict[str,
     return raw_result
 
 
-def call_llm(document_text: str) -> dict[str, Any]:
+def call_llm(document_text: str, source_pages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     try:
         if LLM_PROVIDER == "gemini":
-            return call_gemini(document_text)
+            return call_gemini(document_text, source_pages)
         if LLM_PROVIDER == "groq":
             return call_groq(document_text)
         return call_ollama(document_text)
@@ -1567,12 +1608,18 @@ AI_DESCRIPTION_SYSTEM = (
     'You write IKIO lighting PRODUCT DESCRIPTIONS. Return ONLY JSON: {"text": "..."}. '
     "Write one concise paragraph covering what the product is, where it is used, its main performance "
     "or design advantage, and its broader project value (400-450 characters). Ground it in the provided specs. "
+    "Do NOT restate specific numeric spec values that already appear on the sheet (power, lumens, CCT, voltage, "
+    "current, efficacy, CRI, IP/IK rating, lifespan, warranty) — describe benefits, use cases and value "
+    "qualitatively instead of repeating the numbers. Use US terminology: always say 'power', never 'wattage'. "
     "Do not invent unsupported claims and never include vendor part numbers. Follow the user's instruction."
 )
 AI_FEATURES_SYSTEM = (
     'You write IKIO lighting product FEATURES. Return ONLY JSON: {"features": ["...", "...", "...", "..."]}. '
     "Exactly 4 benefit-oriented sentences, each about 100 characters (90-115), grounded in the provided specs. "
-    "No part numbers, no bare fragments. Follow the user's instruction."
+    "Do NOT restate specific numeric spec values already listed on the sheet (power, lumens, CCT, voltage, "
+    "efficacy, CRI, IP/IK rating, lifespan) — focus on what each feature does for the user, not the raw numbers. "
+    "Use US terminology: always say 'power', never 'wattage'. No part numbers, no bare fragments. "
+    "Follow the user's instruction."
 )
 
 
@@ -1827,7 +1874,7 @@ def process_pdf():
                 }
             ), 422
 
-        raw_result = call_llm(extracted_text)
+        raw_result = call_llm(extracted_text, source_pages)
         # Second "reviewer agent" pass: cross-check and correct before mapping into the form.
         reviewed_result = review_extraction(raw_result, extracted_text)
 
