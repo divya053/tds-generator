@@ -434,12 +434,52 @@ function extractBeamAngleDegrees(value: string) {
   return seen.join(" / ");
 }
 
+function isBugRatingLabel(label: string) {
+  const key = String(label ?? "").toLowerCase();
+  return key.includes("bug rating") || key.includes("backlight");
+}
+
+/** BUG rating: show only the HIGHEST B/U/G value (worst case across CCT/config), then a note that it
+ *  varies by power & distribution. "B3-B5, U0, G2-G5" -> "B5, U0, G5\n<note>". */
+function extractHighestBugRating(value: string) {
+  const pick = (letter: string) => {
+    const nums = [...String(value ?? "").matchAll(new RegExp(`${letter}\\s*(\\d)`, "gi"))].map((m) => Number(m[1]));
+    return nums.length ? Math.max(...nums) : null;
+  };
+  const b = pick("B");
+  const u = pick("U");
+  const g = pick("G");
+  const parts: string[] = [];
+  if (b != null) parts.push(`B${b}`);
+  if (u != null) parts.push(`U${u}`);
+  if (g != null) parts.push(`G${g}`);
+  if (parts.length === 0) return value;
+  return parts.join(", ");
+}
+
+function isEpaLabel(label: string) {
+  const key = String(label ?? "").toLowerCase();
+  return /\bepa\b/.test(key) || key.includes("effective projected area") || key.includes("effective protected area");
+}
+
+/** EPA: show only the LOWEST value (per variant/fixture). The clarifying note is a single footnote
+ *  under the Overview, not inline. "0.3632 to 1.3923 sq ft" -> "0.3632 sq ft". */
+function extractLowestEpa(value: string) {
+  const nums = [...String(value ?? "").matchAll(/\d+(?:\.\d+)?/g)].map((m) => Number(m[0])).filter((n) => Number.isFinite(n));
+  if (nums.length === 0) return value;
+  const lowest = Math.min(...nums);
+  const unit = /sq\s*\.?\s*ft|ft(?:\^?2|²)|sq\s*feet/i.test(value) ? " sq ft" : "";
+  return `${lowest}${unit}`;
+}
+
 /** Normalize an overview row value for display (dimensions -> US units, CCT -> Kelvin only,
- *  beam angle -> degrees only). */
+ *  beam angle -> degrees only, BUG -> highest, EPA -> lowest). */
 function normalizeOverviewRowValue(label: string, value: string) {
   if (isDimensionLabel(label)) return convertDimensionUnits(value);
   if (isCctLabel(label)) return extractCctValue(value);
   if (isBeamAngleLabel(label)) return extractBeamAngleDegrees(value);
+  if (isBugRatingLabel(label)) return extractHighestBugRating(value);
+  if (isEpaLabel(label)) return extractLowestEpa(value);
   return value;
 }
 
@@ -3081,6 +3121,96 @@ function buildPreviewVariantRows(spec: ExtendedExtractedSpec) {
     .filter((row) => isSpecified(row.fixture) || isSpecified(row.power) || isSpecified(row.lumens));
 }
 
+type VariantOption = { key: string; power: string; lumen: string; efficacy: string };
+type VariantGroup = {
+  id: string;
+  fixture: string;
+  cct: string;
+  selectable: boolean;
+  options: VariantOption[];
+};
+
+/** Group the fixture's variants: each buildPreviewVariantRows row becomes a group. A group whose
+ *  power splits into >1 value is "selectable" (one fixture offering multiple wattages); a single
+ *  value is a distinct (non-selectable) variant. Each option carries its own lumen/efficacy. */
+function enumerateVariantGroups(spec: ExtendedExtractedSpec): VariantGroup[] {
+  const variants = buildPreviewVariantRows(spec);
+  const split = (value: string) =>
+    String(value ?? "")
+      .replace(/([A-Za-z])\s*-\s*(?=\d)/g, "$1|")
+      .split(/\s*[/|–—]\s*|\n/)
+      .map((item) => normalizeText(item))
+      .filter(Boolean);
+  return variants
+    .map((variant, vi) => {
+      const powers = split(stripCatalogCode(variant.power));
+      const lumens = split(variant.lumens);
+      const count = Math.max(powers.length, lumens.length, 1);
+      const options: VariantOption[] = [];
+      const seen = new Set<string>();
+      for (let i = 0; i < count; i += 1) {
+        const power = powers[i] ?? (powers.length === 1 ? powers[0] : "");
+        const lumen = lumens[i] ?? (lumens.length === 1 ? lumens[0] : "");
+        if (!isSpecified(power) && !isSpecified(lumen)) continue;
+        const dedupeKey = `${power}|${lumen}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        const w = Number((power.match(/[\d.]+/) ?? [])[0]);
+        const lm = Number((lumen.replace(/,/g, "").match(/[\d.]+/) ?? [])[0]);
+        const efficacy =
+          Number.isFinite(w) && w > 0 && Number.isFinite(lm) && lm > 0
+            ? `${Math.round(lm / w)} lm/W`
+            : normalizeText(variant.efficacy);
+        options.push({ key: `grp-${vi}-${i}`, power, lumen, efficacy });
+      }
+      return {
+        id: `grp-${vi}`,
+        fixture: variant.fixture,
+        cct: variant.cct,
+        selectable: options.length > 1,
+        options,
+      };
+    })
+    .filter((group) => group.options.length > 0);
+}
+
+/** Narrow a draft to a chosen set of powers (one = single, many = a selectable subset). The Power /
+ *  Lumen / Efficacy / CCT overview rows and the spec table reflect only those; the rest is kept. */
+function makeVariantDraft(draft: EditorDraft, group: VariantGroup, options: VariantOption[]): EditorDraft {
+  const powerValue = options.map((o) => o.power).filter(isSpecified).join(" - ");
+  const lumenValue = options.map((o) => o.lumen).filter(isSpecified).join(" - ");
+  const effs = [...new Set(options.map((o) => o.efficacy).filter(isSpecified))];
+  const efficacyValue = effs.length <= 1 ? effs[0] ?? "" : effs.join(" - ");
+  const overviewRows = draft.overviewRows.map((row) => {
+    const key = normalizeSpecKey(row.label);
+    if (key === "power" || key === "power selectable" || key === "max power") return { ...row, value: powerValue };
+    if (key === "lumen output" || key === "lumens") return { ...row, value: lumenValue };
+    if (key === "efficacy") return { ...row, value: efficacyValue };
+    if (isCctLabel(row.label)) {
+      const cct = extractCctValue(group.cct);
+      return isSpecified(cct) ? { ...row, value: cct } : row;
+    }
+    return row;
+  });
+  const base = draft.specGroups[0];
+  const specGroups: SpecGroup[] = [
+    {
+      id: "variant",
+      partNumber: group.fixture || draft.title,
+      sku: draft.skuNumber,
+      options: options.map((o) => ({ power: o.power, lumen: o.lumen })),
+      voltage: base?.voltage ?? "",
+      efficacy: efficacyValue,
+      cri: base?.cri ?? "",
+      current: base?.current ?? "",
+      cct: group.cct,
+      thd: base?.thd ?? "",
+      lightDistribution: base?.lightDistribution ?? "",
+    },
+  ];
+  return { ...draft, overviewRows, specGroups };
+}
+
 const OVERVIEW_LABEL_ACRONYMS = new Set([
   "AC",
   "BUG",
@@ -3355,6 +3485,16 @@ function SheetPageOne({
 }) {
   const features = normalizePreviewFeatures(draft.featuresText);
   const applicationAreas = splitCommaList(draft.applicationAreasText);
+  // Product images to show on the sheet: the selected hero first, then any other product-owned
+  // images, capped at 2 so up to two product visuals appear (not always just one).
+  const productOwnedImages = getDraftSourceImages(spec, draft).filter(
+    (image) => (draft.imageOwners[image.id] ?? "product") === "product",
+  );
+  const productDisplayImages = (
+    selectedImage
+      ? [selectedImage, ...productOwnedImages.filter((image) => image.id !== selectedImage.id)]
+      : productOwnedImages
+  ).slice(0, 2);
   const filteredOverviewRows = draft.overviewRows
     .filter((row) => row.included !== false)
     .filter((row) => isSpecified(row.label) && isSpecified(row.value))
@@ -3379,8 +3519,12 @@ function SheetPageOne({
       .reduce((n, line) => n + Math.max(1, Math.ceil(line.trim().length / overviewValueColChars)), 0);
     return sum + Math.max(1, linesForRow);
   }, 0);
+  // BUG rating (highest) and EPA (lowest) carry a single clarifying footnote under the Overview.
+  const overviewHasBug = filteredOverviewRows.some((row) => isBugRatingLabel(row.label));
+  const overviewHasEpa = filteredOverviewRows.some((row) => isEpaLabel(row.label));
+  const overviewShowNote = overviewHasBug || overviewHasEpa;
   // height ≈ font*(1.3*lines + rows)  [padY = font*0.5 per side => +font per row]. Solve for font.
-  const overviewUsableHeight = 508;
+  const overviewUsableHeight = overviewShowNote ? 484 : 508;
   const overviewAutoFontPx = Math.max(
     6,
     Math.min(14.5, overviewUsableHeight / (1.3 * overviewTotalLines + overviewRowCount)),
@@ -3406,7 +3550,7 @@ function SheetPageOne({
 
   return (
     <div
-      className="sheet-print-root mx-auto h-[1056px] w-[816px] max-w-full overflow-hidden bg-white font-sans text-slate-900 shadow-[0_24px_60px_rgba(15,23,42,0.28)]"
+      className="sheet-print-root mx-auto h-[1056px] w-[816px] max-w-full overflow-hidden bg-white font-sans text-black shadow-[0_24px_60px_rgba(15,23,42,0.28)]"
       style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
     >
       <div className="relative h-[1056px] overflow-hidden bg-white">
@@ -3429,21 +3573,21 @@ function SheetPageOne({
                   from the recognised fixture type. */}
               <div className="h-[110px] w-[413px] shrink-0 overflow-hidden" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
                 {isSpecified(draft.skuNumber) && (
-                  <div className="text-[9px] font-bold uppercase leading-[1.15] tracking-[0.04em] text-slate-700">
-                    {draft.skuNumber}
+                  <div className="text-[9px] font-bold uppercase leading-[1.15] tracking-[0.04em] text-black">
+                    ITEM SKU: {draft.skuNumber}
                   </div>
                 )}
                 <h1 className="text-[30px] font-bold uppercase leading-[1.02] tracking-[-0.01em] text-[#00a651]">
                   {draft.title}
                 </h1>
                 {isSpecified(draft.subCategory) && (
-                  <div className="mt-0.5 text-[11px] font-bold uppercase leading-[1.2] text-slate-900">
+                  <div className="mt-0.5 text-[11px] font-bold uppercase leading-[1.2] text-black">
                     {draft.subCategory}
                   </div>
                 )}
                 <div className="my-1.5 h-px w-full bg-slate-300" />
                 {(isSpecified(draft.categoryLabel) || isSpecified(fixtureGroup)) && (
-                  <div className="text-[11px] font-normal leading-[1.3] text-slate-900">
+                  <div className="text-[11px] font-normal leading-[1.3] text-black">
                     {isSpecified(draft.categoryLabel) && <span>{draft.categoryLabel}</span>}
                     {isSpecified(draft.categoryLabel) && isSpecified(fixtureGroup) && (
                       <span className="mx-1.5 font-normal text-slate-400">|</span>
@@ -3453,16 +3597,27 @@ function SheetPageOne({
                 )}
               </div>
 
-              {/* Image: 375 x 354 px */}
-              <div className="mt-1.5 flex h-[354px] w-[375px] items-center justify-center bg-white">
-                {selectedImage ? (
-                  <img
-                    src={selectedImage.dataUrl}
-                    alt="Extracted vendor product visual"
-                    className="h-full w-full object-contain"
-                  />
+              {/* Image: 375 x 354 px — shows up to two product images side by side when available. */}
+              <div className="mt-1.5 h-[354px] w-[375px] bg-white">
+                {productDisplayImages.length > 0 ? (
+                  <div
+                    className={cn(
+                      "grid h-full w-full gap-2",
+                      productDisplayImages.length > 1 ? "grid-cols-2" : "grid-cols-1",
+                    )}
+                  >
+                    {productDisplayImages.map((image) => (
+                      <div key={image.id} className="flex h-full min-w-0 items-center justify-center overflow-hidden">
+                        <img
+                          src={image.dataUrl}
+                          alt="Extracted vendor product visual"
+                          className="h-full w-full object-contain"
+                        />
+                      </div>
+                    ))}
+                  </div>
                 ) : (
-                  <div className="flex flex-col items-center gap-3 text-center text-slate-400">
+                  <div className="flex h-full w-full flex-col items-center justify-center gap-3 text-center text-slate-400">
                     <FileImage className="h-10 w-10" />
                     <p className="max-w-[240px] text-sm">
                       No vendor image has been selected yet. Use the crop action in the vendor PDF panel to add one.
@@ -3499,7 +3654,7 @@ function SheetPageOne({
 
               {/* DLC qualification disclaimer: shown only when a DLC badge is selected. */}
               {showDlcNote && (
-                <div className="mt-4 mb-4 w-[413px] text-[8px] font-normal italic leading-[1.35] text-slate-600" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                <div className="mt-4 mb-4 w-[413px] text-[8px] font-normal italic leading-[1.35] text-black" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
                   <div>Not all product variations listed on the page are DLC qualified.</div>
                   <div>
                     Visit{" "}
@@ -3529,7 +3684,7 @@ function SheetPageOne({
                     {filteredOverviewRows.map((row) => (
                       <tr key={row.id} className="border-b border-slate-200 align-middle last:border-b-0">
                         <td
-                          className="w-[44%] pr-2 font-bold leading-[1.2] text-slate-900"
+                          className="w-[44%] pr-2 font-bold leading-[1.2] text-black"
                           style={{
                             fontFamily: "Arial, Helvetica, sans-serif",
                             fontSize: `${overviewFontPx}px`,
@@ -3542,7 +3697,7 @@ function SheetPageOne({
                         <td
                           className={cn(
                             "text-left font-normal leading-[1.2] whitespace-pre-line",
-                            isSpecified(row.value) ? "text-slate-800" : "italic text-slate-400",
+                            isSpecified(row.value) ? "text-black" : "italic text-slate-400",
                           )}
                           style={{
                             fontSize: `${overviewFontPx}px`,
@@ -3557,6 +3712,13 @@ function SheetPageOne({
                   </tbody>
                 </table>
                 </div>
+                {overviewShowNote && (
+                  <div className="shrink-0 pt-1 text-[6.5px] font-normal italic leading-[1.25] text-slate-600" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                    {overviewHasBug && "BUG rating shows the highest value. "}
+                    {overviewHasEpa && "EPA shows the lowest value. "}
+                    Both depend on the variant, fixture, power, distribution and mounting configuration — refer to the BUG rating and EPA charts for the exact rating.
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -3574,7 +3736,7 @@ function SheetPageOne({
               {visibleDescription && (
                 <section>
                   <SheetSectionTitle>Product Description</SheetSectionTitle>
-                  <p className="text-[11px] leading-[1.34] text-slate-700">
+                  <p className="text-[11px] leading-[1.34] text-black">
                     {normalizedDescription}
                   </p>
                 </section>
@@ -3583,7 +3745,7 @@ function SheetPageOne({
               {visibleFeatures.length > 0 && (
                 <section>
                   <SheetSectionTitle>Features</SheetSectionTitle>
-                  <ul className="space-y-0.5 text-[11px] leading-[1.28] text-slate-700">
+                  <ul className="space-y-0.5 text-[11px] leading-[1.28] text-black">
                     {visibleFeatures.map((feature, index) => (
                       <li key={`${feature}-${index}`} className="flex gap-2">
                         <span className="mt-[3px] h-1 w-1 rounded-full bg-[#00a651]" />
@@ -3603,7 +3765,7 @@ function SheetPageOne({
               {visibleApplications.length > 0 && (
                 <section>
                   <SheetSectionTitle>Application Area</SheetSectionTitle>
-                  <p className="text-[11px] leading-[1.28] text-slate-700">
+                  <p className="text-[11px] leading-[1.28] text-black">
                     {visibleApplications.join(", ")}
                   </p>
                 </section>
@@ -3667,8 +3829,8 @@ const IKIO_LOGO_BLACK_SRC = `${import.meta.env.BASE_URL}images/ikio-logo-black.s
 function SheetHeader({ draft, showFields = true }: { draft: EditorDraft; showFields?: boolean }) {
   const field = (label: string, value: string) => (
     <div className="flex flex-1 items-end gap-1.5">
-      <span className="whitespace-nowrap text-slate-800">{label}</span>
-      <span className="min-w-0 flex-1 truncate border-b border-slate-400 pb-[1px] font-medium text-slate-900">
+      <span className="whitespace-nowrap text-black">{label}</span>
+      <span className="min-w-0 flex-1 truncate border-b border-slate-400 pb-[1px] font-medium text-black">
         {value}
       </span>
     </div>
@@ -3686,7 +3848,7 @@ function SheetHeader({ draft, showFields = true }: { draft: EditorDraft; showFie
                 block is centered with the SAME gap on both sides. */}
             <img src={IKIO_LOGO_SRC} alt="IKIO LED Lighting" className="h-[62px] w-[135px] shrink-0 self-center object-contain" />
             <div className="flex-1" />
-            <div className="flex w-[360px] shrink-0 flex-col gap-2 self-center text-[7.5px] text-slate-800">
+            <div className="flex w-[360px] shrink-0 flex-col gap-2 self-center text-[7.5px] text-black">
               <div className="flex items-end gap-5">
                 {field("Project Name:", draft.headerProjectName)}
                 {field("CAT.#", draft.headerCatNumber)}
@@ -3701,7 +3863,7 @@ function SheetHeader({ draft, showFields = true }: { draft: EditorDraft; showFie
                 the second-row underline while the block stays vertically centered. */}
             <div className="flex shrink-0 flex-col gap-2 self-center">
               <div className="h-[11px]" aria-hidden />
-              <span className="flex h-[11px] items-end whitespace-nowrap text-[10px] leading-none text-slate-800">
+              <span className="flex h-[11px] items-end whitespace-nowrap text-[10px] leading-none text-black">
                 Technical Data Sheet
               </span>
             </div>
@@ -3710,7 +3872,7 @@ function SheetHeader({ draft, showFields = true }: { draft: EditorDraft; showFie
           <>
             <img src={IKIO_LOGO_SRC} alt="IKIO LED Lighting" className="h-[62px] w-[135px] shrink-0 object-contain" />
             <div className="flex-1" />
-            <span className="shrink-0 self-end pb-1.5 text-[10px] text-slate-800">Technical Data Sheet</span>
+            <span className="shrink-0 self-end pb-1.5 text-[10px] text-black">Technical Data Sheet</span>
           </>
         )}
       </div>
@@ -3777,17 +3939,17 @@ function SheetPageBand({ draft }: { draft: EditorDraft }) {
       style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
     >
       <div className="flex min-w-0 items-center gap-x-1.5 overflow-hidden whitespace-nowrap text-[9.5px]">
-        <span className="shrink-0 font-bold uppercase text-slate-900">{draft.title}</span>
+        <span className="shrink-0 font-bold uppercase text-black">{draft.title}</span>
         {isSpecified(draft.categoryLabel) && (
           <>
             <span className="shrink-0 text-slate-300">|</span>
-            <span className="shrink-0 font-normal text-slate-800">{draft.categoryLabel}</span>
+            <span className="shrink-0 font-normal text-black">{draft.categoryLabel}</span>
           </>
         )}
         {isSpecified(draft.subCategory) && (
           <>
             <span className="shrink-0 text-slate-300">|</span>
-            <span className="shrink-0 font-normal text-slate-800">{draft.subCategory}</span>
+            <span className="shrink-0 font-normal text-black">{draft.subCategory}</span>
           </>
         )}
       </div>
@@ -3814,7 +3976,7 @@ function SheetPageFrame({
 }) {
   return (
     <div
-      className="sheet-print-root mx-auto h-[1056px] w-[816px] max-w-full overflow-hidden bg-white font-sans text-slate-900 shadow-[0_24px_60px_rgba(15,23,42,0.28)]"
+      className="sheet-print-root mx-auto h-[1056px] w-[816px] max-w-full overflow-hidden bg-white font-sans text-black shadow-[0_24px_60px_rgba(15,23,42,0.28)]"
       style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
     >
       <div className="relative h-[1056px] overflow-hidden bg-white">
@@ -3904,7 +4066,7 @@ function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
             <th
               key={column.label}
               className={cn(
-                "border border-[#d6d6d8] bg-[#eeeeef] px-1 py-1.5 text-center align-middle text-[7px] font-bold leading-none text-slate-900",
+                "border border-[#d6d6d8] bg-[#eeeeef] px-1 py-1.5 text-center align-middle text-[7px] font-bold leading-none text-black",
                 i === 0 && "border-l-0",
                 i === arr.length - 1 && "border-r-0",
               )}
@@ -3921,7 +4083,7 @@ function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
           return options.map((option, index) => (
             <tr key={`${group.id}-${index}`} className="align-middle">
               {index === 0 && (
-                <td rowSpan={span} className="border border-l-0 border-slate-200 px-1 py-1.5 text-center text-[7px] font-bold leading-[1.2] text-slate-900">
+                <td rowSpan={span} className="border border-l-0 border-slate-200 px-1 py-1.5 text-center text-[7px] font-bold leading-[1.2] text-black">
                   <div className="whitespace-nowrap">{group.partNumber}</div>
                   {isSpecified(group.sku) && (
                     <div className="mt-0.5 whitespace-nowrap font-normal text-slate-500">
@@ -3930,29 +4092,29 @@ function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
                   )}
                 </td>
               )}
-              <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
+              <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
                 {option.power}
               </td>
               {index === 0 && (
-                <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
+                <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
                   {group.voltage}
                 </td>
               )}
-              <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
+              <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
                 {option.lumen}
               </td>
               {index === 0 && (
                 <>
-                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
+                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
                     {group.efficacy}
                   </td>
-                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
+                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
                     {group.cri}
                   </td>
-                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
+                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
                     {group.current}
                   </td>
-                  <td rowSpan={span} className="whitespace-pre-line border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.4] text-slate-800">
+                  <td rowSpan={span} className="whitespace-pre-line border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.4] text-black">
                     {(() => {
                       // Show each CCT on its own line regardless of separator (/, -, space, comma).
                       const tokens = group.cct.match(/\d[\d.]*\s*K\b/gi);
@@ -3961,10 +4123,10 @@ function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
                         : group.cct;
                     })()}
                   </td>
-                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
+                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
                     {group.thd}
                   </td>
-                  <td rowSpan={span} className="border border-r-0 border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-slate-800">
+                  <td rowSpan={span} className="border border-r-0 border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
                     {group.lightDistribution}
                   </td>
                 </>
@@ -4128,7 +4290,7 @@ function OrderingDecoderTable({
               <td
                 key={column.id}
                 className={cn(
-                  "border border-slate-200 px-1 py-[3px] text-center text-[7.5px] font-bold text-slate-900",
+                  "border border-slate-200 px-1 py-[3px] text-center text-[7.5px] font-bold text-black",
                   isMulti ? "bg-[#e2e2e4]" : "bg-[#f6f6f7]",
                   i === 0 && "border-l-0",
                   i === arr.length - 1 && "border-r-0",
@@ -4144,7 +4306,7 @@ function OrderingDecoderTable({
             <th
               key={column.id}
               className={cn(
-                "border border-[#d6d6d8] bg-[#eeeeef] px-1 py-1 text-center align-middle text-[7px] font-bold uppercase leading-[1.1] text-slate-900",
+                "border border-[#d6d6d8] bg-[#eeeeef] px-1 py-1 text-center align-middle text-[7px] font-bold uppercase leading-[1.1] text-black",
                 i === 0 && "border-l-0",
                 i === arr.length - 1 && "border-r-0",
               )}
@@ -4171,9 +4333,9 @@ function OrderingDecoderTable({
                   .filter((entry) => isSpecified(entry.code) || isSpecified(entry.description))
                   .map((entry, index) => (
                     <div key={index} className="leading-[1.3]">
-                      <div className="text-[7px] font-bold text-slate-900">{entry.code}</div>
+                      <div className="text-[7px] font-bold text-black">{entry.code}</div>
                       {isSpecified(entry.description) && (
-                        <div className="text-[6.5px] text-slate-600">{entry.description}</div>
+                        <div className="text-[6.5px] text-black">{entry.description}</div>
                       )}
                     </div>
                   ))}
@@ -4216,10 +4378,10 @@ function AccessoriesTable({ rows, resolveImage }: { rows: AccessoryRow[]; resolv
           const image = resolveImage(row.imageId);
           return (
             <tr key={row.id} className="align-middle">
-              <td className="whitespace-nowrap border border-l-0 border-slate-200 px-1.5 py-2.5 text-[7px] font-bold leading-[1.15] text-slate-900">
+              <td className="whitespace-nowrap border border-l-0 border-slate-200 px-1.5 py-2.5 text-[7px] font-bold leading-[1.15] text-black">
                 {row.code}
               </td>
-              <td className="border border-slate-200 px-1.5 py-2.5 text-[7px] leading-[1.2] text-slate-700">
+              <td className="border border-slate-200 px-1.5 py-2.5 text-[7px] leading-[1.2] text-black">
                 {row.description}
               </td>
               <td className="border border-slate-200 px-1.5 py-2.5">
@@ -4352,7 +4514,7 @@ function DimensionsSection({
           return (
             <div key={item.id} className={cn("flex flex-col", single ? "w-1/2 items-center" : "w-full")}>
               {isSpecified(item.label) && (
-                <div className="mb-1 text-[10px] font-bold text-slate-900">
+                <div className="mb-1 text-[10px] font-bold text-black">
                   {(() => {
                     const colon = item.label.indexOf(":");
                     if (colon < 0) return <span className="text-[#00a651]">{item.label}</span>;
@@ -4377,7 +4539,7 @@ function DimensionsSection({
                 )}
               </div>
               {dims.length > 0 && (
-                <div className="mt-1 text-[9px] font-semibold text-slate-600">{dims.join("  ×  ")}</div>
+                <div className="mt-1 text-[9px] font-semibold text-black">{dims.join("  ×  ")}</div>
               )}
             </div>
           );
@@ -4524,6 +4686,18 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   const previewRef = useRef<HTMLDivElement | null>(null);
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  // Variant sheet: the chosen power(s) the generated sheet is for (null = all powers / full draft).
+  const variantGroups = enumerateVariantGroups(spec);
+  const totalVariantOptions = variantGroups.reduce((count, group) => count + group.options.length, 0);
+  const hasVariantChoice = totalVariantOptions > 1;
+  const [sheetVariant, setSheetVariant] = useState<{ label: string; group: VariantGroup; options: VariantOption[] } | null>(null);
+  const [variantDialogOpen, setVariantDialogOpen] = useState(false);
+  const [pendingPdfKind, setPendingPdfKind] = useState<null | "download" | "editable">(null);
+  const [pendingPdfRun, setPendingPdfRun] = useState<null | "download" | "editable">(null);
+  // Per-option checkbox state for the multi-select (selectable) groups in the variant dialog.
+  const [variantChecks, setVariantChecks] = useState<Record<string, boolean>>({});
+  // The draft actually rendered on the sheet/preview/PDF — narrowed to the chosen power(s) when set.
+  const displayDraft = sheetVariant ? makeVariantDraft(draft, sheetVariant.group, sheetVariant.options) : draft;
   // Tracks which extraction's saved draft has finished loading, so autosave
   // never overwrites persisted edits with the freshly-built baseline.
   const hydratedSpecIdRef = useRef<string | null>(null);
@@ -5146,7 +5320,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   // One-click, works everywhere (including embedded webviews): captures each page
   // exactly as it appears in the preview and auto-downloads to the Downloads folder.
   // The look is pixel-identical to the preview; the text is not selectable/editable.
-  const handleDownloadPdf = async () => {
+  const runDownloadPdf = async () => {
     const sheets = getPrintablePages();
     if (sheets.length === 0) {
       toast.error("The sheet preview is not ready yet.");
@@ -5184,7 +5358,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   // Editable route: prints the real sheet HTML so the PDF looks exactly like the
   // preview AND keeps text editable. Requires a browser whose print dialog offers a
   // "Save as PDF" destination (Chrome/Edge) — not available in some embedded webviews.
-  const handleEditablePdf = async () => {
+  const runEditablePdf = async () => {
     const sheets = getPrintablePages();
     if (sheets.length === 0) {
       toast.error("The sheet preview is not ready yet.");
@@ -5225,6 +5399,55 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     } catch (error) {
       console.error("PDF export failed", error);
       toast.error("Could not open the print dialog. Please try again.");
+    }
+  };
+
+  const runPdf = (kind: "download" | "editable") =>
+    kind === "editable" ? runEditablePdf() : runDownloadPdf();
+
+  // Entry point for the two export buttons. If the fixture has more than one power/variant and none
+  // has been chosen for this sheet yet, ask the user which to build first.
+  const requestPdf = (kind: "download" | "editable") => {
+    if (hasVariantChoice && !sheetVariant) {
+      setPendingPdfKind(kind);
+      openVariantDialog();
+      return;
+    }
+    void runPdf(kind);
+  };
+
+  // Open the dialog and default every option to checked (for the selectable multi-select groups).
+  const openVariantDialog = () => {
+    const checks: Record<string, boolean> = {};
+    variantGroups.forEach((group) => group.options.forEach((option) => (checks[option.key] = true)));
+    setVariantChecks(checks);
+    setVariantDialogOpen(true);
+  };
+
+  // After a variant is picked in the dialog, the preview re-renders single-variant; wait two frames
+  // for the DOM/images to settle, then run the queued export.
+  useEffect(() => {
+    if (!pendingPdfRun) return;
+    const kind = pendingPdfRun;
+    const id = requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        void runPdf(kind);
+        setPendingPdfRun(null);
+      }),
+    );
+    return () => cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingPdfRun]);
+
+  // Resolve the variant dialog: apply the chosen power(s) (or "all"), then queue the pending export.
+  const chooseSheetVariant = (
+    selection: { label: string; group: VariantGroup; options: VariantOption[] } | null,
+  ) => {
+    setSheetVariant(selection && selection.options.length > 0 ? selection : null);
+    setVariantDialogOpen(false);
+    if (pendingPdfKind) {
+      setPendingPdfRun(pendingPdfKind);
+      setPendingPdfKind(null);
     }
   };
 
@@ -6167,7 +6390,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               width: `${SHEET_PREVIEW_WIDTH}px`,
             }}
           >
-            <SheetPreview draft={draft} selectedImage={selectedImage} spec={spec} />
+            <SheetPreview draft={displayDraft} selectedImage={selectedImage} spec={spec} />
           </div>
         </div>
       </div>
@@ -6254,28 +6477,65 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-          <Button
-            variant="outline"
-            className="flex-1 gap-2 sm:flex-none"
-            onClick={() => {
-              // Rebuild the draft from scratch (new overview template, SKU, etc.) and allow the
-              // fixture auto-prediction to re-fill category / sub-category / group.
-              lastAutoPredictRef.current = null;
-              setDraft(buildEditorDraft(spec));
-            }}
-          >
-            <RotateCcw className="h-4 w-4" />
-            Reset
-          </Button>
-          <Button className="flex-1 gap-2 sm:flex-none" onClick={handleDownloadPdf}>
-            <FileText className="h-4 w-4" />
-            Download PDF
-          </Button>
-          <Button variant="outline" className="flex-1 gap-2 sm:flex-none" onClick={handleEditablePdf}>
-            <FileText className="h-4 w-4" />
-            Editable PDF (Print)
-          </Button>
+        <div className="flex flex-col items-stretch gap-2 sm:items-end">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <Button
+              variant="outline"
+              className="flex-1 gap-2 sm:flex-none"
+              onClick={() => {
+                // Rebuild the draft from scratch (new overview template, SKU, etc.) and allow the
+                // fixture auto-prediction to re-fill category / sub-category / group.
+                lastAutoPredictRef.current = null;
+                setSheetVariant(null);
+                setDraft(buildEditorDraft(spec));
+              }}
+            >
+              <RotateCcw className="h-4 w-4" />
+              Reset
+            </Button>
+            <Button className="flex-1 gap-2 sm:flex-none" onClick={() => requestPdf("download")}>
+              <FileText className="h-4 w-4" />
+              Download PDF
+            </Button>
+            <Button variant="outline" className="flex-1 gap-2 sm:flex-none" onClick={() => requestPdf("editable")}>
+              <FileText className="h-4 w-4" />
+              Editable PDF (Print)
+            </Button>
+          </div>
+          {hasVariantChoice && (
+            <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
+              <span className="text-muted-foreground">Sheet variant:</span>
+              {sheetVariant ? (
+                <>
+                  <span className="max-w-[220px] truncate rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 font-semibold text-primary">
+                    {sheetVariant.label}
+                  </span>
+                  <button
+                    type="button"
+                    className="text-muted-foreground underline hover:text-foreground"
+                    onClick={openVariantDialog}
+                  >
+                    change
+                  </button>
+                  <button
+                    type="button"
+                    className="text-muted-foreground underline hover:text-foreground"
+                    onClick={() => setSheetVariant(null)}
+                  >
+                    all powers
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="rounded-full border border-border/70 px-2.5 py-1 font-medium text-foreground hover:border-primary/40"
+                  onClick={openVariantDialog}
+                >
+                  All powers — pick a variant
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -6348,6 +6608,123 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
           event.target.value = "";
         }}
       />
+
+      <Dialog
+        open={variantDialogOpen}
+        onOpenChange={(open) => {
+          setVariantDialogOpen(open);
+          if (!open) setPendingPdfKind(null);
+        }}
+      >
+        <DialogContent className="max-h-[88vh] w-[min(94vw,480px)] max-w-none overflow-hidden p-0">
+          <DialogHeader className="border-b border-border/60 px-6 py-4">
+            <DialogTitle>Which variant should the sheet be for?</DialogTitle>
+            <DialogDescription>
+              Selectable variants list all their powers (tick the ones to include); distinct variants
+              are separate. Pick one, or keep all powers on the sheet.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[64vh] space-y-3 overflow-auto px-6 py-5">
+            {variantGroups.map((group, gi) => {
+              const groupTitle = group.fixture || (variantGroups.length > 1 ? `Variant ${gi + 1}` : "Power");
+              if (!group.selectable) {
+                const option = group.options[0];
+                return (
+                  <button
+                    key={group.id}
+                    type="button"
+                    onClick={() =>
+                      chooseSheetVariant({
+                        label: [group.fixture, option.power].filter(isSpecified).join(" · ") || option.power,
+                        group,
+                        options: [option],
+                      })
+                    }
+                    className="flex w-full items-center justify-between gap-3 rounded-xl border border-border/70 bg-background px-4 py-3 text-left transition-colors hover:border-primary/50 hover:bg-primary/5"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-foreground">{option.power || groupTitle}</span>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {[groupTitle !== option.power ? groupTitle : "", option.lumen, option.efficacy].filter(isSpecified).join(" · ")}
+                      </span>
+                    </span>
+                    <span className="shrink-0 rounded-full border border-border/60 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      Single
+                    </span>
+                  </button>
+                );
+              }
+              const checked = group.options.filter((option) => variantChecks[option.key]);
+              return (
+                <div key={group.id} className="space-y-2 rounded-xl border border-border/70 bg-card/30 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-semibold text-foreground">{groupTitle}</span>
+                    <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                      Power selectable
+                    </span>
+                  </div>
+                  <div className="space-y-0.5">
+                    {group.options.map((option) => (
+                      <label
+                        key={option.key}
+                        className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-primary/5"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!!variantChecks[option.key]}
+                          onChange={() => setVariantChecks((current) => ({ ...current, [option.key]: !current[option.key] }))}
+                          className="h-4 w-4 shrink-0 accent-primary"
+                        />
+                        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{option.power}</span>
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {[option.lumen, option.efficacy].filter(isSpecified).join(" · ")}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <Button
+                      type="button"
+                      className="h-8 px-3 text-xs"
+                      disabled={checked.length === 0}
+                      onClick={() =>
+                        chooseSheetVariant({
+                          label: `${groupTitle} · ${checked.length} power${checked.length > 1 ? "s" : ""}`,
+                          group,
+                          options: checked,
+                        })
+                      }
+                    >
+                      Use selected ({checked.length})
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-8 px-3 text-xs"
+                      onClick={() =>
+                        chooseSheetVariant({
+                          label: `${groupTitle} · all ${group.options.length} powers`,
+                          group,
+                          options: group.options,
+                        })
+                      }
+                    >
+                      Use all (selectable)
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => chooseSheetVariant(null)}
+              className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border/70 px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+            >
+              Keep all powers / variants on the sheet
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

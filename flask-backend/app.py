@@ -277,6 +277,14 @@ Rules:
   Lumen Output "2800/4200/5600/7000/8400 lm", keeping the wattage<->lumen order aligned. If there are two
   wattage families (e.g. a 60W package and a 120W package), return one variant per family in variantOverview.matrix
   with that family's individual wattages in the Power cell.
+- POWER-ADJUSTABLE PERCENTAGE STEPS (critical for field-adjustable fixtures): when the vendor says the fixture is
+  power-adjustable / field-selectable in PERCENTAGE steps (e.g. "Power adjustable: 100%, 80%, 60%, 40%") AND the
+  lumen table has MORE values than the named model wattages, the REAL selectable wattages are each model's max
+  wattage multiplied by EACH percentage step. COMPUTE and list ALL of them (round to whole watts), aligned 1:1 with
+  the lumen outputs in the same order. Example: a 180W model with steps 100/80/60/40% -> "180W/144W/108W/72W" paired
+  with that model's four lumen values; a 400W model -> "400W/320W/240W/160W". Do NOT output only the 100% (highest)
+  wattage when the lumen list clearly has one value per step — for every variant the Power list and the Lumen Output
+  list MUST contain the SAME number of values, in the SAME order (one wattage per lumen).
 - DISTINCT SIZES / LENGTHS (very important): if the fixture comes in multiple physical SIZES or LENGTHS and EACH
   size has its OWN single wattage and its OWN lumen output — common for tri-proof / linear / batten / strip / vapor-tight
   fixtures, e.g. 2ft/4ft/5ft (or 600mm/1200mm/1500mm) = 20W/36W/45W = 2600-2800lm / 4680-5040lm / 5850-6300lm — then
@@ -1381,8 +1389,10 @@ Fix these problems specifically:
   "20W/60W/120W" and keep the power<->lumen relationship intact.
 - POWER<->LUMEN COUNT (selectable packages ONLY): when ONE fixture offers a selectable RANGE of wattages that
   map 1:1 to a range of lumens, the Power cell must list the same number of values as the Lumen Output cell,
-  aligned in order. If Lumen Output has 5 values but Power has 1, find the full wattage list in the source and
-  expand Power to match.
+  aligned in order. If Lumen Output has more values than Power (e.g. 4 lumens but 1 wattage), find or COMPUTE the
+  full wattage list and expand Power to match: if the source states power-adjustable PERCENTAGE steps (e.g. "Power
+  adjustable: 100%, 80%, 60%, 40%"), the wattages are the model's max wattage times each step (180W -> 180/144/108/72W),
+  one per lumen value, in the same order. Never leave Power as just the single highest value when the lumen list is longer.
 - DISTINCT SIZES / LENGTHS (do NOT expand or merge): if each variantOverview.matrix row is a different physical
   SIZE / LENGTH with its OWN single wattage (e.g. row1 2FT=20W, row2 4FT=36W, row3 5FT=45W), KEEP each row's single
   wattage and that size's own lumen(s). Do NOT expand a size's single wattage into the full list, and do NOT merge
