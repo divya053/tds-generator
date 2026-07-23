@@ -291,253 +291,80 @@ const CATEGORY_OVERVIEW_TEMPLATES: Record<string, OverviewTemplateRow[]> = {
   // Master overview heads for INDOOR products, in the exact wording/casing supplied. Anything the
   // vendor PDF has that is NOT one of these becomes an optional (not-included) row.
   indoor: [
-    createOverviewTemplateRow("power (selectable)", "Power", "Wattage", "Power (Selectable)"),
-    createOverviewTemplateRow("voltage", "Voltage", "Input Voltage"),
-    createOverviewTemplateRow("current", "Current"),
-    createOverviewTemplateRow("power factor", "Power Factor"),
+    createOverviewTemplateRow("Power (Selectable)", "Power", "Wattage"),
+    createOverviewTemplateRow("Voltage", "Input Voltage"),
+    createOverviewTemplateRow("Current"),
+    createOverviewTemplateRow("Power Factor"),
     createOverviewTemplateRow("Total Harmonic Distortion (THD)", "THD"),
-    createOverviewTemplateRow("surge protection", "Surge Protection"),
-    createOverviewTemplateRow("lumen output", "Lumen Output", "Lumens"),
-    createOverviewTemplateRow("efficacy", "Efficacy", "Efficacy (lm/W)"),
+    createOverviewTemplateRow("Surge Protection"),
+    createOverviewTemplateRow("Lumen Output", "Lumens"),
+    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
     createOverviewTemplateRow("Color Temperature (CCT)", "CCT", "Color Temperature", "Color Temperature (Selectable)"),
-    createOverviewTemplateRow("Color Rendering (CRI)", "CRI", "Color Rendering Index"),
-    createOverviewTemplateRow("beam angle", "Beam Angle"),
-    createOverviewTemplateRow("dimming capability", "Dimming", "Dimming Capability"),
+    createOverviewTemplateRow("Color Rendering Index (CRI)", "CRI", "Color Rendering", "Color Rendering Index"),
+    createOverviewTemplateRow("Beam Angle"),
+    createOverviewTemplateRow("Dimming Capability", "Dimming"),
     createOverviewTemplateRow("Operating Temperature"),
-    createOverviewTemplateRow("suitable location", "Suitable Location"),
+    createOverviewTemplateRow("Suitable Location"),
     createOverviewTemplateRow("Ingress Protection Rating (IP)", "IP Rating"),
     createOverviewTemplateRow("Average Life (Hours)", "Lifespan", "Lifespan (Hours)"),
     createOverviewTemplateRow("Warranty (Years)", "Warranty"),
-    createOverviewTemplateRow("led light source", "LED Light Source", "LED Source", "LED Type"),
-    createOverviewTemplateRow("driver", "Driver"),
-    createOverviewTemplateRow("housing", "Housing", "Housing Material"),
-    createOverviewTemplateRow("finish", "Finish"),
-    createOverviewTemplateRow("cover/lens material", "Lens", "Cover Material / Lens", "Cover / Lens Material"),
-    createOverviewTemplateRow("cover type", "Cover Type"),
-    createOverviewTemplateRow("power supply", "Power Supply"),
+    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
+    createOverviewTemplateRow("Driver"),
+    createOverviewTemplateRow("Housing", "Housing Material"),
+    createOverviewTemplateRow("Finish"),
+    createOverviewTemplateRow("Cover / Lens Material", "Lens", "Cover Material / Lens", "Cover/Lens Material"),
+    createOverviewTemplateRow("Cover Type"),
+    createOverviewTemplateRow("Power Supply"),
   ],
   // Master overview heads for OUTDOOR products, in the exact wording/casing supplied.
   outdoor: [
-    createOverviewTemplateRow("power (selectable)", "Power", "Wattage", "Power (Selectable)"),
-    createOverviewTemplateRow("voltage", "Voltage", "Input Voltage"),
-    createOverviewTemplateRow("current", "Current"),
-    createOverviewTemplateRow("power factor", "Power Factor"),
+    createOverviewTemplateRow("Power (Selectable)", "Power", "Wattage"),
+    createOverviewTemplateRow("Voltage", "Input Voltage"),
+    createOverviewTemplateRow("Current"),
+    createOverviewTemplateRow("Power Factor"),
     createOverviewTemplateRow("Total Harmonic Distortion (THD)", "THD"),
-    createOverviewTemplateRow("surge protection", "Surge Protection"),
-    createOverviewTemplateRow("lumen output", "Lumen Output", "Lumens"),
-    createOverviewTemplateRow("efficacy", "Efficacy", "Efficacy (lm/W)"),
+    createOverviewTemplateRow("Surge Protection"),
+    createOverviewTemplateRow("Lumen Output", "Lumens"),
+    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
     createOverviewTemplateRow("Color Temperature (CCT)", "CCT", "Color Temperature", "Color Temperature (Selectable)"),
-    createOverviewTemplateRow("Color Rendering (CRI)", "CRI", "Color Rendering Index"),
-    createOverviewTemplateRow("beam angle", "Beam Angle"),
-    createOverviewTemplateRow("lighting distribution", "Light Distribution", "Lighting Distribution"),
+    createOverviewTemplateRow("Color Rendering Index (CRI)", "CRI", "Color Rendering", "Color Rendering Index"),
+    createOverviewTemplateRow("Beam Angle"),
+    createOverviewTemplateRow("Lighting Distribution", "Light Distribution"),
     createOverviewTemplateRow("BUG Rating (Backlight, Uplight, and Glare)", "BUG Rating", "Backlight Uplight Glare"),
-    createOverviewTemplateRow("dimming capability", "Dimming", "Dimming Capability"),
+    createOverviewTemplateRow("Dimming Capability", "Dimming"),
     createOverviewTemplateRow("Operating Temperature"),
-    createOverviewTemplateRow("suitable location", "Suitable Location"),
+    createOverviewTemplateRow("Suitable Location"),
     createOverviewTemplateRow("Ingress Protection Rating (IP)", "IP Rating"),
     createOverviewTemplateRow("Impact Protection Rating (IK)", "IK Rating"),
     createOverviewTemplateRow("Average Life (Hours)", "Lifespan", "Lifespan (Hours)"),
     createOverviewTemplateRow("Warranty (Years)", "Warranty"),
-    createOverviewTemplateRow("led light source", "LED Light Source", "LED Source", "LED Type"),
-    createOverviewTemplateRow("driver", "Driver"),
-    createOverviewTemplateRow("housing", "Housing", "Housing Material"),
-    createOverviewTemplateRow("finish", "Finish"),
-    createOverviewTemplateRow("Effective Projected Area (EPA)", "EPA", "Effective Projected Area"),
+    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
+    createOverviewTemplateRow("Driver"),
+    createOverviewTemplateRow("Housing", "Housing Material"),
+    createOverviewTemplateRow("Finish"),
+    createOverviewTemplateRow("Effective Projected Area (EPA)", "EPA", "Effective Projected Area", "Effective Protected Area"),
     createOverviewTemplateRow("Cover / Lens Material", "Lens", "Cover Material / Lens", "Cover/Lens Material"),
-    createOverviewTemplateRow("cover type", "Cover Type"),
-    createOverviewTemplateRow("power supply", "Power Supply"),
-  ],
-  panel: [
-    createOverviewTemplateRow("Power (Selectable)", "Power", "Wattage"),
-    createOverviewTemplateRow("Voltage", "Input Voltage"),
-    createOverviewTemplateRow("Current"),
-    createOverviewTemplateRow("Power Factor"),
-    createOverviewTemplateRow("THD"),
-    createOverviewTemplateRow("Surge Protection"),
-    createOverviewTemplateRow("Lumens", "Lumen Output"),
-    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
-    createOverviewTemplateRow("Color Temperature (Selectable)", "CCT", "Color Temperature"),
-    createOverviewTemplateRow("Color Rendering (CRI)", "CRI", "Color Rendering Index"),
-    createOverviewTemplateRow("R9 (Red Value)", "R9"),
-    createOverviewTemplateRow("R13 (Skin Tones)", "R13"),
-    createOverviewTemplateRow("Beam Angle"),
-    createOverviewTemplateRow("Light Distribution"),
-    createOverviewTemplateRow("BUG Rating (Backlight, Uplight, Glare)", "BUG Rating", "Backlight Uplight Glare"),
-    createOverviewTemplateRow("Dimmable Lighting Control", "Dimming"),
-    createOverviewTemplateRow("Operating Temperature (°F)", "Operating Temperature"),
-    createOverviewTemplateRow("Suitable Location"),
-    createOverviewTemplateRow("Ingress Protection Rating (IP)", "IP Rating"),
-    createOverviewTemplateRow("Lifespan (Avg Life Hours)", "Lifespan", "Lifespan (Hours)"),
-    createOverviewTemplateRow("Warranty (Years)", "Warranty"),
-    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
-    createOverviewTemplateRow("Driver", "Power Supply"),
-    createOverviewTemplateRow("Housing", "Housing Material"),
-    createOverviewTemplateRow("Cover Material / Lens", "Lens"),
-    createOverviewTemplateRow("Diffuser"),
-    createOverviewTemplateRow("Base / Power Supply", "Driver", "Power Supply"),
-    createOverviewTemplateRow("Finish"),
-    createOverviewTemplateRow("EPA (Effective Projected Area)", "EPA", "Effective Projected Area"),
-    createOverviewTemplateRow("Wind Shear Rating"),
-  ],
-  downlight: [
-    createOverviewTemplateRow("Power (Selectable)", "Power", "Wattage"),
-    createOverviewTemplateRow("Voltage", "Input Voltage"),
-    createOverviewTemplateRow("Current"),
-    createOverviewTemplateRow("Power factor", "Power Factor"),
-    createOverviewTemplateRow("THD"),
-    createOverviewTemplateRow("Lumens", "Lumen Output"),
-    createOverviewTemplateRow("Color Temp (Selectable)", "CCT", "Color Temperature"),
-    createOverviewTemplateRow("CRI", "Color Rendering (CRI)", "Color Rendering Index"),
-    createOverviewTemplateRow("R9", "R9 (Red Value)"),
-    createOverviewTemplateRow("R13", "R13 (Skin Tones)"),
-    createOverviewTemplateRow("Beam Angle"),
-    createOverviewTemplateRow("Light Distribution"),
-    createOverviewTemplateRow("BUG Rating", "BUG Rating (Backlight, Uplight, Glare)", "Backlight Uplight Glare"),
-    createOverviewTemplateRow("Dimmable Lighting Control", "Dimming"),
-    createOverviewTemplateRow("Suitable Location"),
-    createOverviewTemplateRow("Ingress Protection (IP)", "IP Rating"),
-    createOverviewTemplateRow("Lifespan (Avg Life, Warranty)", "Lifespan", "Warranty"),
-    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
-    createOverviewTemplateRow("Driver", "Power Supply"),
-    createOverviewTemplateRow("Housing", "Housing Material"),
-    createOverviewTemplateRow("Cover Material / Lens", "Lens"),
-    createOverviewTemplateRow("Diffuser"),
-    createOverviewTemplateRow("Base / Power Supply", "Driver", "Power Supply"),
-    createOverviewTemplateRow("Finish"),
-  ],
-  low_bay: [
-    createOverviewTemplateRow("Max Power", "Power", "Wattage"),
-    createOverviewTemplateRow("Voltage", "Input Voltage"),
-    createOverviewTemplateRow("Current"),
-    createOverviewTemplateRow("Power Factor"),
-    createOverviewTemplateRow("THD"),
-    createOverviewTemplateRow("Surge Protection"),
-    createOverviewTemplateRow("Lumens", "Lumen Output"),
-    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
-    createOverviewTemplateRow("Color Temperature", "CCT"),
-    createOverviewTemplateRow("CRI", "Color Rendering (CRI)", "Color Rendering Index"),
-    createOverviewTemplateRow("R9", "R9 (Red Value)"),
-    createOverviewTemplateRow("R13", "R13 (Skin Tones)"),
-    createOverviewTemplateRow("Beam Angle"),
-    createOverviewTemplateRow("Light Distribution"),
-    createOverviewTemplateRow("Operating Temperature"),
-    createOverviewTemplateRow("Dimmable Lighting Control", "Dimming"),
-    createOverviewTemplateRow("Suitable Location"),
-    createOverviewTemplateRow("Ingress Protection (IP)", "IP Rating"),
-    createOverviewTemplateRow("Lifespan (Avg Life, Warranty)", "Lifespan", "Warranty"),
-    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
-    createOverviewTemplateRow("Driver", "Power Supply"),
-    createOverviewTemplateRow("Housing", "Housing Material"),
-    createOverviewTemplateRow("Cover Material / Lens", "Lens"),
-    createOverviewTemplateRow("Diffuser"),
-    createOverviewTemplateRow("Base / Power Supply", "Driver", "Power Supply"),
-    createOverviewTemplateRow("Finish"),
-  ],
-  high_bay: [
-    createOverviewTemplateRow("Max Power", "Power", "Wattage"),
-    createOverviewTemplateRow("Voltage", "Input Voltage"),
-    createOverviewTemplateRow("Current"),
-    createOverviewTemplateRow("Power Factor"),
-    createOverviewTemplateRow("THD"),
-    createOverviewTemplateRow("Lumens", "Lumen Output"),
-    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
-    createOverviewTemplateRow("Color Temperature", "CCT"),
-    createOverviewTemplateRow("CRI", "Color Rendering (CRI)", "Color Rendering Index"),
-    createOverviewTemplateRow("R9", "R9 (Red Value)"),
-    createOverviewTemplateRow("R13", "R13 (Skin Tones)"),
-    createOverviewTemplateRow("Beam Angle"),
-    createOverviewTemplateRow("Light Distribution"),
-    createOverviewTemplateRow("Dimmable Lighting Control", "Dimming"),
-    createOverviewTemplateRow("Operating Temperature"),
-    createOverviewTemplateRow("Suitable Location"),
-    createOverviewTemplateRow("Ingress Protection (IP)", "IP Rating"),
-    createOverviewTemplateRow("Lifespan (Avg Life, Warranty)", "Lifespan", "Warranty"),
-    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
-    createOverviewTemplateRow("Driver", "Power Supply"),
-    createOverviewTemplateRow("Housing", "Housing Material"),
-    createOverviewTemplateRow("Cover Material / Lens", "Lens"),
-    createOverviewTemplateRow("Diffuser"),
-    createOverviewTemplateRow("Base / Power Supply", "Driver", "Power Supply"),
-    createOverviewTemplateRow("Finish"),
-  ],
-  flood: [
-    createOverviewTemplateRow("Power", "Wattage"),
-    createOverviewTemplateRow("Voltage", "Input Voltage"),
-    createOverviewTemplateRow("Current"),
-    createOverviewTemplateRow("Power Factor"),
-    createOverviewTemplateRow("THD"),
-    createOverviewTemplateRow("Percent Flicker (%)", "Flicker"),
-    createOverviewTemplateRow("Surge Protection"),
-    createOverviewTemplateRow("Lumens", "Lumen Output"),
-    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
-    createOverviewTemplateRow("Color Temperature", "CCT"),
-    createOverviewTemplateRow("CRI", "Color Rendering (CRI)", "Color Rendering Index"),
-    createOverviewTemplateRow("R9", "R9 (Red Value)"),
-    createOverviewTemplateRow("R13", "R13 (Skin Tones)"),
-    createOverviewTemplateRow("Beam Angle"),
-    createOverviewTemplateRow("Dimmable Lighting Control", "Dimming"),
-    createOverviewTemplateRow("BUG Rating (Backlight, Uplight, Glare)", "BUG Rating", "Backlight Uplight Glare"),
-    createOverviewTemplateRow("Diffuser"),
-    createOverviewTemplateRow("Protection Against Electric", "Protection Class"),
-    createOverviewTemplateRow("Intelligent Control", "Control", "Control Type", "Sensor Compatibility"),
-    createOverviewTemplateRow("Operating Temperature"),
-    createOverviewTemplateRow("Suitable Location"),
-    createOverviewTemplateRow("Ingress Protection (IP)", "IP Rating"),
-    createOverviewTemplateRow("Impact Protection Rating (IK)", "IK Rating"),
-    createOverviewTemplateRow("Lifespan (Avg Life, Warranty)", "Lifespan", "Warranty"),
-    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
-    createOverviewTemplateRow("Driver", "Power Supply"),
-    createOverviewTemplateRow("Housing", "Housing Material"),
-    createOverviewTemplateRow("Finish"),
-    createOverviewTemplateRow("Lens", "Cover Material / Lens"),
-    createOverviewTemplateRow("Structure"),
-    createOverviewTemplateRow("Glare Rating"),
-    createOverviewTemplateRow("Qualified Part Number"),
-    createOverviewTemplateRow("Effective Projected Area (EPA)", "EPA", "Effective Projected Area"),
-  ],
-  street: [
-    createOverviewTemplateRow("Max Power", "Power", "Wattage"),
-    createOverviewTemplateRow("Voltage", "Input Voltage"),
-    createOverviewTemplateRow("Current"),
-    createOverviewTemplateRow("Power Factor"),
-    createOverviewTemplateRow("THD"),
-    createOverviewTemplateRow("Surge Protection"),
-    createOverviewTemplateRow("Lumens", "Lumen Output"),
-    createOverviewTemplateRow("Efficacy", "Efficacy (lm/W)"),
-    createOverviewTemplateRow("Color Temperature", "CCT"),
-    createOverviewTemplateRow("CRI", "Color Rendering (CRI)", "Color Rendering Index"),
-    createOverviewTemplateRow("R9", "R9 (Red Value)"),
-    createOverviewTemplateRow("R13", "R13 (Skin Tones)"),
-    createOverviewTemplateRow("Beam Angle"),
-    createOverviewTemplateRow("Light Distribution"),
-    createOverviewTemplateRow("BUG Rating (Backlight, Uplight, Glare)", "BUG Rating", "Backlight Uplight Glare"),
-    createOverviewTemplateRow("Dimmable Lighting Control", "Dimming"),
-    createOverviewTemplateRow("Operating Temperature"),
-    createOverviewTemplateRow("Suitable Location"),
-    createOverviewTemplateRow("Ingress Protection (IP)", "IP Rating"),
-    createOverviewTemplateRow("Lifespan (Avg Life, Warranty)", "Lifespan", "Warranty"),
-    createOverviewTemplateRow("LED Light Source", "LED Source", "LED Type"),
-    createOverviewTemplateRow("Driver", "Power Supply"),
-    createOverviewTemplateRow("Housing", "Housing Material"),
-    createOverviewTemplateRow("Cover Material / Lens", "Lens"),
-    createOverviewTemplateRow("Diffuser"),
-    createOverviewTemplateRow("Base / Power Supply", "Driver", "Power Supply"),
-    createOverviewTemplateRow("Finish"),
-    createOverviewTemplateRow("Effective Projected Area (EPA)", "EPA", "Effective Projected Area"),
+    createOverviewTemplateRow("Cover Type"),
+    createOverviewTemplateRow("Power Supply"),
   ],
 };
+
+// Hazardous Location Lighting is a master category alongside Indoor / Outdoor. It reuses the
+// Outdoor master heads (hazardous fixtures are industrial/outdoor in nature). Override with a
+// dedicated list here if the hazardous heads should differ.
+CATEGORY_OVERVIEW_TEMPLATES.hazardous = CATEGORY_OVERVIEW_TEMPLATES.outdoor;
 
 const OVERVIEW_EXCLUDED_PARAMETERS = new Set([
   "product category",
   "product type",
 ]);
 
-// Overview rows to hide entirely (in addition to the set above): dimming/dimmable
-// and colour-options rows should never appear.
+// Overview rows to hide entirely (in addition to the set above): colour-options rows should
+// never appear. (Dimming Capability IS shown — it carries the dimmable / 0-10V value.)
 function isExcludedOverviewLabel(label: string) {
   const key = normalizeSpecKey(label);
   if (OVERVIEW_EXCLUDED_PARAMETERS.has(key)) return true;
-  return key.includes("dimm") || key.includes("color option") || key.includes("colour option");
+  return key.includes("color option") || key.includes("colour option");
 }
 
 // Rows whose values represent a physical size and should be shown in ft/in.
@@ -581,10 +408,33 @@ function extractCctValue(value: string) {
   return seen.join("/");
 }
 
-/** Normalize an overview row value for display (dimensions -> US units, CCT -> Kelvin only). */
+/** True for overview labels that represent beam angle. */
+function isBeamAngleLabel(label: string) {
+  return /beam\s*angle/i.test(label ?? "");
+}
+
+/** Keep only degree values in a beam-angle field, dropping distribution types like
+ *  "Type II/III/IV/V" that belong to Light Distribution. "60° - 120°" -> "60° / 120°".
+ *  Bare numbers with no degree/deg token yield "" so a non-degree value is hidden. */
+function extractBeamAngleDegrees(value: string) {
+  const matches = String(value ?? "").match(/\d[\d.]*\s*(?:°|deg(?:ree)?s?\b)/gi);
+  if (!matches || matches.length === 0) return "";
+  const seen: string[] = [];
+  for (const match of matches) {
+    const num = match.match(/\d[\d.]*/)?.[0];
+    if (!num) continue;
+    const normalized = `${num}°`;
+    if (!seen.includes(normalized)) seen.push(normalized);
+  }
+  return seen.join(" / ");
+}
+
+/** Normalize an overview row value for display (dimensions -> US units, CCT -> Kelvin only,
+ *  beam angle -> degrees only). */
 function normalizeOverviewRowValue(label: string, value: string) {
   if (isDimensionLabel(label)) return convertDimensionUnits(value);
   if (isCctLabel(label)) return extractCctValue(value);
+  if (isBeamAngleLabel(label)) return extractBeamAngleDegrees(value);
   return value;
 }
 
@@ -1337,16 +1187,15 @@ function getOverviewTemplateRows(spec: ExtendedExtractedSpec) {
   const broad = (
     predictFixtureProfile(spec.productName, String(spec.subCategory ?? ""), getCategoryLabel(spec))?.category ?? ""
   ).toLowerCase();
+  // Three master lists only: Hazardous Location, Outdoor, Indoor.
+  if (
+    broad.includes("hazard") || broad.includes("explosion") ||
+    source.includes("hazard") || source.includes("explosion")
+  ) {
+    return CATEGORY_OVERVIEW_TEMPLATES.hazardous;
+  }
   if (broad.includes("outdoor") || source.includes("outdoor")) return CATEGORY_OVERVIEW_TEMPLATES.outdoor;
   if (broad.includes("indoor") || source.includes("indoor")) return CATEGORY_OVERVIEW_TEMPLATES.indoor;
-
-  // Legacy per-fixture fallbacks when the broad category can't be determined.
-  if (source.includes("downlight")) return CATEGORY_OVERVIEW_TEMPLATES.downlight;
-  if (source.includes("low bay")) return CATEGORY_OVERVIEW_TEMPLATES.low_bay;
-  if (source.includes("high bay")) return CATEGORY_OVERVIEW_TEMPLATES.high_bay;
-  if (source.includes("flood")) return CATEGORY_OVERVIEW_TEMPLATES.flood;
-  if (source.includes("street")) return CATEGORY_OVERVIEW_TEMPLATES.street;
-  if (source.includes("panel") || source.includes("troffer")) return CATEGORY_OVERVIEW_TEMPLATES.panel;
 
   // Default to the Indoor master list (the most common case).
   return CATEGORY_OVERVIEW_TEMPLATES.indoor;
@@ -1870,7 +1719,7 @@ const FIXTURE_PROFILES: FixtureProfile[] = [
     id: "area_light",
     keywords: ["area light", "shoebox", "parking lot light", "pole light", "site light", "area"],
     category: "Outdoor Lighting",
-    subCategory: "Area / Shoebox Light",
+    subCategory: "Area Luminaire",
     group: "Area Lights",
     applications: ["Parking Lots", "Roadways", "Campuses", "Car Dealerships", "Pathways"],
   },
@@ -3188,10 +3037,10 @@ function overviewValuesFontClass(rows: OverviewRow[]) {
       .reduce((rowMax, line) => Math.max(rowMax, line.trim().length), 0);
     return Math.max(max, lineMax);
   }, 0);
-  if (maxLineLength <= 32) return "text-[10px] leading-[1.12]";
-  if (maxLineLength <= 44) return "text-[8.5px] leading-[1.18]";
-  if (maxLineLength <= 58) return "text-[8px] leading-[1.22]";
-  return "text-[7px] leading-[1.28]";
+  if (maxLineLength <= 32) return "text-[9px] leading-[1.12]";
+  if (maxLineLength <= 44) return "text-[8px] leading-[1.18]";
+  if (maxLineLength <= 58) return "text-[7.5px] leading-[1.22]";
+  return "text-[6.5px] leading-[1.28]";
 }
 
 function formatOverviewLabel(value: string) {
@@ -3200,6 +3049,12 @@ function formatOverviewLabel(value: string) {
   // known acronym (e.g. "voltage" -> "Voltage", "led light source" -> "LED light source").
   const canonicalExact = CANONICAL_OVERVIEW_LABELS.get(canonicalOverviewLabelKey(normalized));
   if (canonicalExact) return capitalizeOverviewHead(canonicalExact);
+  // EPA head — vendors glue/lowercase it ("EPA(Effective Protected Area)", "epa"); always render
+  // the acronym fully uppercase.
+  const epaProbe = normalized.replace(/[()]/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  if (epaProbe === "epa" || epaProbe.startsWith("epa ") || epaProbe.includes("effective protected area") || epaProbe.includes("effective projected area")) {
+    return "EPA (Effective Protected Area)";
+  }
   // If the user wrote it in ALL CAPS, that's intentional — keep their casing as-is.
   if (normalized && /[A-Za-z]/.test(normalized) && normalized === normalized.toUpperCase()) {
     return normalized;
@@ -3210,6 +3065,10 @@ function formatOverviewLabel(value: string) {
     return canonical;
   }
 
+  // Vendor rows that aren't a canonical head: Title Case every word (so "sensor type" ->
+  // "Sensor Type"), keeping known acronyms and pure numbers uppercase. Small connector words
+  // stay lowercase unless they lead the label.
+  const TITLE_CASE_MINOR_WORDS = new Set(["and", "or", "of", "the", "for", "to", "in", "with", "a", "an"]);
   return normalizeText(value)
     .split(/\s+/)
     .filter(Boolean)
@@ -3220,9 +3079,10 @@ function formatOverviewLabel(value: string) {
       }
 
       const lowerPart = part.toLowerCase();
-      return index === 0
-        ? lowerPart.charAt(0).toUpperCase() + lowerPart.slice(1)
-        : lowerPart;
+      if (index > 0 && TITLE_CASE_MINOR_WORDS.has(lowerPart)) {
+        return lowerPart;
+      }
+      return lowerPart.charAt(0).toUpperCase() + lowerPart.slice(1);
     })
     .join(" ");
 }
@@ -3471,7 +3331,7 @@ function SheetPageOne({
                     {draft.skuNumber}
                   </div>
                 )}
-                <h1 className="text-[25px] font-bold uppercase leading-[1.02] tracking-[-0.01em] text-[#00a651]">
+                <h1 className="text-[30px] font-bold uppercase leading-[1.02] tracking-[-0.01em] text-[#00a651]">
                   {draft.title}
                 </h1>
                 {isSpecified(draft.subCategory) && (
@@ -3522,17 +3382,20 @@ function SheetPageOne({
 
               {/* DLC qualification disclaimer: shown only when a DLC badge is selected. */}
               {showDlcNote && (
-                <div className="mt-1 w-[413px] text-[8px] font-normal italic leading-[1.25] text-slate-600" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
-                  Not all product variations listed on the page are DLC qualified. Visit{" "}
-                  <a
-                    href="https://www.designlights.org/qpl"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-600 underline"
-                  >
-                    https://www.designlights.org/qpl
-                  </a>{" "}
-                  to confirm qualifications.
+                <div className="mt-4 w-[413px] text-[8px] font-normal italic leading-[1.35] text-slate-600" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                  <div>Not all product variations listed on the page are DLC qualified.</div>
+                  <div>
+                    Visit{" "}
+                    <a
+                      href="https://www.designlights.org/qpl"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-600 underline"
+                    >
+                      https://www.designlights.org/qpl
+                    </a>{" "}
+                    to confirm qualifications.
+                  </div>
                 </div>
               )}
             </div>
@@ -3540,19 +3403,19 @@ function SheetPageOne({
             {/* Right column - Overview: 313 x 573 px */}
             {filteredOverviewRows.length > 0 && (
               <div className="h-[573px] w-[313px] overflow-hidden bg-slate-50 px-4 pb-2.5 pt-3">
-                <h3 className="mb-1.5 border-b border-slate-300 pb-1 text-[13px] font-bold uppercase tracking-[0.08em] text-[#00a651]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                <h3 className="mb-3 border-b border-slate-300 pb-1 text-[13px] font-bold uppercase tracking-[0.08em] text-[#00a651]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
                   Overview
                 </h3>
                 <table className="w-full border-collapse">
                   <tbody>
                     {filteredOverviewRows.map((row) => (
                       <tr key={row.id} className="border-b border-slate-200 align-top last:border-b-0">
-                        <td className={cn("w-[44%] pr-2 text-[10px] font-bold leading-[1.2] text-slate-900", overviewRowPadClass)} style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                        <td className={cn("w-[44%] pr-2 text-[9px] font-bold leading-[1.2] text-slate-900", overviewRowPadClass)} style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
                           {formatOverviewLabel(row.label)}
                         </td>
                         <td
                           className={cn(
-                            "text-left font-normal leading-[1.2] whitespace-pre-line",
+                            "text-justify font-normal leading-[1.2] whitespace-pre-line [text-align-last:left]",
                             overviewRowPadClass,
                             overviewValueSize,
                             isSpecified(row.value) ? "text-slate-800" : "italic text-slate-400",
@@ -3627,7 +3490,7 @@ function SheetPageOne({
                         </div>
                       )}
                       {visibleWarrantyCopy && (
-                        <p className="whitespace-pre-line text-[10px] leading-[1.22] text-slate-600">
+                        <p className="whitespace-pre-line text-[10px] leading-[1.22] text-black">
                           {draft.warrantyCopy}
                         </p>
                       )}

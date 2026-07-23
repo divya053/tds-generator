@@ -1,9 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Outfit:wght@400;500;600;700;800&display=swap');
 @import "tailwindcss";
 
 @theme inline {
-  --font-sans: 'DM Sans', sans-serif;
-  --font-display: 'Outfit', sans-serif;
+  /* Every text family across the app is Arial only. */
+  --font-sans: Arial, Helvetica, sans-serif;
+  --font-display: Arial, Helvetica, sans-serif;
 
   /* Deep professional dark theme with vibrant cyan/blue accents */
   --color-background: hsl(240 10% 4%);
@@ -58,6 +58,14 @@
 }
 ::-webkit-scrollbar-thumb {
   @apply bg-border rounded-full hover:bg-muted-foreground/50 transition-colors;
+}
+
+/* The generated spec sheet (preview + print) must render entirely in Arial — override the
+   app's DM Sans (font-sans) body font and the Outfit (font-display) heading rule so every head,
+   value, table cell and title on the sheet is uniform Arial. */
+.sheet-print-root,
+.sheet-print-root * {
+  font-family: Arial, Helvetica, sans-serif !important;
 }
 
 @page {
