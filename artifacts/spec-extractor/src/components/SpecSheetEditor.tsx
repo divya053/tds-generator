@@ -1,8 +1,11 @@
 import { createContext, useContext, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   AlignCenter,
+  AlignCenterHorizontal,
+  AlignEndHorizontal,
   AlignLeft,
   AlignRight,
+  AlignStartHorizontal,
   Crop,
   ExternalLink,
   EyeOff,
@@ -227,8 +230,9 @@ type ImagePlacement = {
   x: number;
   y: number;
   scale: number;
-  // Horizontal fit within the image's slot (via object-position). Absent = centered.
+  // Fit within the image's slot (via object-position). Absent = centered on that axis.
   align?: "left" | "center" | "right";
+  valign?: "top" | "middle" | "bottom";
 };
 
 const DEFAULT_IMAGE_PLACEMENT: ImagePlacement = { x: 0, y: 0, scale: 1 };
@@ -3719,6 +3723,12 @@ const IMAGE_ALIGN_OPTIONS = [
   { value: "right" as const, Icon: AlignRight },
 ];
 
+const IMAGE_VALIGN_OPTIONS = [
+  { value: "top" as const, Icon: AlignStartHorizontal },
+  { value: "middle" as const, Icon: AlignCenterHorizontal },
+  { value: "bottom" as const, Icon: AlignEndHorizontal },
+];
+
 function DraggableSheetImage({
   image,
   placement,
@@ -3785,10 +3795,12 @@ function DraggableSheetImage({
         style={{
           transform: `translate(${placement.x}px, ${placement.y}px) scale(${placement.scale})`,
           transformOrigin: "center",
-          // Snap the image left / centre / right within its slot (works whenever the contained image
-          // is narrower than the box — e.g. after scaling down, or on wide dimension slots).
-          objectPosition:
-            placement.align === "left" ? "left center" : placement.align === "right" ? "right center" : "center",
+          // Snap the image within its slot on both axes (works whenever the contained image is
+          // smaller than the box — e.g. after scaling down, wide dimension drawings leave vertical
+          // slack, tall images leave horizontal slack).
+          objectPosition: `${
+            placement.align === "left" ? "left" : placement.align === "right" ? "right" : "center"
+          } ${placement.valign === "top" ? "top" : placement.valign === "bottom" ? "bottom" : "center"}`,
           touchAction: "none",
           cursor: editable ? "move" : "default",
         }}
@@ -3800,8 +3812,8 @@ function DraggableSheetImage({
             data-export-hide="true"
             className="pointer-events-none absolute inset-0 rounded-[2px] border border-dashed border-sky-500/70"
           />
-          {/* Fit Left / Centre / Right toolbar — pinned inside the top of the frame (so it is never
-              clipped by an overflow-hidden slot), preview only. */}
+          {/* Fit toolbar — horizontal (L/C/R) and vertical (T/M/B) — pinned inside the top of the
+              frame (so it is never clipped by an overflow-hidden slot), preview only. */}
           {onChange && (
             <div
               data-export-hide="true"
@@ -3821,6 +3833,31 @@ function DraggableSheetImage({
                     onClick={(event) => {
                       event.stopPropagation();
                       onChange({ ...placement, align: value });
+                    }}
+                    className={cn(
+                      "flex h-4 w-4 items-center justify-center rounded",
+                      active ? "bg-sky-500 text-white" : "text-slate-500 hover:bg-slate-100",
+                    )}
+                  >
+                    <Icon className="h-3 w-3" />
+                  </button>
+                );
+              })}
+              <span className="mx-0.5 h-4 w-px bg-slate-200" />
+              {IMAGE_VALIGN_OPTIONS.map(({ value, Icon }) => {
+                const active = (placement.valign ?? "middle") === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    title={`Fit ${value}`}
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onChange({ ...placement, valign: value });
                     }}
                     className={cn(
                       "flex h-4 w-4 items-center justify-center rounded",
@@ -5039,6 +5076,7 @@ function SheetCustomSectionsPage({
 const PAGE_CONTENT_BUDGET = 812; // usable px per page 2+ (844 content area minus pt-3 + safety)
 const SHEET_BLOCK_GAP = 20; // gap-5 between stacked blocks
 const DIM_ROW_HEIGHT = 250; // one row of up to two dimension drawings (h-[190px] image + labels)
+const SINGLE_DIM_HEIGHT = 360; // tall slot for a lone dimension (matches imageHeightClass h-[360px])
 
 // `group` lets the packer keep multi-block sections (e.g. Dimensions rows) in order and contiguous
 // while still back-filling standalone sections into earlier gaps. Sections listed in SEQUENCE_GROUPS
@@ -5098,6 +5136,23 @@ function buildSheetBlocks(
     ),
   });
 
+  // Product Ordering Information — placed above Dimensions.
+  blocks.push({
+    key: "ordering",
+    group: "ordering",
+    height: estimateOrderingHeight(draft),
+    node: (
+      <section>
+        <SheetPageHeading
+          title="Product Ordering Information"
+          trailing={isSpecified(draft.orderingExample) ? `Typical order example: ${draft.orderingExample}` : undefined}
+        />
+        <OrderingDecoderTable columns={draft.orderingColumns} selection={draft.orderingSelection} />
+        {isSpecified(draft.orderingNote) && <SheetNote>{draft.orderingNote}</SheetNote>}
+      </section>
+    ),
+  });
+
   // Dimensions — one block per row of (up to) two drawings; only the first shows the heading.
   const dims = draft.dimensionItems.filter(dimensionItemHasContent);
   if (dims.length === 0) {
@@ -5106,6 +5161,22 @@ function buildSheetBlocks(
       group: "dims",
       height: 46 + DIM_ROW_HEIGHT,
       node: <DimensionsSection items={[]} resolveImage={resolveImage} imageHeightClass="h-[190px]" />,
+    });
+  } else if (dims.length === 1) {
+    // A lone dimension gets a tall, full-width slot so the drawing has room to be enlarged (corner
+    // handle) and pushed to the top/bottom of its box without being clipped by a short frame.
+    blocks.push({
+      key: "dims-0",
+      group: "dims",
+      height: 46 + SINGLE_DIM_HEIGHT + 24,
+      node: (
+        <DimensionsSection
+          items={dims}
+          resolveImage={resolveImage}
+          imageHeightClass="h-[360px]"
+          showHeading
+        />
+      ),
     });
   } else {
     for (let i = 0; i < dims.length; i += 2) {
@@ -5125,23 +5196,6 @@ function buildSheetBlocks(
       });
     }
   }
-
-  // Product Ordering Information
-  blocks.push({
-    key: "ordering",
-    group: "ordering",
-    height: estimateOrderingHeight(draft),
-    node: (
-      <section>
-        <SheetPageHeading
-          title="Product Ordering Information"
-          trailing={isSpecified(draft.orderingExample) ? `Typical order example: ${draft.orderingExample}` : undefined}
-        />
-        <OrderingDecoderTable columns={draft.orderingColumns} selection={draft.orderingSelection} />
-        {isSpecified(draft.orderingNote) && <SheetNote>{draft.orderingNote}</SheetNote>}
-      </section>
-    ),
-  });
 
   // Accessories Ordering Information
   const accessories = draft.accessoryRows.filter(accessoryRowHasContent);
