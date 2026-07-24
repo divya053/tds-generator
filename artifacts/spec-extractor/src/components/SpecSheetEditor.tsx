@@ -3343,6 +3343,18 @@ function formatOverviewLabel(value: string) {
     .join(" ");
 }
 
+/** For Power / CCT heads, append "(Selectable)" ONLY when the value is a multi-option list (dash-
+ *  joined, e.g. "40W - 60W" or "3000K - 4000K"); a single value gets no "(Selectable)". Any pre-baked
+ *  "(Selectable)" on the head is stripped first so it's driven purely by the value. */
+function overviewHeadWithSelectable(head: string, label: string, value: string) {
+  // Strip any pre-baked "(Selectable)" so the suffix is driven purely by the value.
+  const base = head.replace(/\s*\(selectable\)\s*$/i, "").trim();
+  const isPower = /^(power|max power)$/i.test(base);
+  const isCct = isCctLabel(label) || /\bcct\b/i.test(base) || /color\s*temp/i.test(base);
+  if (!isPower && !isCct) return head;
+  return / - /.test(String(value ?? "")) ? `${base} (Selectable)` : base;
+}
+
 /** Render an overview head with the bracketed portion in normal (non-bold) weight — the head cell
  *  is bold, so the "(THD)", "(Selectable)", "(EPA)" etc. parts get font-normal to stand apart. */
 function renderOverviewHead(label: string) {
@@ -3746,7 +3758,7 @@ function SheetPageOne({
                             paddingBottom: `${overviewPadYpx}px`,
                           }}
                         >
-                          {renderOverviewHead(formatOverviewLabel(row.label))}
+                          {renderOverviewHead(overviewHeadWithSelectable(formatOverviewLabel(row.label), row.label, row.value))}
                         </td>
                         <td
                           className={cn(
