@@ -2225,10 +2225,29 @@ function buildDimensionItemsFromSpec(spec: ExtendedExtractedSpec): DimensionItem
     }));
 }
 
+// Raw backend category-enum values (lowercase) that should be replaced with the canonical fixture
+// category ("Indoor Lighting", …) — used to auto-clean older saved drafts that stored the enum.
+const RAW_CATEGORY_ENUMS = new Set([
+  "panel", "downlight", "track", "flood", "area", "high_mast", "high mast", "street",
+  "high_bay", "high bay", "low_bay", "low bay", "linear", "wall_pack", "wall pack",
+  "canopy", "post_top", "post top", "stadium", "bollard", "unknown", "tube", "troffer",
+  "strip", "wrap", "corn", "grow", "exit", "vapor_tight", "vapor tight", "yard",
+]);
+
+function isRawCategoryEnum(value: string) {
+  const normalized = normalizeText(value).toLowerCase();
+  // Raw enum, or any short value that isn't a proper "… Lighting" category.
+  return RAW_CATEGORY_ENUMS.has(normalized) || (!!normalized && !/lighting/i.test(normalized) && !normalized.includes(" "));
+}
+
 function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendations = buildProductNameRecommendations(spec)): EditorDraft {
   const productType = getCategoryLabel(spec);
   const warrantyLabel = normalizeWarrantyLabel(getSpecValueFromSpec(spec, ["Warranty (Years)", "Warranty"]));
   const recommendedNames = productNameRecommendations;
+  // Canonical fixture profile from the product name — gives a clean "Indoor Lighting" /
+  // "Recessed Downlight" from the start instead of the raw backend enum (e.g. lowercase "downlight"),
+  // which the user otherwise had to clear before the auto-predict would correct it.
+  const fixtureProfile = predictFixtureProfile(spec.productName, String(spec.subCategory ?? ""), productType);
 
   return {
     headerProjectName: "",
@@ -2238,8 +2257,8 @@ function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendation
     footerNote: "",
     title: recommendedNames[0] ?? deriveTypeCore(spec),
     subtitle: spec.alternateName || productType || "Technical Data Sheet",
-    categoryLabel: isSpecified(productType) ? productType : "",
-    subCategory: isSpecified(spec.subCategory) ? String(spec.subCategory).trim() : "",
+    categoryLabel: fixtureProfile?.category ?? (isSpecified(productType) ? productType : ""),
+    subCategory: fixtureProfile?.subCategory ?? (isSpecified(spec.subCategory) ? String(spec.subCategory).trim() : ""),
     skuNumber: getSpecValueFromSpec(spec, ["Part Number", "SKU", "Catalog Number", "Cat Number", "Model"]) || "",
     overviewRows: buildOverviewRows(spec),
     overviewFontPx: null,
@@ -4973,7 +4992,13 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
 
     setDraft((current) => {
       const patch: Partial<EditorDraft> = {};
-      if (!isSpecified(current.categoryLabel) || (firstApply && current.categoryLabel !== profile.category)) {
+      // Also clean up a raw backend enum ("downlight") left in a saved draft — replace with the
+      // canonical category even when it isn't the first apply (so old sheets self-correct on open).
+      if (
+        !isSpecified(current.categoryLabel)
+        || (firstApply && current.categoryLabel !== profile.category)
+        || (isRawCategoryEnum(current.categoryLabel) && current.categoryLabel !== profile.category)
+      ) {
         patch.categoryLabel = profile.category;
       }
       if (!isSpecified(current.subCategory) || (firstApply && current.subCategory !== profile.subCategory)) {
