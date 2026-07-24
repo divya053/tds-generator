@@ -248,6 +248,10 @@ type ImageEditorState = {
   saturation: number;
   removeBackground: boolean;
   imageScale: number;
+  rotation: number; // degrees, 0 / 90 / 180 / 270
+  flipH: boolean;
+  flipV: boolean;
+  grayscale: boolean;
   textLayers: ImageTextLayer[];
   eraseLayers: ImageEraseLayer[];
 };
@@ -583,6 +587,10 @@ function createImageEditorState(): ImageEditorState {
     saturation: 100,
     removeBackground: false,
     imageScale: 100,
+    rotation: 0,
+    flipH: false,
+    flipV: false,
+    grayscale: false,
     textLayers: [],
     eraseLayers: [],
   };
@@ -2353,22 +2361,31 @@ function ImageEditorDialog({
     const draw = () => {
       if (cancelled) return;
 
-      canvas.width = source.naturalWidth || source.width || 600;
-      canvas.height = source.naturalHeight || source.height || 400;
+      // Rotation swaps the canvas dimensions for 90°/270° so the rotated image isn't cropped.
+      const rotation = (((editor.rotation ?? 0) % 360) + 360) % 360;
+      const swap = rotation === 90 || rotation === 270;
+      const imageWidth = source.naturalWidth || source.width || 600;
+      const imageHeight = source.naturalHeight || source.height || 400;
+      canvas.width = swap ? imageHeight : imageWidth;
+      canvas.height = swap ? imageWidth : imageHeight;
 
       context.clearRect(0, 0, canvas.width, canvas.height);
       context.fillStyle = editor.backgroundColor;
       context.fillRect(0, 0, canvas.width, canvas.height);
+
       // Scale the product up/down inside the frame (centered): <100% pads with background,
-      // >100% zooms in (cropped by the canvas bounds).
+      // >100% zooms in. Rotation + flip are applied around the canvas centre; grayscale via filter.
       const imageScale = (editor.imageScale ?? 100) / 100;
-      const drawWidth = canvas.width * imageScale;
-      const drawHeight = canvas.height * imageScale;
-      const drawX = (canvas.width - drawWidth) / 2;
-      const drawY = (canvas.height - drawHeight) / 2;
-      context.filter = `brightness(${editor.brightness}%) contrast(${editor.contrast}%) saturate(${editor.saturation}%)`;
-      context.drawImage(source, drawX, drawY, drawWidth, drawHeight);
+      const drawWidth = imageWidth * imageScale;
+      const drawHeight = imageHeight * imageScale;
+      context.save();
+      context.translate(canvas.width / 2, canvas.height / 2);
+      context.rotate((rotation * Math.PI) / 180);
+      context.scale(editor.flipH ? -1 : 1, editor.flipV ? -1 : 1);
+      context.filter = `brightness(${editor.brightness}%) contrast(${editor.contrast}%) saturate(${editor.saturation}%)${editor.grayscale ? " grayscale(1)" : ""}`;
+      context.drawImage(source, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
       context.filter = "none";
+      context.restore();
 
       if (editor.removeBackground) {
         whitenConnectedBackground(canvas, context);
@@ -2730,6 +2747,57 @@ function ImageEditorDialog({
                     Reset to 100% for the original size.
                   </p>
                 </div>
+                <div className="space-y-1 text-sm">
+                  <span>Rotate &amp; flip</span>
+                  <div className="grid grid-cols-4 gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-9 px-0 text-base leading-none"
+                      onClick={() => updateEditor("rotation", ((((editor.rotation ?? 0) - 90) % 360) + 360) % 360)}
+                      title="Rotate left 90°"
+                      aria-label="Rotate left"
+                    >
+                      ⟲
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-9 px-0 text-base leading-none"
+                      onClick={() => updateEditor("rotation", ((editor.rotation ?? 0) + 90) % 360)}
+                      title="Rotate right 90°"
+                      aria-label="Rotate right"
+                    >
+                      ⟳
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={editor.flipH ? "default" : "outline"}
+                      className="h-9 px-0 text-xs"
+                      onClick={() => updateEditor("flipH", !editor.flipH)}
+                      title="Flip horizontal"
+                    >
+                      Flip H
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={editor.flipV ? "default" : "outline"}
+                      className="h-9 px-0 text-xs"
+                      onClick={() => updateEditor("flipV", !editor.flipV)}
+                      title="Flip vertical"
+                    >
+                      Flip V
+                    </Button>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant={editor.grayscale ? "default" : "outline"}
+                  className="w-full"
+                  onClick={() => updateEditor("grayscale", !editor.grayscale)}
+                >
+                  {editor.grayscale ? "Grayscale ✓" : "Grayscale"}
+                </Button>
               </div>
 
               <div className="space-y-2">
