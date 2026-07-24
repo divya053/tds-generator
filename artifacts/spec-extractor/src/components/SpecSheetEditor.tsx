@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
   Crop,
   ExternalLink,
   EyeOff,
@@ -211,7 +214,34 @@ type EditorDraft = {
   dimensionItems: DimensionItem[];
   // User-added custom sections (extra page): heading + text points and/or image.
   customSections: CustomSection[];
+  // Per-image manual placement on the sheet (keyed by source-image id): the user can drag ANY sheet
+  // image (product, dimensions, accessories, custom sections) around its box and resize it. An
+  // absent id = centered at 100% (default).
+  imagePlacements: Record<string, ImagePlacement>;
 };
+
+// Manual placement of a sheet image: translate offset (px, relative to its centered position in the
+// preview) plus a scale multiplier. Applied as a CSS transform so it carries into the PDF export
+// unchanged.
+type ImagePlacement = {
+  x: number;
+  y: number;
+  scale: number;
+  // Horizontal fit within the image's slot (via object-position). Absent = centered.
+  align?: "left" | "center" | "right";
+};
+
+const DEFAULT_IMAGE_PLACEMENT: ImagePlacement = { x: 0, y: 0, scale: 1 };
+
+// Shared editing context so EVERY sheet image (across all pages/sections) can be dragged/resized
+// without threading callbacks through each render helper. Provided once at the SheetPreview root.
+type SheetImageEditing = {
+  placements: Record<string, ImagePlacement>;
+  editable: boolean;
+  onChange?: (imageId: string, placement: ImagePlacement) => void;
+};
+
+const SheetImageEditingContext = createContext<SheetImageEditing>({ placements: {}, editable: false });
 
 type CropSelection = {
   x: number;
@@ -2329,6 +2359,7 @@ function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendation
     accessoryRows: buildAccessoryRowsFromSpec(spec),
     dimensionItems: buildDimensionItemsFromSpec(spec),
     customSections: [],
+    imagePlacements: {},
   };
 }
 
@@ -3674,6 +3705,177 @@ function WarrantySeal({ label }: { label: string }) {
   );
 }
 
+/**
+ * Any sheet image, wrapped in a drag-to-position frame. When `editable` is set (only in the live
+ * preview), the user can drag the image around its box and pull the corner handle to resize it; the
+ * frame outline + handle carry `data-export-hide` so they are stripped from the PDF/print output
+ * while the image's transform is kept. When not editable it renders as a plain object-contain image
+ * (unchanged behaviour). Sizing is controlled by the caller via `className`/`imgClassName` so the
+ * same component fits the product box, dimension slots, accessory thumbnails and custom sections.
+ */
+const IMAGE_ALIGN_OPTIONS = [
+  { value: "left" as const, Icon: AlignLeft },
+  { value: "center" as const, Icon: AlignCenter },
+  { value: "right" as const, Icon: AlignRight },
+];
+
+function DraggableSheetImage({
+  image,
+  placement,
+  editable,
+  onChange,
+  className,
+  imgClassName,
+  alt,
+}: {
+  image: SourceImage;
+  placement: ImagePlacement;
+  editable: boolean;
+  onChange?: (next: ImagePlacement) => void;
+  className?: string;
+  imgClassName?: string;
+  alt?: string;
+}) {
+  const cellRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ mode: "move" | "resize"; startX: number; startY: number; start: ImagePlacement } | null>(null);
+
+  const begin = (mode: "move" | "resize") => (event: ReactPointerEvent) => {
+    if (!editable || !onChange) return;
+    event.preventDefault();
+    event.stopPropagation();
+    cellRef.current?.setPointerCapture(event.pointerId);
+    drag.current = { mode, startX: event.clientX, startY: event.clientY, start: placement };
+  };
+
+  const move = (event: ReactPointerEvent) => {
+    const state = drag.current;
+    if (!state || !onChange) return;
+    const dx = event.clientX - state.startX;
+    const dy = event.clientY - state.startY;
+    if (state.mode === "move") {
+      onChange({ ...state.start, x: state.start.x + dx, y: state.start.y + dy });
+    } else {
+      // Corner handle: dragging out (right/down) grows, in (left/up) shrinks. Clamp to a sane range.
+      const nextScale = Math.min(3, Math.max(0.2, state.start.scale + (dx + dy) / 220));
+      onChange({ ...state.start, scale: nextScale });
+    }
+  };
+
+  const end = (event: ReactPointerEvent) => {
+    if (!drag.current) return;
+    cellRef.current?.releasePointerCapture?.(event.pointerId);
+    drag.current = null;
+  };
+
+  return (
+    <div
+      ref={cellRef}
+      className={cn("relative", className ?? "flex h-full min-w-0 items-center justify-center overflow-visible")}
+      onPointerMove={move}
+      onPointerUp={end}
+      onPointerCancel={end}
+    >
+      <img
+        src={image.dataUrl}
+        alt={alt ?? "Sheet image"}
+        className={imgClassName ?? "h-full w-full object-contain"}
+        draggable={false}
+        onPointerDown={begin("move")}
+        onDoubleClick={() => editable && onChange?.(DEFAULT_IMAGE_PLACEMENT)}
+        style={{
+          transform: `translate(${placement.x}px, ${placement.y}px) scale(${placement.scale})`,
+          transformOrigin: "center",
+          // Snap the image left / centre / right within its slot (works whenever the contained image
+          // is narrower than the box — e.g. after scaling down, or on wide dimension slots).
+          objectPosition:
+            placement.align === "left" ? "left center" : placement.align === "right" ? "right center" : "center",
+          touchAction: "none",
+          cursor: editable ? "move" : "default",
+        }}
+      />
+      {editable && (
+        <>
+          {/* Dashed slot outline + corner resize handle — preview only, excluded from export. */}
+          <div
+            data-export-hide="true"
+            className="pointer-events-none absolute inset-0 rounded-[2px] border border-dashed border-sky-500/70"
+          />
+          {/* Fit Left / Centre / Right toolbar — pinned inside the top of the frame (so it is never
+              clipped by an overflow-hidden slot), preview only. */}
+          {onChange && (
+            <div
+              data-export-hide="true"
+              className="absolute left-1/2 top-1 z-10 flex -translate-x-1/2 items-center gap-0.5 rounded-md border border-slate-200 bg-white/95 px-1 py-0.5 shadow-sm"
+            >
+              {IMAGE_ALIGN_OPTIONS.map(({ value, Icon }) => {
+                const active = (placement.align ?? "center") === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    title={`Fit ${value}`}
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onChange({ ...placement, align: value });
+                    }}
+                    className={cn(
+                      "flex h-4 w-4 items-center justify-center rounded",
+                      active ? "bg-sky-500 text-white" : "text-slate-500 hover:bg-slate-100",
+                    )}
+                  >
+                    <Icon className="h-3 w-3" />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <div
+            data-export-hide="true"
+            onPointerDown={begin("resize")}
+            title="Drag to resize — double-click the image to reset"
+            className="absolute bottom-1 right-1 z-10 h-3.5 w-3.5 cursor-nwse-resize rounded-full border-2 border-white bg-sky-500 shadow"
+            style={{ touchAction: "none" }}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Context-aware sheet image: looks up its placement + edit callback from SheetImageEditingContext,
+ * so any render helper can drop in `<SheetImage image={...} />` and get drag/resize for free.
+ */
+function SheetImage({
+  image,
+  className,
+  imgClassName,
+  alt,
+}: {
+  image: SourceImage;
+  className?: string;
+  imgClassName?: string;
+  alt?: string;
+}) {
+  const ctx = useContext(SheetImageEditingContext);
+  const placement = ctx.placements[image.id] ?? DEFAULT_IMAGE_PLACEMENT;
+  return (
+    <DraggableSheetImage
+      image={image}
+      placement={placement}
+      editable={ctx.editable && Boolean(ctx.onChange)}
+      onChange={ctx.onChange ? (next) => ctx.onChange?.(image.id, next) : undefined}
+      className={className}
+      imgClassName={imgClassName}
+      alt={alt}
+    />
+  );
+}
+
 function SheetPageOne({
   draft,
   selectedImage,
@@ -3811,13 +4013,7 @@ function SheetPageOne({
                     )}
                   >
                     {productDisplayImages.map((image) => (
-                      <div key={image.id} className="flex h-full min-w-0 items-center justify-center overflow-hidden">
-                        <img
-                          src={image.dataUrl}
-                          alt="Extracted vendor product visual"
-                          className="h-full w-full object-contain"
-                        />
-                      </div>
+                      <SheetImage key={image.id} image={image} alt="Extracted vendor product visual" />
                     ))}
                   </div>
                 ) : (
@@ -4598,7 +4794,12 @@ function AccessoriesTable({ rows, resolveImage }: { rows: AccessoryRow[]; resolv
               <td className="border border-slate-200 px-1.5 py-2.5">
                 <div className="flex h-[34px] items-center justify-center overflow-hidden">
                   {image ? (
-                    <img src={image.dataUrl} alt={row.code} className="h-full w-full object-contain" />
+                    <SheetImage
+                      image={image}
+                      alt={row.code}
+                      className="flex h-full w-full items-center justify-center"
+                      imgClassName="h-full w-full object-contain"
+                    />
                   ) : (
                     <FileImage className="h-5 w-5 text-slate-300" />
                   )}
@@ -4716,7 +4917,7 @@ function DimensionsSection({
   return (
     <>
       {showHeading && <SheetPageHeading title={title} />}
-      <div className={cn("grid gap-x-8 gap-y-4", single ? "grid-cols-1 justify-items-center" : "grid-cols-2")}>
+      <div className={cn("grid gap-x-8 gap-y-4", single ? "grid-cols-1" : "grid-cols-2")}>
         {items.map((item) => {
           const image = resolveImage(item.imageId);
           const dims = [
@@ -4725,7 +4926,9 @@ function DimensionsSection({
             item.depth && `D ${item.depth}`,
           ].filter(Boolean);
           return (
-            <div key={item.id} className={cn("flex flex-col", single ? "w-1/2 items-center" : "w-full")}>
+            // Single dimension now uses the full page width so Fit Left/Right can span the page (the
+            // drawing stays centred by default via object-position); 2+ use the paired grid.
+            <div key={item.id} className={cn("flex w-full flex-col items-center")}>
               {isSpecified(item.label) && (
                 <div className="mb-1 text-[10px] font-bold text-black">
                   {(() => {
@@ -4743,7 +4946,12 @@ function DimensionsSection({
               )}
               <div className={cn("flex w-full items-center justify-center overflow-hidden bg-white", imageHeightClass)}>
                 {image ? (
-                  <img src={image.dataUrl} alt={item.label} className="h-full w-full object-contain" />
+                  <SheetImage
+                    image={image}
+                    alt={item.label}
+                    className="flex h-full w-full items-center justify-center"
+                    imgClassName="h-full w-full object-contain"
+                  />
                 ) : (
                   <div className="flex flex-col items-center gap-1 text-slate-400">
                     <FileImage className="h-8 w-8" />
@@ -4804,10 +5012,11 @@ function SheetCustomSectionsPage({
                 )}
                 {image && (
                   <div className={cn("flex shrink-0 items-start justify-center", points.length > 0 ? "w-[300px]" : "w-full")}>
-                    <img
-                      src={image.dataUrl}
+                    <SheetImage
+                      image={image}
                       alt={section.heading || "Custom section image"}
-                      className="max-h-[340px] w-full object-contain"
+                      className="flex w-full items-start justify-center"
+                      imgClassName="max-h-[340px] w-full object-contain"
                     />
                   </div>
                 )}
@@ -4831,7 +5040,12 @@ const PAGE_CONTENT_BUDGET = 812; // usable px per page 2+ (844 content area minu
 const SHEET_BLOCK_GAP = 20; // gap-5 between stacked blocks
 const DIM_ROW_HEIGHT = 250; // one row of up to two dimension drawings (h-[190px] image + labels)
 
-type SheetBlock = { key: string; height: number; node: React.ReactNode };
+// `group` lets the packer keep multi-block sections (e.g. Dimensions rows) in order and contiguous
+// while still back-filling standalone sections into earlier gaps. Sections listed in SEQUENCE_GROUPS
+// act as a barrier: nothing after them is pulled up until every one of their blocks is placed.
+type SheetBlock = { key: string; group: string; height: number; node: React.ReactNode };
+
+const SEQUENCE_GROUPS = new Set(["dims"]);
 
 function estimateSpecsHeight(draft: EditorDraft) {
   const rows = draft.specGroups
@@ -4873,6 +5087,7 @@ function buildSheetBlocks(
   const groups = draft.specGroups.filter(specGroupHasContent);
   blocks.push({
     key: "specs",
+    group: "specs",
     height: estimateSpecsHeight(draft),
     node: (
       <section>
@@ -4888,6 +5103,7 @@ function buildSheetBlocks(
   if (dims.length === 0) {
     blocks.push({
       key: "dims-empty",
+      group: "dims",
       height: 46 + DIM_ROW_HEIGHT,
       node: <DimensionsSection items={[]} resolveImage={resolveImage} imageHeightClass="h-[190px]" />,
     });
@@ -4896,6 +5112,7 @@ function buildSheetBlocks(
       const first = i === 0;
       blocks.push({
         key: `dims-${i}`,
+        group: "dims",
         height: (first ? 46 : 0) + DIM_ROW_HEIGHT,
         node: (
           <DimensionsSection
@@ -4912,6 +5129,7 @@ function buildSheetBlocks(
   // Product Ordering Information
   blocks.push({
     key: "ordering",
+    group: "ordering",
     height: estimateOrderingHeight(draft),
     node: (
       <section>
@@ -4931,6 +5149,7 @@ function buildSheetBlocks(
     const half = Math.max(1, Math.ceil(accessories.length / 2));
     blocks.push({
       key: "accessories",
+      group: "accessories",
       height: estimateAccessoriesHeight(draft),
       node: (
         <section>
@@ -4955,6 +5174,7 @@ function buildSheetBlocks(
     const points = splitLineList(section.bodyText);
     blocks.push({
       key: `custom-${section.id}`,
+      group: "custom",
       height: estimateCustomSectionHeight(section, Boolean(image)),
       node: (
         <section>
@@ -4972,10 +5192,11 @@ function buildSheetBlocks(
             )}
             {image && (
               <div className={cn("flex shrink-0 items-start justify-center", points.length > 0 ? "w-[300px]" : "w-full")}>
-                <img
-                  src={image.dataUrl}
+                <SheetImage
+                  image={image}
                   alt={section.heading || "Custom section image"}
-                  className="max-h-[340px] w-full object-contain"
+                  className="flex w-full items-start justify-center"
+                  imgClassName="max-h-[340px] w-full object-contain"
                 />
               </div>
             )}
@@ -4988,22 +5209,67 @@ function buildSheetBlocks(
   return blocks;
 }
 
-/** Greedily pack estimated-height blocks into as few pages of PAGE_CONTENT_BUDGET as possible. */
+/**
+ * Pack estimated-height blocks into as few pages of PAGE_CONTENT_BUDGET as possible, filling each
+ * page top-to-bottom. Unlike a strict in-order fill, when the next section doesn't fit the current
+ * page this back-fills a LATER standalone section into the gap (order-preferring: it always tries
+ * the earliest fitting block first). Multi-block sequence groups (Dimensions rows) stay in order and
+ * are never interleaved — nothing after them is pulled up until all their blocks are placed — so the
+ * result is consolidated, not scattered, without breaking any section.
+ */
 function packSheetBlocks(blocks: SheetBlock[]): SheetBlock[][] {
-  const pages: SheetBlock[][] = [];
-  let current: SheetBlock[] = [];
-  let used = 0;
-  for (const block of blocks) {
-    const addition = (current.length > 0 ? SHEET_BLOCK_GAP : 0) + block.height;
-    if (current.length > 0 && used + addition > PAGE_CONTENT_BUDGET) {
-      pages.push(current);
-      current = [];
-      used = 0;
+  const placed = new Array(blocks.length).fill(false);
+
+  // A block may go on the current page only if no earlier block is still pending that either shares
+  // its group (keep same-section order) or is a sequence group acting as a barrier (keep flow order).
+  const isEligible = (i: number) => {
+    if (placed[i]) return false;
+    for (let j = 0; j < i; j += 1) {
+      if (placed[j]) continue;
+      if (blocks[j].group === blocks[i].group) return false;
+      if (SEQUENCE_GROUPS.has(blocks[j].group)) return false;
     }
-    used += (current.length > 0 ? SHEET_BLOCK_GAP : 0) + block.height;
-    current.push(block);
+    return true;
+  };
+
+  const pages: SheetBlock[][] = [];
+  while (placed.some((done) => !done)) {
+    const page: SheetBlock[] = [];
+    let used = 0;
+
+    // Keep adding the earliest eligible block that still fits, restarting the scan each time so the
+    // natural section order is preferred and later sections only fill genuine leftover space.
+    let addedThisPage = true;
+    while (addedThisPage) {
+      addedThisPage = false;
+      for (let i = 0; i < blocks.length; i += 1) {
+        if (!isEligible(i)) continue;
+        const addition = (page.length > 0 ? SHEET_BLOCK_GAP : 0) + blocks[i].height;
+        if (used + addition <= PAGE_CONTENT_BUDGET) {
+          page.push(blocks[i]);
+          placed[i] = true;
+          used += addition;
+          addedThisPage = true;
+          break;
+        }
+      }
+    }
+
+    // Nothing fit an empty page: a single block is taller than the budget — place it alone so we
+    // always make progress (respecting group order).
+    if (page.length === 0) {
+      for (let i = 0; i < blocks.length; i += 1) {
+        if (isEligible(i)) {
+          page.push(blocks[i]);
+          placed[i] = true;
+          break;
+        }
+      }
+    }
+
+    pages.push(page);
   }
-  if (current.length > 0) pages.push(current);
+
   return pages.length > 0 ? pages : [[]];
 }
 
@@ -5011,10 +5277,12 @@ function SheetPreview({
   draft,
   selectedImage,
   spec,
+  onImagePlacementChange,
 }: {
   draft: EditorDraft;
   selectedImage: SourceImage | null;
   spec: ExtendedExtractedSpec;
+  onImagePlacementChange?: (imageId: string, placement: ImagePlacement) => void;
 }) {
   const sourceImages = getDraftSourceImages(spec, draft);
   const resolveImage = (id: string | null) =>
@@ -5022,19 +5290,29 @@ function SheetPreview({
 
   const pages = packSheetBlocks(buildSheetBlocks(draft, resolveImage));
 
+  // One provider covers every image on every page/section, so `<SheetImage>` anywhere in the tree
+  // gets drag/resize without threading callbacks through each render helper.
+  const imageEditing: SheetImageEditing = {
+    placements: draft.imagePlacements ?? {},
+    editable: Boolean(onImagePlacementChange),
+    onChange: onImagePlacementChange,
+  };
+
   return (
-    <div className="flex flex-col items-center gap-8">
-      <SheetPageOne draft={draft} selectedImage={selectedImage} spec={spec} />
-      {pages.map((page, index) => (
-        <SheetPageFrame key={`page-${index}`} draft={draft} pageNumber={2 + index}>
-          <div className="flex w-[727px] flex-col gap-5">
-            {page.map((block) => (
-              <div key={block.key}>{block.node}</div>
-            ))}
-          </div>
-        </SheetPageFrame>
-      ))}
-    </div>
+    <SheetImageEditingContext.Provider value={imageEditing}>
+      <div className="flex flex-col items-center gap-8">
+        <SheetPageOne draft={draft} selectedImage={selectedImage} spec={spec} />
+        {pages.map((page, index) => (
+          <SheetPageFrame key={`page-${index}`} draft={draft} pageNumber={2 + index}>
+            <div className="flex w-[727px] flex-col gap-5">
+              {page.map((block) => (
+                <div key={block.key}>{block.node}</div>
+              ))}
+            </div>
+          </SheetPageFrame>
+        ))}
+      </div>
+    </SheetImageEditingContext.Provider>
   );
 }
 
@@ -5344,6 +5622,15 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
 
   const updateDraft = <K extends keyof EditorDraft>(key: K, value: EditorDraft[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  // Persist a dragged/resized image placement on the sheet (keyed by source-image id). Applies to
+  // every sheet image — product, dimensions, accessories, and custom sections.
+  const handleImagePlacementChange = (imageId: string, placement: ImagePlacement) => {
+    setDraft((current) => ({
+      ...current,
+      imagePlacements: { ...(current.imagePlacements ?? {}), [imageId]: placement },
+    }));
   };
 
   // When the warranty label is typed (e.g. "5 Year"), auto-fill the warranty copy with the
@@ -5828,6 +6115,9 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
           width: 816,
           height: 1056,
           style: { transform: "none", margin: "0", boxShadow: "none" },
+          // Strip editor-only overlays (e.g. the image drag frame + resize handle) from the export.
+          filter: (node) =>
+            !(node instanceof HTMLElement && node.dataset?.exportHide === "true"),
         });
         if (i > 0) pdf.addPage();
         pdf.addImage(dataUrl, "PNG", 0, 0, 8.5, 11, undefined, "FAST");
@@ -6968,7 +7258,12 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               width: `${SHEET_PREVIEW_WIDTH}px`,
             }}
           >
-            <SheetPreview draft={displayDraft} selectedImage={selectedImage} spec={spec} />
+            <SheetPreview
+              draft={displayDraft}
+              selectedImage={selectedImage}
+              spec={spec}
+              onImagePlacementChange={handleImagePlacementChange}
+            />
           </div>
         </div>
       </div>

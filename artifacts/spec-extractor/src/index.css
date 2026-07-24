@@ -123,4 +123,9 @@
     print-color-adjust: exact;
     -webkit-print-color-adjust: exact;
   }
+
+  /* Editor-only overlays (image drag frame + resize handle) must never appear in the PDF/print. */
+  .print-only-root [data-export-hide] {
+    display: none !important;
+  }
 }
