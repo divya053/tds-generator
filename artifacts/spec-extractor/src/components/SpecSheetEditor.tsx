@@ -2522,8 +2522,8 @@ function ImageEditorDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92vh] w-[min(96vw,1200px)] max-w-none overflow-hidden p-0">
-        <div className="grid max-h-[92vh] min-h-0 grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)]">
-          <div className="border-b border-border/60 p-5 lg:border-b-0 lg:border-r">
+        <div className="flex max-h-[92vh] min-h-0 flex-col overflow-y-auto lg:grid lg:grid-cols-[300px_minmax(0,1fr)] lg:overflow-hidden">
+          <div className="shrink-0 border-b border-border/60 p-4 sm:p-5 lg:min-h-0 lg:overflow-y-auto lg:border-b-0 lg:border-r">
             <DialogHeader>
               <DialogTitle>Vendor Image Editor</DialogTitle>
               <DialogDescription>
@@ -2811,11 +2811,11 @@ function ImageEditorDialog({
             </div>
           </div>
 
-          <div className="flex min-h-0 flex-col bg-slate-950/90">
-            <div className="border-b border-white/10 px-5 py-4 text-sm text-slate-300">
+          <div className="flex min-h-[52vh] flex-col bg-slate-950/90 lg:min-h-0">
+            <div className="shrink-0 border-b border-white/10 px-4 py-3 text-sm text-slate-300 sm:px-5 sm:py-4">
               Page {image?.page ?? "-"} image. Click inside the preview to place the active tool.
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-5">
+            <div className="min-h-0 flex-1 overflow-auto p-4 sm:p-5">
               <div className="flex min-h-full items-start justify-center">
                 {image ? (
                   <canvas
@@ -2825,7 +2825,7 @@ function ImageEditorDialog({
                     onMouseMove={handlePenMove}
                     onMouseUp={handlePenUp}
                     onMouseLeave={handlePenUp}
-                    className="max-h-[72vh] max-w-full cursor-crosshair rounded-2xl border border-white/10 bg-white shadow-2xl"
+                    className="max-h-[60vh] max-w-full cursor-crosshair rounded-2xl border border-white/10 bg-white shadow-2xl lg:max-h-[72vh]"
                   />
                 ) : (
                   <div className="rounded-2xl border border-dashed border-white/10 px-6 py-10 text-sm text-slate-400">
@@ -2964,8 +2964,8 @@ function SourcePageCropDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92vh] w-[min(96vw,1180px)] max-w-none overflow-hidden p-0">
-        <div className="grid max-h-[92vh] min-h-0 grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)]">
-          <div className="border-b border-border/60 p-5 lg:border-b-0 lg:border-r">
+        <div className="flex max-h-[92vh] min-h-0 flex-col overflow-y-auto lg:grid lg:grid-cols-[300px_minmax(0,1fr)] lg:overflow-hidden">
+          <div className="shrink-0 border-b border-border/60 p-4 sm:p-5 lg:min-h-0 lg:overflow-y-auto lg:border-b-0 lg:border-r">
             <DialogHeader>
               <DialogTitle>Crop Vendor PDF</DialogTitle>
               <DialogDescription>
@@ -3007,11 +3007,11 @@ function SourcePageCropDialog({
             </div>
           </div>
 
-          <div className="flex min-h-0 flex-col bg-slate-950/90">
-            <div className="border-b border-white/10 px-5 py-4 text-sm text-slate-300">
+          <div className="flex min-h-[52vh] flex-col bg-slate-950/90 lg:min-h-0">
+            <div className="shrink-0 border-b border-white/10 px-4 py-3 text-sm text-slate-300 sm:px-5 sm:py-4">
               Page {page?.page ?? "-"} preview. Click and drag to define the crop area.
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-5">
+            <div className="min-h-0 flex-1 overflow-auto p-4 sm:p-5">
               <div className="flex min-h-full items-start justify-center">
                 {page ? (
                   <div
