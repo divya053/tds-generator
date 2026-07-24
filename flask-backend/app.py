@@ -285,6 +285,11 @@ Rules:
   with that model's four lumen values; a 400W model -> "400W/320W/240W/160W". Do NOT output only the 100% (highest)
   wattage when the lumen list clearly has one value per step — for every variant the Power list and the Lumen Output
   list MUST contain the SAME number of values, in the SAME order (one wattage per lumen).
+- LUMEN OUTPUT — EXACT LIST, NOT A RANGE: Lumen Output must be the EXACT list of every individual lumen value, read
+  from the vendor's model / output TABLE, aligned 1:1 with the Power list. NEVER output a "from X to Y", "X–Y", or
+  "up to X" summary, and never take the lumen figure from a marketing sentence (e.g. "scalable from 6,600 to 61,000
+  lumens" or "replaces up to 1000W") — always read the individual per-model / per-step lumen numbers from the table.
+  If the table lists 6400/9300/12000/16000 lm for a model, output exactly those, not "6,400–16,000 lm".
 - DISTINCT SIZES / LENGTHS (very important): if the fixture comes in multiple physical SIZES or LENGTHS and EACH
   size has its OWN single wattage and its OWN lumen output — common for tri-proof / linear / batten / strip / vapor-tight
   fixtures, e.g. 2ft/4ft/5ft (or 600mm/1200mm/1500mm) = 20W/36W/45W = 2600-2800lm / 4680-5040lm / 5850-6300lm — then
@@ -1393,6 +1398,10 @@ Fix these problems specifically:
   full wattage list and expand Power to match: if the source states power-adjustable PERCENTAGE steps (e.g. "Power
   adjustable: 100%, 80%, 60%, 40%"), the wattages are the model's max wattage times each step (180W -> 180/144/108/72W),
   one per lumen value, in the same order. Never leave Power as just the single highest value when the lumen list is longer.
+- LUMEN OUTPUT MUST BE EXACT (not a range): if Lumen Output is a "from X to Y", "X-Y", or "up to X" summary (often
+  copied from a marketing line), that is WRONG — re-read the vendor's per-model output table and replace it with the
+  EXACT list of individual lumen values, one per wattage, aligned in order. Lumen Output must never be a 2-value range
+  when the fixture actually has many discrete lumen packages.
 - DISTINCT SIZES / LENGTHS (do NOT expand or merge): if each variantOverview.matrix row is a different physical
   SIZE / LENGTH with its OWN single wattage (e.g. row1 2FT=20W, row2 4FT=36W, row3 5FT=45W), KEEP each row's single
   wattage and that size's own lumen(s). Do NOT expand a size's single wattage into the full list, and do NOT merge

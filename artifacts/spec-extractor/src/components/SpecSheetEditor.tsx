@@ -4030,13 +4030,12 @@ const SPEC_COLUMNS: Array<{ label: string; unit: string }> = [
   { label: "Lumen Output", unit: "lm" },
   { label: "Efficacy", unit: "lm/W" },
   { label: "CRI", unit: "" },
-  { label: "Current", unit: "A" },
   { label: "CCT", unit: "K" },
   { label: "THD", unit: "" },
   { label: "Light Distribution", unit: "" },
 ];
 
-const SPEC_COL_WIDTHS = ["25%", "8%", "8%", "9%", "7%", "5%", "7%", "6%", "6%", "9%"];
+const SPEC_COL_WIDTHS = ["24%", "9%", "9%", "11%", "9%", "6%", "10%", "6%", "16%"];
 
 function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
   return (
@@ -4080,59 +4079,64 @@ function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
         {groups.map((group) => {
           const options = group.options.length > 0 ? group.options : [{ power: "", lumen: "" }];
           const span = options.length;
-          return options.map((option, index) => (
-            <tr key={`${group.id}-${index}`} className="align-middle">
-              {index === 0 && (
-                <td rowSpan={span} className="border border-l-0 border-slate-200 px-1 py-1.5 text-center text-[7px] font-bold leading-[1.2] text-black">
-                  <div className="whitespace-nowrap">{group.partNumber}</div>
-                  {isSpecified(group.sku) && (
-                    <div className="mt-0.5 whitespace-nowrap font-normal text-slate-500">
-                      SKU: {group.sku}
-                    </div>
-                  )}
+          // Selectable CCT as a single dash-joined line WITH the K unit (e.g. "3000K-4000K-5000K").
+          const cctTokens = group.cct.match(/\d[\d.]*\s*K\b/gi);
+          const cctDisplay = cctTokens && cctTokens.length > 0
+            ? cctTokens.map((token) => token.replace(/\s+/g, "").toUpperCase()).join("-")
+            : normalizeText(group.cct);
+          return options.map((option, index) => {
+            // Efficacy per power = that power's own lumen / watt (exact), with the lm/W unit.
+            const w = Number((option.power.match(/[\d.]+/) ?? [])[0]);
+            const lm = Number((option.lumen.replace(/,/g, "").match(/[\d.]+/) ?? [])[0]);
+            const optionEfficacy =
+              Number.isFinite(w) && w > 0 && Number.isFinite(lm) && lm > 0
+                ? `${Math.round(lm / w)} lm/W`
+                : normalizeText(group.efficacy);
+            return (
+              <tr key={`${group.id}-${index}`} className="align-middle">
+                {index === 0 && (
+                  <td rowSpan={span} className="border border-l-0 border-slate-200 px-1 py-1.5 text-center text-[7px] font-bold leading-[1.2] text-black">
+                    <div className="whitespace-nowrap">{group.partNumber}</div>
+                    {isSpecified(group.sku) && (
+                      <div className="mt-0.5 whitespace-nowrap font-normal text-slate-500">
+                        SKU: {group.sku}
+                      </div>
+                    )}
+                  </td>
+                )}
+                <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
+                  {option.power}
                 </td>
-              )}
-              <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                {option.power}
-              </td>
-              {index === 0 && (
-                <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                  {group.voltage}
+                {index === 0 && (
+                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
+                    {group.voltage}
+                  </td>
+                )}
+                <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
+                  {option.lumen}
                 </td>
-              )}
-              <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                {option.lumen}
-              </td>
-              {index === 0 && (
-                <>
-                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                    {group.efficacy}
-                  </td>
-                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                    {group.cri}
-                  </td>
-                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                    {group.current}
-                  </td>
-                  <td rowSpan={span} className="whitespace-pre-line border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.4] text-black">
-                    {(() => {
-                      // Show each CCT on its own line regardless of separator (/, -, space, comma).
-                      const tokens = group.cct.match(/\d[\d.]*\s*K\b/gi);
-                      return tokens && tokens.length > 1
-                        ? tokens.map((token) => token.replace(/\s+/g, "")).join("\n")
-                        : group.cct;
-                    })()}
-                  </td>
-                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                    {group.thd}
-                  </td>
-                  <td rowSpan={span} className="border border-r-0 border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                    {group.lightDistribution}
-                  </td>
-                </>
-              )}
-            </tr>
-          ));
+                <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
+                  {optionEfficacy}
+                </td>
+                {index === 0 && (
+                  <>
+                    <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
+                      {group.cri}
+                    </td>
+                    <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
+                      {cctDisplay}
+                    </td>
+                    <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
+                      {group.thd}
+                    </td>
+                    <td rowSpan={span} className="border border-r-0 border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
+                      {group.lightDistribution}
+                    </td>
+                  </>
+                )}
+              </tr>
+            );
+          });
         })}
       </tbody>
     </table>
@@ -6029,7 +6033,6 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                     <Input value={group.voltage} onChange={(event) => updateSpecGroup(groupIndex, { voltage: event.target.value })} placeholder="Voltage (V)" />
                     <Input value={group.efficacy} onChange={(event) => updateSpecGroup(groupIndex, { efficacy: event.target.value })} placeholder="Efficacy (lm/W)" />
                     <Input value={group.cri} onChange={(event) => updateSpecGroup(groupIndex, { cri: event.target.value })} placeholder="CRI" />
-                    <Input value={group.current} onChange={(event) => updateSpecGroup(groupIndex, { current: event.target.value })} placeholder="Current (A)" />
                     <Input value={group.cct} onChange={(event) => updateSpecGroup(groupIndex, { cct: event.target.value })} placeholder="CCT (K)" />
                     <Input value={group.thd} onChange={(event) => updateSpecGroup(groupIndex, { thd: event.target.value })} placeholder="THD" />
                     <Input value={group.lightDistribution} onChange={(event) => updateSpecGroup(groupIndex, { lightDistribution: event.target.value })} placeholder="Light Distribution" className="col-span-2" />
