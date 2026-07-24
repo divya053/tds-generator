@@ -409,8 +409,8 @@ function extractCctValue(value: string) {
     const normalized = token.replace(/\s+/g, "").toUpperCase();
     if (!seen.includes(normalized)) seen.push(normalized);
   }
-  // 2+ distinct CCTs => field-selectable; show them dash-joined and flag it as selectable.
-  return seen.length > 1 ? `${seen.join(" - ")} (Selectable)` : seen.join(" - ");
+  // 2+ distinct CCTs => field-selectable; just dash-join them (the head conveys "selectable").
+  return seen.join(" - ");
 }
 
 /** True for overview labels that represent beam angle. */
@@ -472,15 +472,26 @@ function extractLowestEpa(value: string) {
   return `${lowest}${unit}`;
 }
 
+/** Sentence-case an overview value: lowercase prose words but PRESERVE all-uppercase tokens
+ *  (acronyms/roman numerals/unit letters like IP65, LED, II, V, K, W) and any token with a digit,
+ *  then capitalize the first letter of each line (only when it starts with a letter).
+ *  "Constant Current" -> "Constant current"; "Type II, III, IV, V" and "160 lm/W" stay intact. */
+function toOverviewSentenceCase(value: string) {
+  if (!value) return value;
+  const lowered = value.replace(/[A-Za-z]+/g, (word) => (word === word.toUpperCase() ? word : word.toLowerCase()));
+  return lowered.replace(/^(\s*)([a-z])/gm, (_match, ws: string, ch: string) => ws + ch.toUpperCase());
+}
+
 /** Normalize an overview row value for display (dimensions -> US units, CCT -> Kelvin only,
- *  beam angle -> degrees only, BUG -> highest, EPA -> lowest). */
+ *  beam angle -> degrees only, BUG -> highest, EPA -> lowest), then sentence-case the text. */
 function normalizeOverviewRowValue(label: string, value: string) {
-  if (isDimensionLabel(label)) return convertDimensionUnits(value);
-  if (isCctLabel(label)) return extractCctValue(value);
-  if (isBeamAngleLabel(label)) return extractBeamAngleDegrees(value);
-  if (isBugRatingLabel(label)) return extractHighestBugRating(value);
-  if (isEpaLabel(label)) return extractLowestEpa(value);
-  return value;
+  let result = value;
+  if (isDimensionLabel(label)) result = convertDimensionUnits(value);
+  else if (isCctLabel(label)) result = extractCctValue(value);
+  else if (isBeamAngleLabel(label)) result = extractBeamAngleDegrees(value);
+  else if (isBugRatingLabel(label)) result = extractHighestBugRating(value);
+  else if (isEpaLabel(label)) result = extractLowestEpa(value);
+  return toOverviewSentenceCase(result);
 }
 
 function buildWarrantyStatement(years: number) {
@@ -3717,14 +3728,10 @@ function SheetPageOne({
                 {overviewShowNote && (
                   <div className="shrink-0 space-y-0.5 pt-1 text-[6.5px] font-normal italic leading-[1.25] text-slate-600" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
                     {overviewHasBug && (
-                      <div>
-                        BUG rating shows the highest value; it differs by variant, fixture, power and distribution type — refer to the BUG rating chart for the exact rating.
-                      </div>
+                      <div>BUG rating: highest shown; varies by variant, power & distribution — see the BUG chart.</div>
                     )}
                     {overviewHasEpa && (
-                      <div>
-                        EPA shows the lowest value; it differs by variant, fixture and mounting configuration — refer to the EPA chart for the exact value.
-                      </div>
+                      <div>EPA: lowest shown; varies by variant & mounting — see the EPA chart.</div>
                     )}
                   </div>
                 )}
