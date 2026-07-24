@@ -1806,6 +1806,44 @@ const FIXTURE_PROFILES: FixtureProfile[] = [
     applications: ["Warehouses", "Garages", "Utility Rooms", "Retail Stockrooms", "Cove Lighting"],
   },
   {
+    id: "linear_pendant",
+    keywords: [
+      "architectural linear pendant", "linear pendant", "pendant linear", "suspended linear",
+      "linear suspension", "suspension linear", "linear pendant light", "led pendant",
+    ],
+    category: "Indoor Lighting",
+    subCategory: "Linear Pendant",
+    group: "Linear Lighting",
+    applications: ["Offices", "Conference Rooms", "Reception Areas", "Retail Environments", "Educational Institutions", "Commercial Spaces"],
+  },
+  {
+    id: "recessed_linear",
+    keywords: ["recessed architectural linear", "recessed linear", "linear recessed", "recessed linear light"],
+    category: "Indoor Lighting",
+    subCategory: "Recessed Linear",
+    group: "Linear Lighting",
+    applications: ["Offices", "Conference Rooms", "Corridors", "Retail Stores", "Healthcare Facilities", "Educational Institutions"],
+  },
+  {
+    id: "architectural_linear",
+    keywords: ["architectural linear", "linear architectural", "surface linear", "surface mount linear", "linear surface"],
+    category: "Indoor Lighting",
+    subCategory: "Architectural Linear",
+    group: "Linear Lighting",
+    applications: ["Offices", "Conference Rooms", "Reception Areas", "Retail Environments", "Commercial Spaces", "Hospitality Venues"],
+  },
+  {
+    id: "linear_general",
+    keywords: [
+      "linear light", "linear lighting", "linear luminaire", "linear fixture", "led linear",
+      "linear led", "pendant light", "pendant", "linear",
+    ],
+    category: "Indoor Lighting",
+    subCategory: "Linear Light",
+    group: "Linear Lighting",
+    applications: ["Offices", "Conference Rooms", "Retail Stores", "Educational Institutions", "Commercial Spaces", "Hospitality Venues"],
+  },
+  {
     id: "downlight",
     keywords: ["downlight", "down light", "recessed can", "can light", "recessed downlight"],
     category: "Indoor Lighting",
@@ -4655,11 +4693,13 @@ function DimensionsSection({
   resolveImage,
   imageHeightClass,
   title = "Dimensions",
+  showHeading = true,
 }: {
   items: DimensionItem[];
   resolveImage: (id: string | null) => SourceImage | null;
   imageHeightClass: string;
   title?: string;
+  showHeading?: boolean;
 }) {
   // Show placeholder slots so the fixed layout is visible before any drawing is added.
   const items =
@@ -4673,7 +4713,7 @@ function DimensionsSection({
   const single = items.length === 1;
   return (
     <>
-      <SheetPageHeading title={title} />
+      {showHeading && <SheetPageHeading title={title} />}
       <div className={cn("grid gap-x-8 gap-y-4", single ? "grid-cols-1 justify-items-center" : "grid-cols-2")}>
         {items.map((item) => {
           const image = resolveImage(item.imageId);
@@ -4778,6 +4818,193 @@ function SheetCustomSectionsPage({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Page packing. After the fixed page 1, every remaining section (specs, dimensions,
+// ordering, accessories, custom) flows into as FEW pages as possible: each section is
+// estimated in pixels and greedily packed into the usable content height, so a short
+// specs table pulls the ordering / accessories up beside it instead of leaving page 2
+// half-empty. Estimates are biased slightly high so nothing overflows a page.
+// ---------------------------------------------------------------------------
+const PAGE_CONTENT_BUDGET = 812; // usable px per page 2+ (844 content area minus pt-3 + safety)
+const SHEET_BLOCK_GAP = 20; // gap-5 between stacked blocks
+const DIM_ROW_HEIGHT = 250; // one row of up to two dimension drawings (h-[190px] image + labels)
+
+type SheetBlock = { key: string; height: number; node: React.ReactNode };
+
+function estimateSpecsHeight(draft: EditorDraft) {
+  const rows = draft.specGroups
+    .filter(specGroupHasContent)
+    .reduce((sum, group) => sum + Math.max(1, group.options.length), 0);
+  const note = isSpecified(draft.specsNote) ? 30 : 0;
+  return 46 + 40 + Math.max(1, rows) * 23 + note;
+}
+
+function estimateOrderingHeight(draft: EditorDraft) {
+  const maxEntries = draft.orderingColumns.reduce((max, column) => {
+    const count = column.entries.filter((entry) => isSpecified(entry.code) || isSpecified(entry.description)).length;
+    return Math.max(max, count);
+  }, 1);
+  const note = isSpecified(draft.orderingNote) ? 30 : 0;
+  return 46 + 66 + (26 + maxEntries * 22) + note;
+}
+
+function estimateAccessoriesHeight(draft: EditorDraft) {
+  const count = draft.accessoryRows.filter(accessoryRowHasContent).length;
+  if (count === 0) return 0;
+  return 46 + 26 + Math.ceil(count / 2) * 54;
+}
+
+function estimateCustomSectionHeight(section: CustomSection, hasImage: boolean) {
+  const points = splitLineList(section.bodyText).length;
+  const bodyHeight = Math.max(points * 20, hasImage ? 350 : 0, 20);
+  return 40 + bodyHeight + 16;
+}
+
+/** Build the ordered, height-estimated section blocks that follow page 1. */
+function buildSheetBlocks(
+  draft: EditorDraft,
+  resolveImage: (id: string | null) => SourceImage | null,
+): SheetBlock[] {
+  const blocks: SheetBlock[] = [];
+
+  // Product Specifications
+  const groups = draft.specGroups.filter(specGroupHasContent);
+  blocks.push({
+    key: "specs",
+    height: estimateSpecsHeight(draft),
+    node: (
+      <section>
+        <SheetPageHeading title="Product Specifications" />
+        <SpecificationsTable groups={groups} />
+        {isSpecified(draft.specsNote) && <SheetNote>{draft.specsNote}</SheetNote>}
+      </section>
+    ),
+  });
+
+  // Dimensions — one block per row of (up to) two drawings; only the first shows the heading.
+  const dims = draft.dimensionItems.filter(dimensionItemHasContent);
+  if (dims.length === 0) {
+    blocks.push({
+      key: "dims-empty",
+      height: 46 + DIM_ROW_HEIGHT,
+      node: <DimensionsSection items={[]} resolveImage={resolveImage} imageHeightClass="h-[190px]" />,
+    });
+  } else {
+    for (let i = 0; i < dims.length; i += 2) {
+      const first = i === 0;
+      blocks.push({
+        key: `dims-${i}`,
+        height: (first ? 46 : 0) + DIM_ROW_HEIGHT,
+        node: (
+          <DimensionsSection
+            items={dims.slice(i, i + 2)}
+            resolveImage={resolveImage}
+            imageHeightClass="h-[190px]"
+            showHeading={first}
+          />
+        ),
+      });
+    }
+  }
+
+  // Product Ordering Information
+  blocks.push({
+    key: "ordering",
+    height: estimateOrderingHeight(draft),
+    node: (
+      <section>
+        <SheetPageHeading
+          title="Product Ordering Information"
+          trailing={isSpecified(draft.orderingExample) ? `Typical order example: ${draft.orderingExample}` : undefined}
+        />
+        <OrderingDecoderTable columns={draft.orderingColumns} selection={draft.orderingSelection} />
+        {isSpecified(draft.orderingNote) && <SheetNote>{draft.orderingNote}</SheetNote>}
+      </section>
+    ),
+  });
+
+  // Accessories Ordering Information
+  const accessories = draft.accessoryRows.filter(accessoryRowHasContent);
+  if (accessories.length > 0) {
+    const half = Math.max(1, Math.ceil(accessories.length / 2));
+    blocks.push({
+      key: "accessories",
+      height: estimateAccessoriesHeight(draft),
+      node: (
+        <section>
+          <SheetPageHeading title="Accessories Ordering Information" />
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <AccessoriesTable rows={accessories.slice(0, half)} resolveImage={resolveImage} />
+            </div>
+            <div className="flex-1">
+              <AccessoriesTable rows={accessories.slice(half)} resolveImage={resolveImage} />
+            </div>
+          </div>
+        </section>
+      ),
+    });
+  }
+
+  // Custom sections — each user-added heading with text points and/or image.
+  for (const section of draft.customSections) {
+    if (!isSpecified(section.heading) && !isSpecified(section.bodyText) && !section.imageId) continue;
+    const image = resolveImage(section.imageId);
+    const points = splitLineList(section.bodyText);
+    blocks.push({
+      key: `custom-${section.id}`,
+      height: estimateCustomSectionHeight(section, Boolean(image)),
+      node: (
+        <section>
+          {isSpecified(section.heading) && <SheetSectionTitle>{section.heading}</SheetSectionTitle>}
+          <div className="flex gap-5">
+            {points.length > 0 && (
+              <ul className="flex-1 space-y-1.5 text-[11px] leading-[1.35] text-black">
+                {points.map((point, i) => (
+                  <li key={i} className="flex gap-2">
+                    <span className="mt-[5px] h-1 w-1 shrink-0 rounded-full bg-[#00a651]" />
+                    <span>{point}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {image && (
+              <div className={cn("flex shrink-0 items-start justify-center", points.length > 0 ? "w-[300px]" : "w-full")}>
+                <img
+                  src={image.dataUrl}
+                  alt={section.heading || "Custom section image"}
+                  className="max-h-[340px] w-full object-contain"
+                />
+              </div>
+            )}
+          </div>
+        </section>
+      ),
+    });
+  }
+
+  return blocks;
+}
+
+/** Greedily pack estimated-height blocks into as few pages of PAGE_CONTENT_BUDGET as possible. */
+function packSheetBlocks(blocks: SheetBlock[]): SheetBlock[][] {
+  const pages: SheetBlock[][] = [];
+  let current: SheetBlock[] = [];
+  let used = 0;
+  for (const block of blocks) {
+    const addition = (current.length > 0 ? SHEET_BLOCK_GAP : 0) + block.height;
+    if (current.length > 0 && used + addition > PAGE_CONTENT_BUDGET) {
+      pages.push(current);
+      current = [];
+      used = 0;
+    }
+    used += (current.length > 0 ? SHEET_BLOCK_GAP : 0) + block.height;
+    current.push(block);
+  }
+  if (current.length > 0) pages.push(current);
+  return pages.length > 0 ? pages : [[]];
+}
+
 function SheetPreview({
   draft,
   selectedImage,
@@ -4791,40 +5018,30 @@ function SheetPreview({
   const resolveImage = (id: string | null) =>
     (id ? sourceImages.find((image) => image.id === id) : null) ?? null;
 
-  const { onSpecPage, continuationPages, showOnSpecPage } = getDimensionPagination(draft);
-  // Page numbers: 1 = main, 2 = specs+dims, 3.. = dimension continuation pages, then ordering last.
-  const orderingPageNumber = 3 + continuationPages.length;
+  const pages = packSheetBlocks(buildSheetBlocks(draft, resolveImage));
 
   return (
     <div className="flex flex-col items-center gap-8">
       <SheetPageOne draft={draft} selectedImage={selectedImage} spec={spec} />
-      <SheetSpecificationsPage
-        draft={draft}
-        pageNumber={2}
-        resolveImage={resolveImage}
-        dimensionItems={onSpecPage}
-        showDimensions={showOnSpecPage}
-      />
-      {continuationPages.map((items, index) => (
-        <SheetDimensionsPage
-          key={`dim-page-${index}`}
-          draft={draft}
-          pageNumber={3 + index}
-          resolveImage={resolveImage}
-          items={items}
-        />
+      {pages.map((page, index) => (
+        <SheetPageFrame key={`page-${index}`} draft={draft} pageNumber={2 + index}>
+          <div className="flex w-[727px] flex-col gap-5">
+            {page.map((block) => (
+              <div key={block.key}>{block.node}</div>
+            ))}
+          </div>
+        </SheetPageFrame>
       ))}
-      <SheetOrderingPage draft={draft} pageNumber={orderingPageNumber} resolveImage={resolveImage} />
-      {hasCustomSectionContent(draft) && (
-        <SheetCustomSectionsPage draft={draft} pageNumber={orderingPageNumber + 1} resolveImage={resolveImage} />
-      )}
     </div>
   );
 }
 
-/** Total rendered pages: main + specs + dimension continuation pages + ordering + custom sections. */
-function getPreviewPageCount(draft: EditorDraft) {
-  return 3 + getDimensionPagination(draft).continuationPages.length + (hasCustomSectionContent(draft) ? 1 : 0);
+/** Total rendered pages: page 1 + the packed section pages. */
+function getPreviewPageCount(draft: EditorDraft, spec?: ExtendedExtractedSpec) {
+  const sourceImages = spec ? getDraftSourceImages(spec, draft) : [];
+  const resolveImage = (id: string | null) =>
+    (id ? sourceImages.find((image) => image.id === id) : null) ?? null;
+  return 1 + packSheetBlocks(buildSheetBlocks(draft, resolveImage)).length;
 }
 
 function SecondPageImagePicker({
@@ -5048,7 +5265,9 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   // only fires once per detected type, so it never overwrites hand-entered values.
   useEffect(() => {
     if (hydratedSpecIdRef.current !== String(spec.id)) return;
-    const profile = predictFixtureProfile(draft.title, draft.subtitle, draft.categoryLabel, draft.subCategory);
+    const profile = predictFixtureProfile(
+      draft.title, draft.subtitle, draft.categoryLabel, draft.subCategory, spec.productName,
+    );
     if (!profile) return;
 
     const signature = `${spec.id}::${profile.id}`;
@@ -5141,7 +5360,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     });
   };
 
-  const previewPageCount = getPreviewPageCount(draft);
+  const previewPageCount = getPreviewPageCount(draft, spec);
   const totalPreviewHeight =
     previewPageCount * SHEET_PREVIEW_HEIGHT + (previewPageCount - 1) * PREVIEW_PAGE_GAP;
 
