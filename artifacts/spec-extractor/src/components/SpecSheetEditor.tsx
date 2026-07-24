@@ -1708,6 +1708,22 @@ const FIXTURE_PROFILES: FixtureProfile[] = [
     applications: ["Oil & Gas Facilities", "Refineries", "Chemical Plants", "Mining Operations", "Paint Booths"],
   },
   {
+    id: "jelly_jar",
+    keywords: ["jelly jar", "jelly-jar", "jelly jar light", "jam jar"],
+    category: "Hazardous Location Lighting",
+    subCategory: "Jelly Jar Light",
+    group: "Hazardous Location",
+    applications: ["Wet Locations", "Utility Rooms", "Stairwells", "Walk-in Coolers", "Parking Structures", "Marine Areas"],
+  },
+  {
+    id: "drop_light",
+    keywords: ["drop light", "drop-light", "droplight", "hand lamp", "portable work light"],
+    category: "Hazardous Location Lighting",
+    subCategory: "Drop Light",
+    group: "Hazardous Location",
+    applications: ["Maintenance Bays", "Inspection Areas", "Workshops", "Industrial Facilities", "Utility Work"],
+  },
+  {
     id: "vapor_tight",
     keywords: ["vapor tight", "vapor-tight", "vaportight", "tri-proof", "tri proof", "triproof", "waterproof linear"],
     category: "Indoor / Outdoor Lighting",
@@ -1796,6 +1812,14 @@ const FIXTURE_PROFILES: FixtureProfile[] = [
     applications: ["Offices", "Schools", "Retail Stores", "Hospitals", "Corridors"],
   },
   {
+    id: "refrigeration",
+    keywords: ["refrigeration", "cooler light", "freezer light", "cooler & freezer", "refrigerated case", "walk-in cooler"],
+    category: "Indoor Lighting",
+    subCategory: "Refrigeration Light",
+    group: "Refrigeration Lighting",
+    applications: ["Walk-in Coolers", "Freezers", "Refrigerated Display Cases", "Grocery Stores", "Cold Storage"],
+  },
+  {
     id: "wall_pack",
     keywords: ["wall pack", "wallpack", "wall-pack"],
     category: "Outdoor Lighting",
@@ -1810,6 +1834,14 @@ const FIXTURE_PROFILES: FixtureProfile[] = [
     subCategory: "High Mast Light",
     group: "High Mast Lights",
     applications: ["Airports", "Seaports", "Highways & Interchanges", "Rail Yards", "Container Yards", "Large Open Areas"],
+  },
+  {
+    id: "yard_light",
+    keywords: ["yard light", "yard-light", "barn light", "security barn"],
+    category: "Outdoor Lighting",
+    subCategory: "Yard Light",
+    group: "Yard Lights",
+    applications: ["Farms", "Barns", "Driveways", "Rural Properties", "Storage Yards", "Security Areas"],
   },
   {
     id: "flood",

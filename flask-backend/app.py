@@ -264,10 +264,14 @@ Rules:
     If a source value is already in US units, keep it and just fix the symbol/spacing.
 - BEST-EFFORT: Every form field should end up with SOMETHING. If the source doesn't state a value, infer the most likely value from the product type/specs rather than leaving it blank — the user will verify flagged values. Only use "Not Specified" when no reasonable inference exists.
 - PRODUCT TYPE / CATEGORY (read the vendor, don't guess): identify the fixture type from the vendor's OWN naming —
-  the product title, the section header (e.g. "High Mast Lights", "Area Lights", "Flood Lights", "Wall Packs"), and
-  the "type" line. Use THAT exact type for productCategory and subCategory. In particular: a "High Mast Light" is
-  high_mast (NOT flood or stadium); an "Area / Shoebox Light" is area (NOT flood); a "Wall Pack" is wall_pack. Only
-  fall back to inferring from the specs when the vendor never names the type.
+  the product title, the section header, and the "type" line — and map it to the closest IKIO product family. IKIO's
+  catalog (US market): COMMERCIAL/INDOOR = LED Tubes, Refrigeration Lights, Magnetic Strip Kits, Linear Low Bays,
+  Troffers, Panel Lights, Downlights. INDUSTRIAL = Retrofit Lamps, High Bays, Flood Lights, Canopy Lights, High Mast
+  Lights, Yard Lights, Area Luminaires, Wall Packs, Vapor Tight Lights, Street Lights, Wraparound Lights. HAZARDOUS
+  LOCATION = Area Lights, Jelly Jar Lights, Drop Lights, High Bays. Use the vendor's exact type. In particular: a
+  "High Mast Light" is high_mast (NOT flood/stadium); an "Area / Shoebox Light" is area (NOT flood); a "Wall Pack" is
+  wall_pack; a "Yard Light" is yard, not flood. Only fall back to inferring from the specs when the vendor never
+  names the type.
 - NEVER put a vendor part number, model code, SKU, or series code (e.g. "PT02", "SS-PT02", "PT02-60W",
   "S0150") into Power, Lumen Output, Voltage, Current, Efficacy, technicalSpecs, variants, or
   variantOverview.matrix. Those fields must contain ONLY real measured values with units (W, lm, V, A, lm/W).
