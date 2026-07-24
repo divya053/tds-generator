@@ -93,6 +93,14 @@ type DimensionItem = {
   depth: string;
 };
 
+// A user-added custom section: a heading plus text (one point per line) and/or an image.
+type CustomSection = {
+  id: string;
+  heading: string;
+  bodyText: string;
+  imageId: string | null;
+};
+
 const ORDERING_GROUP_LABELS: Record<OrderingGroupId, string> = {
   family: "Luminaire Family",
   performance: "Electrical / Lighting Performance",
@@ -201,6 +209,8 @@ type EditorDraft = {
   accessoryRows: AccessoryRow[];
   // Page 4 — Dimensions
   dimensionItems: DimensionItem[];
+  // User-added custom sections (extra page): heading + text points and/or image.
+  customSections: CustomSection[];
 };
 
 type CropSelection = {
@@ -2253,6 +2263,7 @@ function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendation
     orderingNote: "Please ensure power compatibility with this specific fixture size when selecting this option.",
     accessoryRows: buildAccessoryRowsFromSpec(spec),
     dimensionItems: buildDimensionItemsFromSpec(spec),
+    customSections: [],
   };
 }
 
@@ -4622,6 +4633,64 @@ function DimensionsSection({
   );
 }
 
+/** True when there is at least one custom section with a heading, text, or image. */
+function hasCustomSectionContent(draft: EditorDraft) {
+  return draft.customSections.some(
+    (section) => isSpecified(section.heading) || isSpecified(section.bodyText) || Boolean(section.imageId),
+  );
+}
+
+/** Extra page(s) for user-added custom sections: each heading with text points and/or an image. */
+function SheetCustomSectionsPage({
+  draft,
+  pageNumber,
+  resolveImage,
+}: {
+  draft: EditorDraft;
+  pageNumber: number;
+  resolveImage: (id: string | null) => SourceImage | null;
+}) {
+  const sections = draft.customSections.filter(
+    (section) => isSpecified(section.heading) || isSpecified(section.bodyText) || Boolean(section.imageId),
+  );
+  return (
+    <SheetPageFrame draft={draft} pageNumber={pageNumber}>
+      <div className="flex h-full w-[727px] flex-col gap-5 overflow-hidden">
+        {sections.map((section) => {
+          const image = resolveImage(section.imageId);
+          const points = splitLineList(section.bodyText);
+          return (
+            <section key={section.id} className="overflow-hidden">
+              {isSpecified(section.heading) && <SheetSectionTitle>{section.heading}</SheetSectionTitle>}
+              <div className="flex gap-5">
+                {points.length > 0 && (
+                  <ul className="flex-1 space-y-1.5 text-[11px] leading-[1.35] text-black">
+                    {points.map((point, i) => (
+                      <li key={i} className="flex gap-2">
+                        <span className="mt-[5px] h-1 w-1 shrink-0 rounded-full bg-[#00a651]" />
+                        <span>{point}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {image && (
+                  <div className={cn("flex shrink-0 items-start justify-center", points.length > 0 ? "w-[300px]" : "w-full")}>
+                    <img
+                      src={image.dataUrl}
+                      alt={section.heading || "Custom section image"}
+                      className="max-h-[340px] w-full object-contain"
+                    />
+                  </div>
+                )}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </SheetPageFrame>
+  );
+}
+
 function SheetPreview({
   draft,
   selectedImage,
@@ -4659,13 +4728,16 @@ function SheetPreview({
         />
       ))}
       <SheetOrderingPage draft={draft} pageNumber={orderingPageNumber} resolveImage={resolveImage} />
+      {hasCustomSectionContent(draft) && (
+        <SheetCustomSectionsPage draft={draft} pageNumber={orderingPageNumber + 1} resolveImage={resolveImage} />
+      )}
     </div>
   );
 }
 
-/** Total rendered pages: main + specs + dimension continuation pages + ordering. */
+/** Total rendered pages: main + specs + dimension continuation pages + ordering + custom sections. */
 function getPreviewPageCount(draft: EditorDraft) {
-  return 3 + getDimensionPagination(draft).continuationPages.length;
+  return 3 + getDimensionPagination(draft).continuationPages.length + (hasCustomSectionContent(draft) ? 1 : 0);
 }
 
 function SecondPageImagePicker({
@@ -4754,7 +4826,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   const [isCropDialogOpen, setIsCropDialogOpen] = useState(false);
   const [croppingPageId, setCroppingPageId] = useState<string | null>(null);
   const [pendingImageTarget, setPendingImageTarget] = useState<
-    { kind: "dimension" | "accessory"; id: string } | null
+    { kind: "dimension" | "accessory" | "custom"; id: string } | null
   >(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
@@ -4993,7 +5065,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     setIsCropDialogOpen(true);
   };
 
-  const openCropForTarget = (target: { kind: "dimension" | "accessory"; id: string }) => {
+  const openCropForTarget = (target: { kind: "dimension" | "accessory" | "custom"; id: string }) => {
     if (sourcePages.length === 0) {
       toast.error("No vendor PDF pages available to crop.");
       return;
@@ -5003,7 +5075,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     setIsCropDialogOpen(true);
   };
 
-  const triggerImageUpload = (target?: { kind: "dimension" | "accessory"; id: string }) => {
+  const triggerImageUpload = (target?: { kind: "dimension" | "accessory" | "custom"; id: string }) => {
     setPendingImageTarget(target ?? null);
     uploadInputRef.current?.click();
   };
@@ -5069,6 +5141,10 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
       } else if (pendingImageTarget?.kind === "accessory") {
         next.accessoryRows = current.accessoryRows.map((row) =>
           row.id === pendingImageTarget.id ? { ...row, imageId: image.id } : row,
+        );
+      } else if (pendingImageTarget?.kind === "custom") {
+        next.customSections = current.customSections.map((section) =>
+          section.id === pendingImageTarget.id ? { ...section, imageId: image.id } : section,
         );
       }
       return next;
@@ -5325,6 +5401,30 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     setDraft((current) => ({
       ...current,
       dimensionItems: current.dimensionItems.filter((_, i) => i !== index),
+    }));
+  };
+
+  const addCustomSection = () => {
+    setDraft((current) => ({
+      ...current,
+      customSections: [
+        ...current.customSections,
+        { id: `sec-${Date.now()}-${current.customSections.length}`, heading: "", bodyText: "", imageId: null },
+      ],
+    }));
+  };
+
+  const updateCustomSection = (index: number, patch: Partial<CustomSection>) => {
+    setDraft((current) => ({
+      ...current,
+      customSections: current.customSections.map((section, i) => (i === index ? { ...section, ...patch } : section)),
+    }));
+  };
+
+  const removeCustomSection = (index: number) => {
+    setDraft((current) => ({
+      ...current,
+      customSections: current.customSections.filter((_, i) => i !== index),
     }));
   };
 
@@ -6421,6 +6521,98 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               >
                 <Plus className="mr-2 h-4 w-4" />
                 Add Drawing
+              </Button>
+            </div>
+          </section>
+
+          {/* Custom sections — add your own heading with text points and/or an image (extra page). */}
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
+                Custom Sections
+              </h2>
+              <Badge variant="outline">{draft.customSections.length} sections</Badge>
+            </div>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              Add a heading, then text points (one per line) and/or an image. Each appears on an extra
+              page after Ordering.
+            </p>
+            <div className="space-y-2">
+              {draft.customSections.map((section, index) => (
+                <div key={section.id} className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={section.heading}
+                      onChange={(event) => updateCustomSection(index, { heading: event.target.value })}
+                      placeholder="Section heading (e.g. Installation, Controls)"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => removeCustomSection(index)}
+                      className="h-10 w-10 shrink-0 rounded-xl border-border/70 p-0 border-[#7a3b3b] bg-[#5f2a2a] text-red-100 hover:bg-[#743636] hover:text-red-50 [&>svg]:!size-5 [&>svg]:!text-red-100"
+                      aria-label="Delete section"
+                      title="Delete section"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <Textarea
+                    value={section.bodyText}
+                    onChange={(event) => updateCustomSection(index, { bodyText: event.target.value })}
+                    placeholder="One text point per line"
+                    className="min-h-[90px]"
+                  />
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1">
+                      <SecondPageImagePicker
+                        images={imagesForOwner(`custom:${section.id}`, section.imageId)}
+                        value={section.imageId}
+                        onChange={(value) => updateCustomSection(index, { imageId: value })}
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => openCropForTarget({ kind: "custom", id: section.id })}
+                      className="h-10 shrink-0 gap-1 rounded-xl px-3 text-[12px]"
+                      title="Crop a new image from the vendor PDF"
+                    >
+                      <Crop className="h-3.5 w-3.5" />
+                      Crop
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => triggerImageUpload({ kind: "custom", id: section.id })}
+                      className="h-10 shrink-0 gap-1 rounded-xl px-3 text-[12px]"
+                      title="Upload an image from your computer"
+                    >
+                      <Upload className="h-3.5 w-3.5" />
+                      Upload
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={!section.imageId}
+                      onClick={() => section.imageId && openImageEditor(section.imageId, false)}
+                      className="h-10 shrink-0 gap-1 rounded-xl px-3 text-[12px]"
+                      title="Edit this image — crop, erase, pen, text, background & adjustments"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      Edit
+                    </Button>
+                  </div>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={addCustomSection}
+                className="h-11 w-full rounded-2xl border-dashed border-primary/40 bg-primary/5 text-primary hover:border-primary hover:bg-primary/10"
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Add Section
               </Button>
             </div>
           </section>
