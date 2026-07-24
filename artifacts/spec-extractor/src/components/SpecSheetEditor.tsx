@@ -454,7 +454,7 @@ function extractHighestBugRating(value: string) {
   if (u != null) parts.push(`U${u}`);
   if (g != null) parts.push(`G${g}`);
   if (parts.length === 0) return value;
-  return parts.join(", ");
+  return parts.join(" - ");
 }
 
 function isEpaLabel(label: string) {
@@ -3519,12 +3519,14 @@ function SheetPageOne({
       .reduce((n, line) => n + Math.max(1, Math.ceil(line.trim().length / overviewValueColChars)), 0);
     return sum + Math.max(1, linesForRow);
   }, 0);
-  // BUG rating (highest) and EPA (lowest) carry a single clarifying footnote under the Overview.
+  // BUG rating (highest) and EPA (lowest) each carry their own clarifying footnote under the Overview.
   const overviewHasBug = filteredOverviewRows.some((row) => isBugRatingLabel(row.label));
   const overviewHasEpa = filteredOverviewRows.some((row) => isEpaLabel(row.label));
   const overviewShowNote = overviewHasBug || overviewHasEpa;
+  const overviewNoteCount = (overviewHasBug ? 1 : 0) + (overviewHasEpa ? 1 : 0);
   // height ≈ font*(1.3*lines + rows)  [padY = font*0.5 per side => +font per row]. Solve for font.
-  const overviewUsableHeight = overviewShowNote ? 484 : 508;
+  // Reserve ~18px per footnote so the auto-fit leaves room and nothing clips.
+  const overviewUsableHeight = 508 - overviewNoteCount * 18;
   const overviewAutoFontPx = Math.max(
     6,
     Math.min(14.5, overviewUsableHeight / (1.3 * overviewTotalLines + overviewRowCount)),
@@ -3713,10 +3715,17 @@ function SheetPageOne({
                 </table>
                 </div>
                 {overviewShowNote && (
-                  <div className="shrink-0 pt-1 text-[6.5px] font-normal italic leading-[1.25] text-slate-600" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
-                    {overviewHasBug && "BUG rating shows the highest value. "}
-                    {overviewHasEpa && "EPA shows the lowest value. "}
-                    Both depend on the variant, fixture, power, distribution and mounting configuration — refer to the BUG rating and EPA charts for the exact rating.
+                  <div className="shrink-0 space-y-0.5 pt-1 text-[6.5px] font-normal italic leading-[1.25] text-slate-600" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                    {overviewHasBug && (
+                      <div>
+                        BUG rating shows the highest value; it differs by variant, fixture, power and distribution type — refer to the BUG rating chart for the exact rating.
+                      </div>
+                    )}
+                    {overviewHasEpa && (
+                      <div>
+                        EPA shows the lowest value; it differs by variant, fixture and mounting configuration — refer to the EPA chart for the exact value.
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
