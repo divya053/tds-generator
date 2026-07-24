@@ -1472,8 +1472,9 @@ function deriveTypeCore(spec: ExtendedExtractedSpec) {
 
   if (source.includes("back-lit") || source.includes("back lit")) return "Back-Lit Panel";
   if (source.includes("panel")) return "Panel Light";
-  // Area BEFORE flood/stadium so an area/shoebox luminaire is never mistaken for a flood light.
+  // Area / High Mast BEFORE flood/stadium so they're never mistaken for a flood light.
   if (source.includes("area")) return "Area Light";
+  if (source.includes("high mast")) return "High Mast Light";
   if (source.includes("stadium") || source.includes("flood")) return "Stadium Flood Light";
   if (source.includes("high bay")) return "High Bay Light";
   if (source.includes("post top")) return "Post Top Light";
@@ -1801,6 +1802,14 @@ const FIXTURE_PROFILES: FixtureProfile[] = [
     subCategory: "Wall Pack",
     group: "Wall Packs",
     applications: ["Building Perimeters", "Entrances", "Walkways", "Loading Docks", "Security Lighting"],
+  },
+  {
+    id: "high_mast",
+    keywords: ["high mast", "high-mast", "highmast", "high mast light", "high mast luminaire", "mast light"],
+    category: "Outdoor Lighting",
+    subCategory: "High Mast Light",
+    group: "High Mast Lights",
+    applications: ["Airports", "Seaports", "Highways & Interchanges", "Rail Yards", "Container Yards", "Large Open Areas"],
   },
   {
     id: "flood",

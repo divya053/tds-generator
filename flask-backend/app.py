@@ -139,7 +139,7 @@ Return ONLY valid JSON with this exact structure:
   "productDescription": "One concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value (400-450 characters). Grounded in the source PDF.",
   "productFeatures": ["Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars", "Full benefit sentence ~100 chars"],
   "applicationAreas": ["Area 1", "Area 2", "Area 3", "Area 4", "Area 5", "Area 6"],
-  "productCategory": "panel/downlight/track/flood/area/street/high_bay/low_bay/linear/wall_pack/canopy/post_top/stadium/bollard/unknown",
+  "productCategory": "panel/downlight/track/flood/area/high_mast/street/high_bay/low_bay/linear/wall_pack/canopy/post_top/stadium/bollard/unknown",
   "subCategory": "More specific sub-type or series name (e.g. 'Tri-Proof Light', 'Linear High Bay'). Best guess from the source if not explicit.",
   "isProductFamily": true,
   "orderingInfo": {
@@ -263,6 +263,11 @@ Rules:
     Length / dimensions -> inches (and feet where natural, e.g. "4'"): convert mm/cm (1 in = 25.4 mm). Use the " (inch) and ' (foot) symbols or "in".
     If a source value is already in US units, keep it and just fix the symbol/spacing.
 - BEST-EFFORT: Every form field should end up with SOMETHING. If the source doesn't state a value, infer the most likely value from the product type/specs rather than leaving it blank — the user will verify flagged values. Only use "Not Specified" when no reasonable inference exists.
+- PRODUCT TYPE / CATEGORY (read the vendor, don't guess): identify the fixture type from the vendor's OWN naming —
+  the product title, the section header (e.g. "High Mast Lights", "Area Lights", "Flood Lights", "Wall Packs"), and
+  the "type" line. Use THAT exact type for productCategory and subCategory. In particular: a "High Mast Light" is
+  high_mast (NOT flood or stadium); an "Area / Shoebox Light" is area (NOT flood); a "Wall Pack" is wall_pack. Only
+  fall back to inferring from the specs when the vendor never names the type.
 - NEVER put a vendor part number, model code, SKU, or series code (e.g. "PT02", "SS-PT02", "PT02-60W",
   "S0150") into Power, Lumen Output, Voltage, Current, Efficacy, technicalSpecs, variants, or
   variantOverview.matrix. Those fields must contain ONLY real measured values with units (W, lm, V, A, lm/W).
@@ -409,6 +414,9 @@ def infer_product_category(text: str) -> str:
         return "downlight"
     if "track" in lower:
         return "track"
+    # High mast BEFORE flood/street — a high mast light is its own type, not a flood light.
+    if "high mast" in lower or "high-mast" in lower or "highmast" in lower:
+        return "high_mast"
     if "street" in lower or "roadway" in lower:
         return "street"
     if "flood" in lower:
