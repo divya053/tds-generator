@@ -186,6 +186,10 @@ type EditorDraft = {
   subtitle: string;
   categoryLabel: string;
   subCategory: string;
+  // Set once the user edits Category / Sub-category by hand. Persisted with the draft so the fixture
+  // auto-prediction never re-fills a field you've taken control of — even after a refresh.
+  categoryTouched?: boolean;
+  subCategoryTouched?: boolean;
   skuNumber: string;
   overviewRows: OverviewRow[];
   // Overview text size on the sheet: null = auto-fit to the box; a number = manual px override.
@@ -5594,9 +5598,10 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   }, [draft, spec.id]);
 
   // Smart prediction: once a fixture type is recognised from the product name / category /
-  // sub-category, auto-fill the application areas that fixture is used for, and fill an empty
-  // category / sub-category with the recommended canonical name. Only touches empty fields, and
-  // only fires once per detected type, so it never overwrites hand-entered values.
+  // sub-category, auto-fill the application areas that fixture is used for, and fill the
+  // category / sub-category with the recommended canonical name. Fires once per detected type and
+  // only cleans up messy/raw values — it NEVER force-refills a field just because it's empty, so
+  // Category and Sub-category stay freely editable (you can clear or retype them).
   useEffect(() => {
     if (hydratedSpecIdRef.current !== String(spec.id)) return;
     const profile = predictFixtureProfile(
@@ -5605,27 +5610,30 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     if (!profile) return;
 
     const signature = `${spec.id}::${profile.id}`;
-    // First time we detect THIS fixture for THIS spec, clean up any messy extracted values by
-    // overriding them with the canonical names. After that we only fill EMPTY fields — so clearing
-    // a field always re-populates it, but a value you hand-typed is left alone.
+    // First time we detect THIS fixture for THIS spec, fill/clean the canonical names. After that we
+    // leave the fields alone — so an empty field you cleared on purpose is respected, and a value you
+    // hand-typed is never overwritten.
     const firstApply = lastAutoPredictRef.current !== signature;
     lastAutoPredictRef.current = signature;
 
     setDraft((current) => {
       const patch: Partial<EditorDraft> = {};
-      // Also clean up a raw backend enum ("downlight") left in a saved draft — replace with the
-      // canonical category even when it isn't the first apply (so old sheets self-correct on open).
+      // Fill on first detection, or clean up a raw backend enum ("downlight") left in a saved draft
+      // (so old sheets self-correct on open) — but never touch a field the user has edited by hand
+      // (the touched flag is persisted with the draft, so this holds across refreshes too).
       if (
-        !isSpecified(current.categoryLabel)
-        || (firstApply && current.categoryLabel !== profile.category)
-        || (isRawCategoryEnum(current.categoryLabel) && current.categoryLabel !== profile.category)
+        !current.categoryTouched
+        && (
+          (firstApply && current.categoryLabel !== profile.category)
+          || (isRawCategoryEnum(current.categoryLabel) && current.categoryLabel !== profile.category)
+        )
       ) {
         patch.categoryLabel = profile.category;
       }
-      if (!isSpecified(current.subCategory) || (firstApply && current.subCategory !== profile.subCategory)) {
+      if (!current.subCategoryTouched && firstApply && current.subCategory !== profile.subCategory) {
         patch.subCategory = profile.subCategory;
       }
-      if (!isSpecified(current.applicationAreasText)) {
+      if (firstApply && !isSpecified(current.applicationAreasText)) {
         patch.applicationAreasText = profile.applications.join(", ");
       }
       return Object.keys(patch).length ? { ...current, ...patch } : current;
@@ -6419,12 +6427,18 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
             />
             <Input
               value={draft.categoryLabel}
-              onChange={(event) => updateDraft("categoryLabel", event.target.value)}
+              onChange={(event) => {
+                const value = event.target.value;
+                setDraft((current) => ({ ...current, categoryLabel: value, categoryTouched: true }));
+              }}
               placeholder="Category (auto — e.g. Indoor / Outdoor / HazLoc Lighting)"
             />
             <Input
               value={draft.subCategory}
-              onChange={(event) => updateDraft("subCategory", event.target.value)}
+              onChange={(event) => {
+                const value = event.target.value;
+                setDraft((current) => ({ ...current, subCategory: value, subCategoryTouched: true }));
+              }}
               placeholder="Sub-category (auto — e.g. Panel, Linear High Bay)"
             />
           </section>
@@ -7411,7 +7425,8 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               className="flex-1 gap-2 sm:flex-none"
               onClick={() => {
                 // Rebuild the draft from scratch (new overview template, SKU, etc.) and allow the
-                // fixture auto-prediction to re-fill category / sub-category / group.
+                // fixture auto-prediction to re-fill category / sub-category / group (buildEditorDraft
+                // starts with the touched flags cleared).
                 lastAutoPredictRef.current = null;
                 setSheetVariant(null);
                 setDraft(buildEditorDraft(spec));
