@@ -3799,8 +3799,10 @@ function SheetPageOne({
                 )}
               </div>
 
-              {/* Image: 375 x 354 px — shows up to two product images side by side when available. */}
-              <div className="mt-1.5 h-[354px] w-[375px] bg-white">
+              {/* Image: up to 375 x 354 px. Uses flex-1 with a max height so it fills the space that
+                  the badges + DLC note leave, and SHRINKS (never clips — object-contain) when the
+                  note needs room. This keeps the qualification icons and note fully visible. */}
+              <div className="mt-1.5 min-h-0 max-h-[354px] w-[375px] flex-1 bg-white">
                 {productDisplayImages.length > 0 ? (
                   <div
                     className={cn(
@@ -3841,7 +3843,7 @@ function SheetPageOne({
                   Math.min(56, Math.floor((413 - (count - 1) * badgeGap) / count)),
                 );
                 return (
-                  <div className="mt-2 flex h-[58px] w-[413px] items-center overflow-hidden" style={{ gap: `${badgeGap}px` }}>
+                  <div className="mt-2 flex h-[58px] w-[413px] shrink-0 items-center overflow-hidden" style={{ gap: `${badgeGap}px` }}>
                     {visibleQualificationIds.map((badgeId) => (
                       <QualificationBadge
                         key={badgeId}
@@ -3856,7 +3858,7 @@ function SheetPageOne({
 
               {/* DLC qualification disclaimer: shown only when a DLC badge is selected. */}
               {showDlcNote && (
-                <div className="mt-4 mb-4 w-[413px] text-[8px] font-normal italic leading-[1.35] text-black" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+                <div className="mt-2 mb-2 w-[413px] shrink-0 text-[8px] font-normal italic leading-[1.35] text-black" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
                   <div>Not all product variations listed on the page are DLC qualified.</div>
                   <div>
                     Visit{" "}
