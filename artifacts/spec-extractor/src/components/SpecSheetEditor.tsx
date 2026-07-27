@@ -439,9 +439,17 @@ function mmToFeetInches(mm: number) {
   return `${inches.toFixed(1)}"`;
 }
 
-// Replace every "<n>mm" occurrence in a dimension string with feet/inches.
+// Convert a millimetre dimension string to feet/inches. The unit is usually stated once at the end
+// (e.g. "1200 x 600 mm" or "Ø140 mm"), so when the group is in mm we convert EVERY bare number and
+// keep the separators/markers (x, Ø). Mixed/imperial strings only convert the numbers tagged "mm".
 function convertDimensionUnits(value: string) {
-  return value.replace(/(\d+(?:\.\d+)?)\s*mm\b/gi, (_match, num: string) => mmToFeetInches(Number(num)));
+  const str = String(value ?? "");
+  if (/\bmm\b/i.test(str) && !/(inch|["″']|\bft\b|\bin\b)/i.test(str)) {
+    return str
+      .replace(/\s*mm\b/gi, "")
+      .replace(/(\d+(?:\.\d+)?)/g, (_match, num: string) => mmToFeetInches(Number(num)));
+  }
+  return str.replace(/(\d+(?:\.\d+)?)\s*mm\b/gi, (_match, num: string) => mmToFeetInches(Number(num)));
 }
 
 /** True for overview labels that represent color temperature / CCT. */
@@ -470,12 +478,17 @@ function isBeamAngleLabel(label: string) {
   return /beam\s*angle/i.test(label ?? "");
 }
 
-/** Keep only degree values in a beam-angle field, dropping distribution types like
- *  "Type II/III/IV/V" that belong to Light Distribution. "60° - 120°" -> "60° / 120°".
- *  Bare numbers with no degree/deg token yield "" so a non-degree value is hidden. */
+/** Beam angle → degree value(s), e.g. "60° - 120°" -> "60° / 120°". If the value has numbers but no
+ *  degree token (e.g. "60" or "15/24/38"), append °. If it is purely descriptive ("Narrow Flood"),
+ *  keep the original text rather than blanking the row. */
 function extractBeamAngleDegrees(value: string) {
-  const matches = String(value ?? "").match(/\d[\d.]*\s*(?:°|deg(?:ree)?s?\b)/gi);
-  if (!matches || matches.length === 0) return "";
+  const raw = String(value ?? "");
+  let matches = raw.match(/\d[\d.]*\s*(?:°|deg(?:ree)?s?\b)/gi);
+  if (!matches || matches.length === 0) {
+    const bare = raw.match(/\d[\d.]*/g);
+    if (!bare || bare.length === 0) return raw; // descriptive beam — keep it visible
+    matches = bare;
+  }
   const seen: string[] = [];
   for (const match of matches) {
     const num = match.match(/\d[\d.]*/)?.[0];
@@ -483,7 +496,7 @@ function extractBeamAngleDegrees(value: string) {
     const normalized = `${num}°`;
     if (!seen.includes(normalized)) seen.push(normalized);
   }
-  return seen.join(" / ");
+  return seen.length ? seen.join(" / ") : raw;
 }
 
 function isBugRatingLabel(label: string) {
@@ -514,14 +527,20 @@ function isEpaLabel(label: string) {
   return /\bepa\b/.test(key) || key.includes("effective projected area") || key.includes("effective protected area");
 }
 
-/** EPA: show only the LOWEST value (per variant/fixture). The clarifying note is a single footnote
- *  under the Overview, not inline. "0.3632 to 1.3923 sq ft" -> "0.3632 sq ft". */
+/** EPA: show only the LOWEST value (per variant/fixture). Only numbers actually attached to a sq-ft
+ *  unit are considered, so footnote/figure references ("see figure 1") can't pollute it.
+ *  "0.3632 to 1.3923 sq ft" -> "0.3632 sq ft". */
 function extractLowestEpa(value: string) {
-  const nums = [...String(value ?? "").matchAll(/\d+(?:\.\d+)?/g)].map((m) => Number(m[0])).filter((n) => Number.isFinite(n));
+  const str = String(value ?? "");
+  const tagged = [...str.matchAll(/(\d+(?:\.\d+)?)\s*(?:sq\s*\.?\s*ft|ft(?:\^?2|²)|sq\s*feet)/gi)]
+    .map((m) => Number(m[1]))
+    .filter((n) => Number.isFinite(n));
+  const nums = tagged.length
+    ? tagged
+    : [...str.matchAll(/\d+(?:\.\d+)?/g)].map((m) => Number(m[0])).filter((n) => Number.isFinite(n));
   if (nums.length === 0) return value;
   const lowest = Math.min(...nums);
-  const unit = /sq\s*\.?\s*ft|ft(?:\^?2|²)|sq\s*feet/i.test(value) ? " sq ft" : "";
-  return `${lowest}${unit}`;
+  return `${lowest} sq ft`;
 }
 
 /** Sentence-case an overview value: lowercase prose words but PRESERVE all-uppercase tokens
@@ -566,29 +585,17 @@ function isFinishLabel(label: string) {
   return /\bfinish\b/i.test(label ?? "");
 }
 
-// Recognised finish colours, longest/most-specific first so "matte black" wins over "black".
-const FINISH_COLOR_WORDS = [
-  "matte black", "matte white", "dark bronze", "brushed nickel", "stainless steel",
-  "white", "black", "bronze", "silver", "grey", "gray", "aluminum", "aluminium", "nickel",
-  "brass", "gold", "chrome", "copper", "graphite", "charcoal", "ivory", "beige", "sand",
-];
-
-/** Reduce a "Finish" value to the colour name(s) only, in the order they appear, e.g.
- *  "Powder-coated white / black" -> "White/Black". Falls back to the original if no colour found. */
+/** Clean a "Finish" value to the colour(s), but WITHOUT losing accuracy: it strips only generic
+ *  process/prefix wording ("powder-coated", "available finishes:") and preserves the real
+ *  descriptor — modifiers ("Textured", "Matte"), RAL codes, and any colour, in the original order.
+ *  "Powder-coated white / black" -> "white / black"; "Textured Bronze (RAL 8019)" is kept intact. */
 function extractFinishColors(value: string) {
-  const text = String(value ?? "").toLowerCase();
-  const hits: Array<{ color: string; at: number }> = [];
-  for (const color of FINISH_COLOR_WORDS) {
-    const at = text.indexOf(color);
-    if (at === -1) continue;
-    // Skip a shorter colour already covered by a longer match (e.g. "black" inside "matte black").
-    if (hits.some((h) => h.color.includes(color))) continue;
-    hits.push({ color, at });
-  }
-  hits.sort((a, b) => a.at - b.at); // present colours in reading order
-  return hits.length
-    ? hits.map((h) => h.color.replace(/\b\w/g, (c) => c.toUpperCase())).join("/")
-    : value;
+  const cleaned = String(value ?? "")
+    .replace(/\b(powder[\s-]?coated?|painted|anodized|electro[\s-]?coated|finish(?:es)?|available|options?|colou?rs?)\b\s*:?/gi, " ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^[\s:;,\-/]+|[\s:;,\-/]+$/g, "")
+    .trim();
+  return cleaned || value;
 }
 
 function isDriverLabel(label: string) {
@@ -613,10 +620,12 @@ function isVoltageLabel(label: string) {
 }
 
 /** Format a voltage value as a hyphen range ending in V, e.g. "AC 50/60Hz 120-277V" -> "120-277V".
- *  Strips any frequency (Hz) so it doesn't leak into the range. Falls back to the original if no
- *  number is present. */
+ *  Strips frequency (Hz) and current (A) so neither leaks into the range. Falls back to the original
+ *  if no number is present. */
 function formatVoltage(value: string) {
-  const cleaned = String(value ?? "").replace(/\d+(?:\s*[/–-]\s*\d+)*\s*hz\b/gi, " ");
+  const cleaned = String(value ?? "")
+    .replace(/\d+(?:\.\d+)?(?:\s*[/–-]\s*\d+(?:\.\d+)?)*\s*hz\b/gi, " ") // drop frequency
+    .replace(/\d+(?:\.\d+)?\s*a\b/gi, " "); // drop current (amps)
   const nums = [...cleaned.matchAll(/\d+(?:\.\d+)?/g)].map((m) => m[0]);
   const unique = [...new Set(nums)];
   return unique.length ? `${unique.join("-")}V` : value;
@@ -641,7 +650,7 @@ function isPowerFactorLabel(label: string) {
 /** Keep just the power-factor number (with any comparison sign), dropping stray units/words, e.g.
  *  "0.979 (typical)" -> "0.979", "> 0.9 pf" -> ">0.9". */
 function formatPowerFactor(value: string) {
-  const match = String(value ?? "").match(/[<>]=?\s*\d*\.?\d+/);
+  const match = String(value ?? "").match(/[<>]?=?\s*\d*\.?\d+/);
   return match ? match[0].replace(/\s+/g, "") : value;
 }
 
@@ -649,14 +658,19 @@ function isAverageLifeLabel(label: string) {
   return /average\s*life|lifespan|rated\s*life/i.test(label ?? "");
 }
 
-/** Format the average-life hours with thousands separators, e.g. "50000 hrs" -> "50,000". Uses the
- *  LARGEST number so an "L70"/"L80" prefix can't be mistaken for the hours ("L70 50,000" -> "50,000"). */
+/** Format the average-life hours with thousands separators, e.g. "50000 hrs" -> "50,000". Drops
+ *  "L70"/"L80"/"L90" designations first (so they aren't mistaken for the hours), then reports the
+ *  lowest life-sized number (>= 1000) — the conservative rated life, e.g. "50,000 h (L70) /
+ *  100,000 h (L50)" -> "50,000" (the L70 figure), not the optimistic L50 value. */
 function formatAverageLife(value: string) {
-  const nums = [...String(value ?? "").matchAll(/\d[\d,]*/g)]
+  const cleaned = String(value ?? "").replace(/\bL\d+\b/gi, " ");
+  const nums = [...cleaned.matchAll(/\d[\d,]*/g)]
     .map((m) => parseInt(m[0].replace(/,/g, ""), 10))
     .filter((n) => Number.isFinite(n));
   if (!nums.length) return value;
-  return Math.max(...nums).toLocaleString("en-US");
+  const life = nums.filter((n) => n >= 1000);
+  const pick = life.length ? Math.min(...life) : Math.max(...nums);
+  return pick.toLocaleString("en-US");
 }
 
 /** Normalize an overview row value for display (dimensions -> US units, CCT -> Kelvin only,

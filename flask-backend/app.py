@@ -83,7 +83,7 @@ ENABLE_PADDLE_OCR = os.environ.get("ENABLE_PADDLE_OCR", "1").strip().lower() not
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v2"
+CACHE_VERSION = "v3"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -262,7 +262,17 @@ Rules:
     Weight -> pounds: convert kg to lbs (1 kg = 2.20462 lbs), e.g. "6.5 kg" -> "14.33 lbs". Always end with " lbs".
     Length / dimensions -> inches (and feet where natural, e.g. "4'"): convert mm/cm (1 in = 25.4 mm). Use the " (inch) and ' (foot) symbols or "in".
     If a source value is already in US units, keep it and just fix the symbol/spacing.
-- BEST-EFFORT: Every form field should end up with SOMETHING. If the source doesn't state a value, infer the most likely value from the product type/specs rather than leaving it blank — the user will verify flagged values. Only use "Not Specified" when no reasonable inference exists.
+- ACCURACY OVER COMPLETENESS (highest priority for technical values): For every TECHNICAL spec —
+  electrical (voltage, current, power, wattage, power factor, THD), photometric (lumens, efficacy,
+  CCT, CRI, R9, R13, beam angle, distribution, BUG), physical/rating (dimensions, weight, IP, IK,
+  operating/storage temperature, suitable location, EPA, average life, warranty), and materials
+  (housing, finish, driver, LED source, cover/lens, cover type) — you MUST copy the value from the
+  vendor source. If the source does not state it, output exactly "Not Specified". NEVER infer,
+  estimate, guess, or fill a plausible number for these fields — a wrong number is far worse than
+  "Not Specified".
+- Reasonable inference is allowed ONLY for the soft marketing fields: productDescription,
+  productFeatures, and applicationAreas. Everything else must be verbatim from the source or
+  "Not Specified".
 - PRODUCT TYPE / CATEGORY (read the vendor, don't guess): identify the fixture type from the vendor's OWN naming —
   the product title, the section header, and the "type" line — and map it to the closest IKIO product family. IKIO's
   catalog (US market): COMMERCIAL/INDOOR = LED Tubes, Refrigeration Lights, Magnetic Strip Kits, Linear Low Bays,
