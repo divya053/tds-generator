@@ -1838,14 +1838,23 @@ def reserve_product_names():
         chosen.append(candidate)
         seen.add(low)
 
-    suffix = 2
-    base = candidates[0] if candidates else "Product"
+    # Fallback when the distinct-codename candidates are all used: cycle THROUGH the candidate list
+    # appending an increasing number, so the extra names keep DIFFERENT first words
+    # ("Orion Linear 2", "Lyra Linear 2", "Vega Linear 2") instead of numbering a single base
+    # ("Andromeda Linear 2/3/4").
+    bases = candidates or ["Product"]
+    attempt = 0
     while len(chosen) < count:
-        fallback = f"{base} {suffix}"
-        if fallback.lower() not in seen and fallback.lower() not in used_lower:
+        base = bases[attempt % len(bases)]
+        round_num = 2 + (attempt // len(bases))
+        fallback = f"{base} {round_num}"
+        low = fallback.lower()
+        if low not in seen and low not in used_lower:
             chosen.append(fallback)
-            seen.add(fallback.lower())
-        suffix += 1
+            seen.add(low)
+        attempt += 1
+        if attempt > len(bases) * 100:
+            break
 
     if key:
         registry["assigned"][key] = chosen[:count]

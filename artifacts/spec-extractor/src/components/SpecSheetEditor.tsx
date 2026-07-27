@@ -534,8 +534,76 @@ function toOverviewSentenceCase(value: string) {
   return lowered.replace(/^(\s*)([a-z])/gm, (_match, ws: string, ch: string) => ws + ch.toUpperCase());
 }
 
+function isIpRatingLabel(label: string) {
+  return /ingress\s*protection/i.test(label ?? "") || /\bip\s*rating\b/i.test(label ?? "") || /^\s*ip\s*$/i.test(label ?? "");
+}
+
+/** Keep only the IP rating tokens, formatted as "IP65/IP66/IP67". Drops surrounding prose like
+ *  "rated for wet locations". Falls back to the original text if no IPxx token is present. */
+function extractIpRatings(value: string) {
+  const matches = [...String(value ?? "").matchAll(/ip\s*-?\s*(\d{2})/gi)].map((m) => `IP${m[1]}`);
+  const unique = [...new Set(matches)];
+  return unique.length ? unique.join("/") : value;
+}
+
+function isSuitableLocationLabel(label: string) {
+  return /suitable\s*location/i.test(label ?? "") || /location\s*rating/i.test(label ?? "");
+}
+
+/** Reduce a "Suitable Location" value to the standard Dry/Damp/Wet tokens present, e.g.
+ *  "Suitable for wet & damp locations" -> "Damp/Wet". Falls back to the original if none found. */
+function extractSuitableLocations(value: string) {
+  const text = String(value ?? "").toLowerCase();
+  const found = ["dry", "damp", "wet"]
+    .filter((loc) => new RegExp(`\\b${loc}\\b`).test(text))
+    .map((loc) => loc.charAt(0).toUpperCase() + loc.slice(1));
+  return found.length ? found.join("/") : value;
+}
+
+function isFinishLabel(label: string) {
+  return /\bfinish\b/i.test(label ?? "");
+}
+
+// Recognised finish colours, longest/most-specific first so "matte black" wins over "black".
+const FINISH_COLOR_WORDS = [
+  "matte black", "matte white", "dark bronze", "brushed nickel", "stainless steel",
+  "white", "black", "bronze", "silver", "grey", "gray", "aluminum", "aluminium", "nickel",
+  "brass", "gold", "chrome", "copper", "graphite", "charcoal", "ivory", "beige", "sand",
+];
+
+/** Reduce a "Finish" value to the colour name(s) only, e.g. "Powder-coated white / black" ->
+ *  "White/Black". Falls back to the original text if no known colour is present. */
+function extractFinishColors(value: string) {
+  const text = String(value ?? "").toLowerCase();
+  const found: string[] = [];
+  for (const color of FINISH_COLOR_WORDS) {
+    if (!text.includes(color)) continue;
+    // Skip a shorter colour already covered by a longer match (e.g. "black" inside "matte black").
+    if (found.some((f) => f.toLowerCase().includes(color))) continue;
+    found.push(color.replace(/\b\w/g, (c) => c.toUpperCase()));
+  }
+  return found.length ? found.join("/") : value;
+}
+
+function isDriverLabel(label: string) {
+  const key = normalizeSpecKey(label);
+  return key.includes("driver") || key.includes("power supply");
+}
+
+/** Keep the driver name/type only, stripping electrical CLASS designations ("Class 2", "Class II")
+ *  the user doesn't want in this field, e.g. "Constant Current, Class 2" -> "Constant Current". */
+function extractDriverName(value: string) {
+  const stripped = String(value ?? "")
+    .replace(/[,;/|]?\s*class\s+(?:\d+|i{1,3}|iv)\b\.?/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^[\s,;/|-]+|[\s,;/|-]+$/g, "")
+    .trim();
+  return stripped || value;
+}
+
 /** Normalize an overview row value for display (dimensions -> US units, CCT -> Kelvin only,
- *  beam angle -> degrees only, BUG -> highest, EPA -> lowest), then sentence-case the text. */
+ *  beam angle -> degrees only, BUG -> highest, EPA -> lowest, IP -> IPxx tokens, Suitable Location
+ *  -> Dry/Damp/Wet, Finish -> colours, Driver -> name without class), then sentence-case the text. */
 function normalizeOverviewRowValue(label: string, value: string) {
   let result = value;
   if (isDimensionLabel(label)) result = convertDimensionUnits(value);
@@ -543,6 +611,10 @@ function normalizeOverviewRowValue(label: string, value: string) {
   else if (isBeamAngleLabel(label)) result = extractBeamAngleDegrees(value);
   else if (isBugRatingLabel(label)) result = extractHighestBugRating(value);
   else if (isEpaLabel(label)) result = extractLowestEpa(value);
+  else if (isIpRatingLabel(label)) return extractIpRatings(value); // keep IPxx casing exactly
+  else if (isSuitableLocationLabel(label)) result = extractSuitableLocations(value);
+  else if (isFinishLabel(label)) result = extractFinishColors(value);
+  else if (isDriverLabel(label)) result = extractDriverName(value);
   return toOverviewSentenceCase(result);
 }
 
@@ -1687,16 +1759,20 @@ function buildProductNameRecommendations(spec: ExtendedExtractedSpec) {
   }
 
   if (uniqueRecommendations.length < 3) {
-    const fallbackBase = `${featureToken} ${typeCore}`.trim();
-    let suffix = 2;
-    while (uniqueRecommendations.length < 3) {
-      const fallbackName = `${fallbackBase} ${suffix}`;
+    // Cycle through the distinct-codename list appending a number, so extra names keep DIFFERENT
+    // first words ("Orion Linear 2", "Lyra Linear 2") instead of numbering one base.
+    const bases = recommendations.length > 0 ? recommendations : [`${featureToken} ${typeCore}`.trim() || "Product"];
+    let attempt = 0;
+    while (uniqueRecommendations.length < 3 && attempt < bases.length * 100) {
+      const base = bases[attempt % bases.length];
+      const round = 2 + Math.floor(attempt / bases.length);
+      const fallbackName = `${base} ${round}`;
       const normalized = fallbackName.toLowerCase();
       if (!usedNames.has(normalized) && !localSeen.has(normalized)) {
         localSeen.add(normalized);
         uniqueRecommendations.push(fallbackName);
       }
-      suffix += 1;
+      attempt += 1;
     }
   }
 
