@@ -541,7 +541,8 @@ function isIpRatingLabel(label: string) {
 /** Keep only the IP rating tokens, formatted as "IP65/IP66/IP67". Drops surrounding prose like
  *  "rated for wet locations". Falls back to the original text if no IPxx token is present. */
 function extractIpRatings(value: string) {
-  const matches = [...String(value ?? "").matchAll(/ip\s*-?\s*(\d{2})/gi)].map((m) => `IP${m[1]}`);
+  // \bip avoids matching inside words like "chip 65".
+  const matches = [...String(value ?? "").matchAll(/\bip\s*-?\s*(\d{2})\b/gi)].map((m) => `IP${m[1]}`);
   const unique = [...new Set(matches)];
   return unique.length ? unique.join("/") : value;
 }
@@ -572,18 +573,22 @@ const FINISH_COLOR_WORDS = [
   "brass", "gold", "chrome", "copper", "graphite", "charcoal", "ivory", "beige", "sand",
 ];
 
-/** Reduce a "Finish" value to the colour name(s) only, e.g. "Powder-coated white / black" ->
- *  "White/Black". Falls back to the original text if no known colour is present. */
+/** Reduce a "Finish" value to the colour name(s) only, in the order they appear, e.g.
+ *  "Powder-coated white / black" -> "White/Black". Falls back to the original if no colour found. */
 function extractFinishColors(value: string) {
   const text = String(value ?? "").toLowerCase();
-  const found: string[] = [];
+  const hits: Array<{ color: string; at: number }> = [];
   for (const color of FINISH_COLOR_WORDS) {
-    if (!text.includes(color)) continue;
+    const at = text.indexOf(color);
+    if (at === -1) continue;
     // Skip a shorter colour already covered by a longer match (e.g. "black" inside "matte black").
-    if (found.some((f) => f.toLowerCase().includes(color))) continue;
-    found.push(color.replace(/\b\w/g, (c) => c.toUpperCase()));
+    if (hits.some((h) => h.color.includes(color))) continue;
+    hits.push({ color, at });
   }
-  return found.length ? found.join("/") : value;
+  hits.sort((a, b) => a.at - b.at); // present colours in reading order
+  return hits.length
+    ? hits.map((h) => h.color.replace(/\b\w/g, (c) => c.toUpperCase())).join("/")
+    : value;
 }
 
 function isDriverLabel(label: string) {
@@ -607,10 +612,12 @@ function isVoltageLabel(label: string) {
   return key === "voltage" || key.includes("input voltage");
 }
 
-/** Format a voltage value as a hyphen range ending in V, e.g. "120V - 277V AC" -> "120-277V".
- *  Falls back to the original if no number is present. */
+/** Format a voltage value as a hyphen range ending in V, e.g. "AC 50/60Hz 120-277V" -> "120-277V".
+ *  Strips any frequency (Hz) so it doesn't leak into the range. Falls back to the original if no
+ *  number is present. */
 function formatVoltage(value: string) {
-  const nums = [...String(value ?? "").matchAll(/\d+(?:\.\d+)?/g)].map((m) => m[0]);
+  const cleaned = String(value ?? "").replace(/\d+(?:\s*[/–-]\s*\d+)*\s*hz\b/gi, " ");
+  const nums = [...cleaned.matchAll(/\d+(?:\.\d+)?/g)].map((m) => m[0]);
   const unique = [...new Set(nums)];
   return unique.length ? `${unique.join("-")}V` : value;
 }
@@ -642,12 +649,14 @@ function isAverageLifeLabel(label: string) {
   return /average\s*life|lifespan|rated\s*life/i.test(label ?? "");
 }
 
-/** Format the average-life hours with thousands separators, e.g. "50000 hrs" -> "50,000". */
+/** Format the average-life hours with thousands separators, e.g. "50000 hrs" -> "50,000". Uses the
+ *  LARGEST number so an "L70"/"L80" prefix can't be mistaken for the hours ("L70 50,000" -> "50,000"). */
 function formatAverageLife(value: string) {
-  const match = String(value ?? "").match(/\d[\d,]*/);
-  if (!match) return value;
-  const num = parseInt(match[0].replace(/,/g, ""), 10);
-  return Number.isFinite(num) ? num.toLocaleString("en-US") : value;
+  const nums = [...String(value ?? "").matchAll(/\d[\d,]*/g)]
+    .map((m) => parseInt(m[0].replace(/,/g, ""), 10))
+    .filter((n) => Number.isFinite(n));
+  if (!nums.length) return value;
+  return Math.max(...nums).toLocaleString("en-US");
 }
 
 /** Normalize an overview row value for display (dimensions -> US units, CCT -> Kelvin only,
