@@ -550,13 +550,14 @@ function isSuitableLocationLabel(label: string) {
   return /suitable\s*location/i.test(label ?? "") || /location\s*rating/i.test(label ?? "");
 }
 
-/** Reduce a "Suitable Location" value to the standard Dry/Damp/Wet tokens present, e.g.
- *  "Suitable for wet & damp locations" -> "Damp/Wet". Falls back to the original if none found. */
+/** Reduce a "Suitable Location" value to the standard DRY/DAMP/WET tokens present, UPPERCASE per the
+ *  spec-sheet checklist, e.g. "Suitable for wet & damp locations" -> "DAMP/WET". Falls back to the
+ *  original if none found. */
 function extractSuitableLocations(value: string) {
   const text = String(value ?? "").toLowerCase();
   const found = ["dry", "damp", "wet"]
     .filter((loc) => new RegExp(`\\b${loc}\\b`).test(text))
-    .map((loc) => loc.charAt(0).toUpperCase() + loc.slice(1));
+    .map((loc) => loc.toUpperCase());
   return found.length ? found.join("/") : value;
 }
 
@@ -601,9 +602,58 @@ function extractDriverName(value: string) {
   return stripped || value;
 }
 
+function isVoltageLabel(label: string) {
+  const key = normalizeSpecKey(label);
+  return key === "voltage" || key.includes("input voltage");
+}
+
+/** Format a voltage value as a hyphen range ending in V, e.g. "120V - 277V AC" -> "120-277V".
+ *  Falls back to the original if no number is present. */
+function formatVoltage(value: string) {
+  const nums = [...String(value ?? "").matchAll(/\d+(?:\.\d+)?/g)].map((m) => m[0]);
+  const unique = [...new Set(nums)];
+  return unique.length ? `${unique.join("-")}V` : value;
+}
+
+function isThdLabel(label: string) {
+  return /\bthd\b/i.test(label ?? "") || /total\s*harmonic/i.test(label ?? "");
+}
+
+/** Ensure a THD value carries a percent sign (keeps any existing comparison sign), e.g.
+ *  "< 20" -> "< 20%". Leaves a value that already has "%" untouched. */
+function formatThd(value: string) {
+  const text = String(value ?? "").trim();
+  if (text && /\d/.test(text) && !text.includes("%")) return `${text}%`;
+  return text || value;
+}
+
+function isPowerFactorLabel(label: string) {
+  return /power\s*factor/i.test(label ?? "");
+}
+
+/** Keep just the power-factor number (with any comparison sign), dropping stray units/words, e.g.
+ *  "0.979 (typical)" -> "0.979", "> 0.9 pf" -> ">0.9". */
+function formatPowerFactor(value: string) {
+  const match = String(value ?? "").match(/[<>]=?\s*\d*\.?\d+/);
+  return match ? match[0].replace(/\s+/g, "") : value;
+}
+
+function isAverageLifeLabel(label: string) {
+  return /average\s*life|lifespan|rated\s*life/i.test(label ?? "");
+}
+
+/** Format the average-life hours with thousands separators, e.g. "50000 hrs" -> "50,000". */
+function formatAverageLife(value: string) {
+  const match = String(value ?? "").match(/\d[\d,]*/);
+  if (!match) return value;
+  const num = parseInt(match[0].replace(/,/g, ""), 10);
+  return Number.isFinite(num) ? num.toLocaleString("en-US") : value;
+}
+
 /** Normalize an overview row value for display (dimensions -> US units, CCT -> Kelvin only,
  *  beam angle -> degrees only, BUG -> highest, EPA -> lowest, IP -> IPxx tokens, Suitable Location
- *  -> Dry/Damp/Wet, Finish -> colours, Driver -> name without class), then sentence-case the text. */
+ *  -> DRY/DAMP/WET, Finish -> colours, Driver -> name without class, Voltage -> range+V, THD -> %,
+ *  Power Factor -> number, Average Life -> grouped hours), then sentence-case the text. */
 function normalizeOverviewRowValue(label: string, value: string) {
   let result = value;
   if (isDimensionLabel(label)) result = convertDimensionUnits(value);
@@ -612,9 +662,13 @@ function normalizeOverviewRowValue(label: string, value: string) {
   else if (isBugRatingLabel(label)) result = extractHighestBugRating(value);
   else if (isEpaLabel(label)) result = extractLowestEpa(value);
   else if (isIpRatingLabel(label)) return extractIpRatings(value); // keep IPxx casing exactly
-  else if (isSuitableLocationLabel(label)) result = extractSuitableLocations(value);
+  else if (isSuitableLocationLabel(label)) return extractSuitableLocations(value); // keep UPPERCASE
   else if (isFinishLabel(label)) result = extractFinishColors(value);
   else if (isDriverLabel(label)) result = extractDriverName(value);
+  else if (isVoltageLabel(label)) return formatVoltage(value); // keep "V" casing
+  else if (isThdLabel(label)) return formatThd(value);
+  else if (isPowerFactorLabel(label)) return formatPowerFactor(value);
+  else if (isAverageLifeLabel(label)) return formatAverageLife(value);
   return toOverviewSentenceCase(result);
 }
 
