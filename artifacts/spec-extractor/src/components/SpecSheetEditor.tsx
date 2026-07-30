@@ -1778,14 +1778,77 @@ function writeProductNameRegistry(registry: ProductNameRegistry) {
   window.localStorage.setItem(PRODUCT_NAME_REGISTRY_KEY, JSON.stringify(registry));
 }
 
-/** The ordered pool of candidate names (one per codename) sent to the backend registry,
- *  which reserves the first ones not already used by another product. */
+// Retail / lifestyle-style name pools chosen to match where the fixture is used, so the suggested
+// product names read like a branded lighting range that fits the space (e.g. an office downlight ->
+// "Meridian Downlight", a hotel fixture -> "Aura …", a warehouse high bay -> "Titan …") rather than
+// an arbitrary codename. The fixture's application areas (plus category) pick the pool.
+const APPLICATION_NAME_POOLS: Array<{ keys: string[]; names: string[] }> = [
+  {
+    keys: ["hospitality", "hotel", "restaurant", "lounge", "cafe", "bar", "resort", "leisure", "spa", "banquet"],
+    names: ["Aura", "Haven", "Lumen", "Sonata", "Aria", "Serena", "Verano", "Sol"],
+  },
+  {
+    keys: ["retail", "store", "boutique", "showroom", "mall", "shop", "display", "merchandis", "fashion"],
+    names: ["Vista", "Allure", "Lumina", "Prism", "Vivid", "Marquee", "Radiance", "Muse"],
+  },
+  {
+    keys: ["office", "commercial", "corporate", "workspace", "workplace", "conference", "meeting", "coworking"],
+    names: ["Meridian", "Vertex", "Axis", "Cadence", "Zenith", "Summit", "Atlas", "Nova"],
+  },
+  {
+    keys: ["health", "hospital", "clinic", "medical", "care", "dental", "lab", "pharma", "wellness"],
+    names: ["Clarity", "Halo", "Vital", "Lucent", "Pure", "Aegis", "Serene", "Calm"],
+  },
+  {
+    keys: ["educat", "school", "campus", "classroom", "university", "college", "library", "academ"],
+    names: ["Beacon", "Scholar", "Insight", "Focus", "Sage", "Aspire", "Lyceum", "Nova"],
+  },
+  {
+    keys: ["warehouse", "industrial", "factory", "manufactur", "logistic", "distribution", "plant", "workshop"],
+    names: ["Titan", "Forge", "Apex", "Vanguard", "Fortis", "Anvil", "Colossus", "Atlas"],
+  },
+  {
+    keys: ["parking", "garage", "outdoor", "street", "roadway", "area", "facade", "landscape", "yard", "perimeter", "canopy", "stadium", "sports"],
+    names: ["Horizon", "Aurora", "Sentinel", "Vista", "Terra", "Beacon", "Meridian", "Summit"],
+  },
+  {
+    keys: ["residential", "home", "apartment", "living", "villa", "condo"],
+    names: ["Haven", "Hearth", "Dwell", "Aura", "Nest", "Cove", "Solace", "Lumen"],
+  },
+];
+
+/** Ordered pool of first-word names for this fixture, drawn from the retail/lifestyle pools that
+ *  match its application areas (and category), then topped up with the constellation codenames so
+ *  the pool is always large and distinct. Falls back to codenames when nothing matches. */
+function deriveApplicationNamePool(spec: ExtendedExtractedSpec): string[] {
+  const src = [
+    ...(Array.isArray(spec.applicationAreas) ? spec.applicationAreas : []),
+    getCategoryLabel(spec),
+    String(spec.subCategory ?? ""),
+    spec.productName,
+  ]
+    .join(" ")
+    .toLowerCase();
+  const pool: string[] = [];
+  for (const group of APPLICATION_NAME_POOLS) {
+    if (group.keys.some((key) => src.includes(key))) {
+      for (const name of group.names) if (!pool.includes(name)) pool.push(name);
+    }
+  }
+  // Top up with the constellation codenames so a family with many variants never runs dry.
+  for (const name of CONSTELLATION_CODENAMES) if (!pool.includes(name)) pool.push(name);
+  return pool.length ? pool : CONSTELLATION_CODENAMES.slice();
+}
+
+/** The ordered pool of candidate names (one per name) sent to the backend registry, which reserves
+ *  the first ones not already used by another product. */
 function buildProductNameCandidates(spec: ExtendedExtractedSpec): string[] {
   const typeCore = deriveTypeCore(spec);
+  const pool = deriveApplicationNamePool(spec);
   const registryKey = buildProductNameRegistryKey(spec);
-  const baseIndex = hashString(registryKey) % CONSTELLATION_CODENAMES.length;
-  return Array.from({ length: CONSTELLATION_CODENAMES.length }, (_, offset) => {
-    const codename = CONSTELLATION_CODENAMES[(baseIndex + offset) % CONSTELLATION_CODENAMES.length];
+  const baseIndex = hashString(registryKey) % pool.length;
+  return Array.from({ length: pool.length }, (_, offset) => {
+    const codename = pool[(baseIndex + offset) % pool.length];
     return toTitleCase(normalizeText(`${codename} ${typeCore}`)).replace(/\s+/g, " ").trim();
   }).filter(Boolean);
 }
@@ -1795,6 +1858,7 @@ function buildProductNameRecommendations(spec: ExtendedExtractedSpec) {
   const descriptor = deriveNameDescriptor(spec);
   const wattage = deriveWattageName(spec);
   const featureToken = deriveProductNameFeatureToken(spec);
+  const namePool = deriveApplicationNamePool(spec);
   const registryKey = buildProductNameRegistryKey(spec);
   const registry = readProductNameRegistry();
   const existing = uniquePreserveOrder(registry.assigned[registryKey]?.filter(Boolean) ?? []);
@@ -1805,12 +1869,11 @@ function buildProductNameRecommendations(spec: ExtendedExtractedSpec) {
 
   const usedNames = new Set(registry.used.map((item) => item.toLowerCase()));
   existing.forEach((name) => usedNames.add(name.toLowerCase()));
-  // One name per codename, iterating the list, so the three suggestions each use a
-  // DIFFERENT unique codename (e.g. "Argo …", "Lyra …", "Vega …") instead of three
-  // variations of the same word.
-  const baseIndex = hashString(registryKey) % CONSTELLATION_CODENAMES.length;
-  const recommendations = Array.from({ length: CONSTELLATION_CODENAMES.length }, (_, offset) => {
-    const codename = CONSTELLATION_CODENAMES[(baseIndex + offset) % CONSTELLATION_CODENAMES.length];
+  // One name per pool entry, iterating the list, so the three suggestions each use a DIFFERENT
+  // application-fit name (e.g. "Meridian …", "Vertex …", "Axis …") instead of variations of one word.
+  const baseIndex = hashString(registryKey) % namePool.length;
+  const recommendations = Array.from({ length: namePool.length }, (_, offset) => {
+    const codename = namePool[(baseIndex + offset) % namePool.length];
     return `${codename} ${typeCore}`;
   })
     .map((value) => toTitleCase(normalizeText(value)))
