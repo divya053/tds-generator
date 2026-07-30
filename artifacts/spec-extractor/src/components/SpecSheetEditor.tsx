@@ -7,6 +7,7 @@ import {
   AlignLeft,
   AlignRight,
   AlignStartHorizontal,
+  Check,
   ClipboardCheck,
   Crop,
   ExternalLink,
@@ -5319,7 +5320,7 @@ const SINGLE_DIM_HEIGHT = 360; // tall slot for a lone dimension (matches imageH
 // act as a barrier: nothing after them is pulled up until every one of their blocks is placed.
 type SheetBlock = { key: string; group: string; height: number; node: React.ReactNode };
 
-const SEQUENCE_GROUPS = new Set(["dims"]);
+const SEQUENCE_GROUPS = new Set(["specs", "dims"]);
 
 function estimateSpecsHeight(draft: EditorDraft) {
   const rows = draft.specGroups
@@ -5357,19 +5358,45 @@ function buildSheetBlocks(
 ): SheetBlock[] {
   const blocks: SheetBlock[] = [];
 
-  // Product Specifications
+  // Product Specifications — split into page-sized chunks so a long variant table CONTINUES onto
+  // the next page(s) instead of overflowing/clipping. Each chunk repeats the table header; only the
+  // first shows the "Product Specifications" heading (the rest say "… (cont.)"), and the note follows
+  // the last chunk. Chunks share the "specs" sequence group so they stay contiguous and in order.
   const groups = draft.specGroups.filter(specGroupHasContent);
-  blocks.push({
-    key: "specs",
-    group: "specs",
-    height: estimateSpecsHeight(draft),
-    node: (
-      <section>
-        <SheetPageHeading title="Product Specifications" />
-        <SpecificationsTable groups={groups} />
-        {isSpecified(draft.specsNote) && <SheetNote>{draft.specsNote}</SheetNote>}
-      </section>
-    ),
+  const SPEC_ROWS_PER_PAGE = 28; // spec rows that comfortably fit one page under the heading + header
+  const specChunks: SpecGroup[][] = [];
+  {
+    let current: SpecGroup[] = [];
+    let currentRows = 0;
+    for (const group of groups) {
+      const groupRows = Math.max(1, group.options.length);
+      if (current.length > 0 && currentRows + groupRows > SPEC_ROWS_PER_PAGE) {
+        specChunks.push(current);
+        current = [];
+        currentRows = 0;
+      }
+      current.push(group);
+      currentRows += groupRows;
+    }
+    if (current.length > 0 || specChunks.length === 0) specChunks.push(current);
+  }
+  specChunks.forEach((chunk, chunkIndex) => {
+    const first = chunkIndex === 0;
+    const last = chunkIndex === specChunks.length - 1;
+    const rows = chunk.reduce((sum, group) => sum + Math.max(1, group.options.length), 0);
+    const showNote = last && isSpecified(draft.specsNote);
+    blocks.push({
+      key: `specs-${chunkIndex}`,
+      group: "specs",
+      height: (first ? 46 : 24) + 40 + Math.max(1, rows) * 23 + (showNote ? 30 : 0),
+      node: (
+        <section>
+          <SheetPageHeading title={first ? "Product Specifications" : "Product Specifications (cont.)"} />
+          <SpecificationsTable groups={chunk} />
+          {showNote && <SheetNote>{draft.specsNote}</SheetNote>}
+        </section>
+      ),
+    });
   });
 
   // Product Ordering Information — placed above Dimensions.
@@ -5729,12 +5756,15 @@ function buildReviewReport(draft: EditorDraft, spec: ExtendedExtractedSpec) {
   const optionalKeys = new Set(
     draft.overviewRows.filter((row) => row.included === false && isSpecified(row.value)).map((row) => normalizeSpecKey(row.label)),
   );
-  for (const templateRow of template) {
+  const templateHeads = template.map((templateRow) => {
     const key = normalizeSpecKey(templateRow.label);
-    if (filledKeys.has(key)) continue;
+    return { label: templateRow.label, key, filled: filledKeys.has(key), optional: optionalKeys.has(key) };
+  });
+  for (const head of templateHeads) {
+    if (head.filled) continue;
     suggest.push({
-      label: templateRow.label,
-      detail: optionalKeys.has(key)
+      label: head.label,
+      detail: head.optional
         ? "sitting in Optional fields — Include it if it belongs on the sheet."
         : "standard head is empty — fill it if the vendor states a value.",
     });
@@ -5748,18 +5778,28 @@ function buildReviewReport(draft: EditorDraft, spec: ExtendedExtractedSpec) {
   if (draft.dimensionItems.filter(dimensionItemHasContent).length === 0) suggest.push({ label: "Dimensions", detail: "no sizes/drawings — add them." });
   if (!isSpecified(draft.applicationAreasText)) suggest.push({ label: "Application Areas", detail: "empty — add where the fixture is used." });
 
-  const totalHeads = Math.max(1, template.length);
-  const filledHeads = template.filter((templateRow) => filledKeys.has(normalizeSpecKey(templateRow.label))).length;
-  const score = Math.round((filledHeads / totalHeads) * 100);
+  const filledHeads = templateHeads.filter((head) => head.filled).length;
+  const score = Math.round((filledHeads / Math.max(1, templateHeads.length)) * 100);
 
   verify.sort((a, b) => (a.severity === "high" ? 0 : 1) - (b.severity === "high" ? 0 : 1));
-  return { verify, suggest, score };
+  return { verify, suggest, score, templateHeads };
 }
 
 function ReviewPanel({ draft, spec }: { draft: EditorDraft; spec: ExtendedExtractedSpec }) {
   const [open, setOpen] = useState(true);
   const report = buildReviewReport(draft, spec);
   const scoreColor = report.score >= 80 ? "text-emerald-600" : report.score >= 50 ? "text-amber-600" : "text-rose-600";
+
+  // Remember which standard heads were ever flagged empty for THIS sheet, so once the user fills one
+  // we can confirm it with a green "✓ added" instead of the line silently disappearing.
+  const everEmptyRef = useRef<{ specId: string; keys: Set<string> }>({ specId: "", keys: new Set() });
+  if (everEmptyRef.current.specId !== String(spec.id)) {
+    everEmptyRef.current = { specId: String(spec.id), keys: new Set() };
+  }
+  report.templateHeads.forEach((head) => {
+    if (!head.filled) everEmptyRef.current.keys.add(head.key);
+  });
+  const resolved = report.templateHeads.filter((head) => head.filled && everEmptyRef.current.keys.has(head.key));
   return (
     <section className="space-y-2 rounded-2xl border border-amber-200/70 bg-amber-50/30 p-3">
       <button type="button" onClick={() => setOpen((value) => !value)} className="flex w-full items-center justify-between gap-2">
@@ -5804,6 +5844,20 @@ function ReviewPanel({ draft, spec }: { draft: EditorDraft; spec: ExtendedExtrac
                   </li>
                 ))}
               </ul>
+            </div>
+          )}
+          {resolved.length > 0 && (
+            <div>
+              <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                <ClipboardCheck className="h-3.5 w-3.5" /> Added by you
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {resolved.map((head) => (
+                  <span key={head.key} className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                    <Check className="h-3 w-3" /> {head.label}
+                  </span>
+                ))}
+              </div>
             </div>
           )}
           {report.verify.length === 0 && report.suggest.length === 0 && (
