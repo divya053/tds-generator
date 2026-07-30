@@ -83,7 +83,7 @@ ENABLE_PADDLE_OCR = os.environ.get("ENABLE_PADDLE_OCR", "1").strip().lower() not
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v5"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v6"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -979,7 +979,88 @@ def repair_variant_overview(variant_overview: dict[str, list[Any]]) -> dict[str,
     return {"parameters": ordered_parameters, "matrix": repaired_matrix}
 
 
+def _pl_nums(cell: Any, unit_re: str) -> list[float]:
+    """Ordered numeric tokens from a Power/Lumen/Efficacy cell — first the ones carrying the unit,
+    else any bare numbers (the cell is already that single quantity's column)."""
+    text = str(cell)
+    toks = re.findall(unit_re, text, re.I)
+    if not toks:
+        toks = re.findall(r"\d[\d,]*(?:\.\d+)?", text)
+    out: list[float] = []
+    for tok in toks:
+        try:
+            out.append(float(str(tok).replace(",", "")))
+        except ValueError:
+            pass
+    return out
+
+
+def _pl_sep(cell: Any) -> str:
+    text = str(cell)
+    if "\n" in text:
+        return "\n"
+    if "|" in text:
+        return " | "
+    if "/" in text:
+        return "/"
+    return "-"  # IKIO selectable default
+
+
+def repair_power_lumen_efficacy(variant_overview: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic backstop (no model): keep Power ↔ Lumen ↔ Efficacy consistent per step, since
+    lumen ≈ watts × efficacy. Fixes dropped/added-zero lumen errors (e.g. 1600 where 16000 fits) and
+    fills a genuinely missing lumen from watts × efficacy. Only acts when watts AND a PLAUSIBLE
+    efficacy (40–260 lm/W) are present, and never overrides a lumen that already matches — so real
+    tested values are left untouched."""
+    params = variant_overview.get("parameters", []) or []
+    matrix = variant_overview.get("matrix", []) or []
+    if "Power" not in params or "Lumen Output" not in params or "Efficacy" not in params:
+        return variant_overview
+    pi, li, ei = params.index("Power"), params.index("Lumen Output"), params.index("Efficacy")
+    for row in matrix:
+        if not isinstance(row, list) or max(pi, li, ei) >= len(row):
+            continue
+        watts = _pl_nums(row[pi], r"(\d+(?:\.\d+)?)\s*w\b")
+        lumens = _pl_nums(row[li], r"(\d[\d,]*(?:\.\d+)?)\s*lm\b(?!\s*/)")
+        effs = _pl_nums(row[ei], r"(\d+(?:\.\d+)?)\s*lm\s*/\s*w")
+        if not watts:
+            continue
+        if len(effs) == 1 and len(watts) > 1:
+            effs = effs * len(watts)  # one efficacy applies to every step
+        count = len(watts)
+        new_lumens: list[float | None] = list(lumens) + [None] * max(0, count - len(lumens))
+        changed = False
+        for i in range(count):
+            watt = watts[i]
+            eff = effs[i] if i < len(effs) else None
+            if eff is None or not (40 <= eff <= 260) or not (1 <= watt <= 4000):
+                continue
+            expected = watt * eff
+            actual = new_lumens[i] if i < len(new_lumens) else None
+            if actual is None or actual <= 0:
+                new_lumens[i] = round(expected)
+                changed = True
+                continue
+            ratio = actual / expected if expected else 0
+            if 0.06 < ratio < 0.16:       # dropped a zero (~ /10)
+                new_lumens[i] = round(actual * 10)
+                changed = True
+            elif 6 < ratio < 16:          # extra zero (~ x10)
+                new_lumens[i] = round(actual / 10)
+                changed = True
+            # otherwise keep the extracted (tested) lumen — it is close enough or not a clear error
+        if changed:
+            vals = [v for v in new_lumens[:count] if v is not None]
+            if vals:
+                row[li] = _pl_sep(row[li]).join(f"{int(round(v))}lm" for v in vals)
+    return variant_overview
+
+
 def derive_variant_overview(technical_specs: list[dict[str, str]], current: dict[str, Any]) -> dict[str, Any]:
+    return repair_power_lumen_efficacy(_derive_variant_overview_impl(technical_specs, current))
+
+
+def _derive_variant_overview_impl(technical_specs: list[dict[str, str]], current: dict[str, Any]) -> dict[str, Any]:
     variant_overview = normalize_variant_overview(current.get("variantOverview"))
     if variant_overview["matrix"]:
         # Scrub SKU fragments from the Power column (index 2) that feeds the spec table.
