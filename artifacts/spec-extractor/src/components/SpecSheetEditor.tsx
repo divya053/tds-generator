@@ -1,11 +1,13 @@
 import { createContext, useContext, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
+  AlertTriangle,
   AlignCenter,
   AlignCenterHorizontal,
   AlignEndHorizontal,
   AlignLeft,
   AlignRight,
   AlignStartHorizontal,
+  ClipboardCheck,
   Crop,
   ExternalLink,
   EyeOff,
@@ -5685,6 +5687,137 @@ function AiCopyAssistant({
   );
 }
 
+// ---- Final QA reviewer (deterministic, no model): flags what a human should verify and what to
+// add, checked against the vendor PDF text + IKIO's standard overview heads. Re-runs on every edit.
+type ReviewItem = { label: string; detail: string; severity?: "high" | "med" };
+
+function buildReviewReport(draft: EditorDraft, spec: ExtendedExtractedSpec) {
+  const source = spec.sourceText ?? "";
+  const verify: ReviewItem[] = [];
+  const suggest: ReviewItem[] = [];
+
+  const includedRows = draft.overviewRows.filter((row) => row.included !== false && isSpecified(row.value));
+
+  // 1) Values shown on the sheet that aren't supported by the vendor PDF → verify.
+  if (isSpecified(source)) {
+    for (const row of includedRows) {
+      const grounded = groundValue(row.value, source);
+      if (grounded.level === "none") {
+        verify.push({ label: row.label, detail: `“${row.value}” isn’t found in the vendor PDF — confirm or correct it.`, severity: "high" });
+      } else if (grounded.level === "low") {
+        verify.push({ label: row.label, detail: `“${row.value}” only partly matches the PDF — double-check.`, severity: "med" });
+      }
+    }
+  }
+
+  // 2) Power ↔ Lumen must pair 1:1 per variant.
+  for (const variant of buildPreviewVariantRows(spec)) {
+    const powerCount = (String(variant.power).match(/\d+(?:\.\d+)?\s*w\b/gi) ?? []).length;
+    const lumenCount = (String(variant.lumens).match(/\d[\d,]*(?:\.\d+)?\s*lm\b/gi) ?? []).length;
+    if (powerCount > 1 && lumenCount > 1 && powerCount !== lumenCount) {
+      verify.push({
+        label: "Power / Lumen",
+        detail: `${isSpecified(variant.fixture) ? `${variant.fixture}: ` : ""}${powerCount} wattages vs ${lumenCount} lumen values — they should pair 1:1.`,
+        severity: "high",
+      });
+    }
+  }
+
+  // 3) Standard IKIO overview heads for this category that aren't filled → suggest.
+  const template = getOverviewTemplateRows(spec);
+  const filledKeys = new Set(includedRows.map((row) => normalizeSpecKey(row.label)));
+  const optionalKeys = new Set(
+    draft.overviewRows.filter((row) => row.included === false && isSpecified(row.value)).map((row) => normalizeSpecKey(row.label)),
+  );
+  for (const templateRow of template) {
+    const key = normalizeSpecKey(templateRow.label);
+    if (filledKeys.has(key)) continue;
+    suggest.push({
+      label: templateRow.label,
+      detail: optionalKeys.has(key)
+        ? "sitting in Optional fields — Include it if it belongs on the sheet."
+        : "standard head is empty — fill it if the vendor states a value.",
+    });
+  }
+
+  // 4) Section completeness.
+  if (!isSpecified(draft.description)) suggest.push({ label: "Product Description", detail: "empty — add a short benefit-led paragraph." });
+  const featureCount = splitLineList(draft.featuresText).filter(isSpecified).length;
+  if (featureCount < 4) suggest.push({ label: "Features", detail: `${featureCount} of 4 — add ${Math.max(0, 4 - featureCount)} more benefit bullet(s).` });
+  if (draft.accessoryRows.filter(accessoryRowHasContent).length === 0) suggest.push({ label: "Accessories", detail: "none captured — check the vendor’s options / mounting section." });
+  if (draft.dimensionItems.filter(dimensionItemHasContent).length === 0) suggest.push({ label: "Dimensions", detail: "no sizes/drawings — add them." });
+  if (!isSpecified(draft.applicationAreasText)) suggest.push({ label: "Application Areas", detail: "empty — add where the fixture is used." });
+
+  const totalHeads = Math.max(1, template.length);
+  const filledHeads = template.filter((templateRow) => filledKeys.has(normalizeSpecKey(templateRow.label))).length;
+  const score = Math.round((filledHeads / totalHeads) * 100);
+
+  verify.sort((a, b) => (a.severity === "high" ? 0 : 1) - (b.severity === "high" ? 0 : 1));
+  return { verify, suggest, score };
+}
+
+function ReviewPanel({ draft, spec }: { draft: EditorDraft; spec: ExtendedExtractedSpec }) {
+  const [open, setOpen] = useState(true);
+  const report = buildReviewReport(draft, spec);
+  const scoreColor = report.score >= 80 ? "text-emerald-600" : report.score >= 50 ? "text-amber-600" : "text-rose-600";
+  return (
+    <section className="space-y-2 rounded-2xl border border-amber-200/70 bg-amber-50/30 p-3">
+      <button type="button" onClick={() => setOpen((value) => !value)} className="flex w-full items-center justify-between gap-2">
+        <span className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-muted-foreground">
+          <ClipboardCheck className="h-4 w-4 text-amber-600" /> Review &amp; Verify
+        </span>
+        <span className="flex items-center gap-2 text-[11px]">
+          <span className={cn("font-bold", scoreColor)}>{report.score}% ready</span>
+          {report.verify.length > 0 && (
+            <span className="rounded-full bg-rose-100 px-2 py-0.5 font-semibold text-rose-700">{report.verify.length} to verify</span>
+          )}
+          <span className="text-muted-foreground">{open ? "▲" : "▼"}</span>
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-3">
+          {report.verify.length > 0 && (
+            <div>
+              <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold text-rose-700">
+                <AlertTriangle className="h-3.5 w-3.5" /> Verify first
+              </div>
+              <ul className="space-y-1">
+                {report.verify.map((item, index) => (
+                  <li key={`v-${index}`} className="flex gap-2 text-[11px] leading-snug">
+                    <span className={cn("mt-1 h-1.5 w-1.5 shrink-0 rounded-full", item.severity === "high" ? "bg-rose-500" : "bg-amber-500")} />
+                    <span><span className="font-semibold text-foreground">{item.label}:</span> <span className="text-muted-foreground">{item.detail}</span></span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {report.suggest.length > 0 && (
+            <div>
+              <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold text-primary">
+                <Sparkles className="h-3.5 w-3.5" /> Consider adding / filling
+              </div>
+              <ul className="space-y-1">
+                {report.suggest.map((item, index) => (
+                  <li key={`s-${index}`} className="flex gap-2 text-[11px] leading-snug">
+                    <Plus className="mt-0.5 h-3 w-3 shrink-0 text-primary/70" />
+                    <span><span className="font-semibold text-foreground">{item.label}:</span> <span className="text-muted-foreground">{item.detail}</span></span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {report.verify.length === 0 && report.suggest.length === 0 && (
+            <div className="text-[11px] font-medium text-emerald-600">Looks complete and grounded — no flags.</div>
+          )}
+          <div className="text-[10px] leading-snug text-muted-foreground/70">
+            Auto-checked against the vendor PDF and IKIO&apos;s standard heads. Updates live as you edit.
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   const [productNameRecommendations, setProductNameRecommendations] = useState<string[]>(() => buildProductNameRecommendations(spec));
   const [draft, setDraft] = useState<EditorDraft>(() => buildEditorDraft(spec, buildProductNameRecommendations(spec)));
@@ -6588,6 +6721,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
 
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-6 px-5 py-5">
+          <ReviewPanel draft={draft} spec={spec} />
           <section className="space-y-3">
             <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
               Header
