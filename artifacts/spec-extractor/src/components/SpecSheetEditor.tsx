@@ -1593,9 +1593,10 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
     .map((row, index) => ({
       id: `spec-${index}-${normalizeSpecKey(row.label)}`,
       label: row.label,
-      // Show every extracted vendor spec by default — never hide content. The user can still hide
-      // any row (eye-off) to move it into the optional pool. The Overview auto-fits so nothing clips.
-      included: true,
+      // Only the category's PREDEFINED overview heads show by default; every EXTRA vendor spec that
+      // isn't one of those heads starts in the optional pool (included:false) so the sheet stays
+      // clean. The user can Include any of them from the optional section when they want it shown.
+      included: false,
       value: normalizeSpecKey(row.label) === "sensor type"
         ? summarizeSensorTypeValue(row.value)
         : formatOverviewValue(row.label, row.value),
@@ -6926,11 +6927,12 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               {draft.overviewRows.some((row) => row.included === false && isSpecified(row.value)) && (
                 <div className="mt-2 space-y-2 rounded-2xl border border-border/60 bg-card/20 p-3">
                   <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                    Hidden fields — not on the sheet
+                    Optional fields — not on the sheet
                   </div>
                   <p className="text-[11px] leading-snug text-muted-foreground">
-                    Rows you&apos;ve hidden from the overview. Click{" "}
-                    <span className="font-semibold text-primary">Include</span> to put one back on the sheet.
+                    Extra values found in the vendor PDF (beyond the standard overview heads), plus any
+                    rows you&apos;ve hidden. Click{" "}
+                    <span className="font-semibold text-primary">Include</span> to add one to the sheet.
                   </p>
                   {draft.overviewRows.map((row, index) =>
                     row.included === false && isSpecified(row.value) ? (
