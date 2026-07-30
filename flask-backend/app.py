@@ -83,7 +83,7 @@ ENABLE_PADDLE_OCR = os.environ.get("ENABLE_PADDLE_OCR", "1").strip().lower() not
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v3"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v5"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -328,6 +328,19 @@ Rules:
 - accessories: Read the vendor's Accessories / Ordering / Options / Mounting section ROW BY ROW and extract EVERY accessory as a separate item — mounting brackets/arms/slipfitters, poles, photocells/sensors, surge protectors, wire guards, glare shields, occupancy/daylight controllers, emergency battery kits, etc. For each, copy the vendor's EXACT ordering/part code when printed (otherwise best-effort like "IK-ACC-...") and a short description of what it is. Do NOT skip rows, do NOT merge multiple accessories into one, and do NOT invent accessories the PDF doesn't list. Return [] only if the PDF truly has none.
 - dimensions: For each fixture size/variant, give a label and its width/height/depth in inches (convert mm using 1in=25.4mm, 2 decimals). Use "Not Specified" for any missing axis.
 - Finish Options (technicalSpecs): list EVERY available housing finish the vendor offers, joined with ", " — read the finish colour swatches AND any "available in ..." / "Finish:" sentence (e.g. "Black, Dark Bronze, Silver Gray, White"). If the vendor also names a coating/treatment (e.g. "corrosion-resistant powder coat"), append it after the colours. Capture ALL finishes, not just the first. Use "Not Specified" only when the PDF truly gives none.
+- IKIO STANDARDS (how IKIO builds its finished TDS from a vendor sheet — follow these):
+  * PER-WATTAGE LUMENS: for each wattage/step, use the vendor's TESTED lumen value at the DEFAULT CCT
+    (usually 4000K or 5000K), NOT a nominal/marketing "up to" number. Keep Power, Lumen Output and
+    Efficacy positionally aligned and the SAME length (Nth power ↔ Nth lumen ↔ Nth efficacy).
+  * LUMEN SANITY: lumen ≈ efficacy × watts. If a lumen is ~10x off from efficacy×watts (e.g. "1600"
+    where "16000" matches), it is a dropped/added-zero — output the value consistent with efficacy×watts.
+    If efficacy is a single figure and per-step lumens are missing, compute lumen = efficacy × watts.
+  * SELECTABLE (one fixture switches wattage/CCT): list values ASCENDING (low→high). DISCRETE options
+    (separate SKUs, voltages, beam angles): keep them as distinct options.
+  * Values verbatim/units: Kelvin in full ("50k"→"5000K"); Suitable Location UPPERCASE (WET/DAMP/DRY);
+    IP as "IP65"; IK as "IK09"; Average Life a plain number with comma ("50,000"); Warranty a plain
+    number of years; Operating Temperature in °F; Voltage as "120-277V". NEVER invent a performance
+    number to fit — use "Not Specified" when the PDF does not state it.
 - Return JSON only.
 """
 
@@ -845,7 +858,9 @@ def is_power_value(value: str) -> bool:
 
 
 def is_lumen_value(value: str) -> bool:
-    return bool(re.search(r"(?i)\b\d[\d,]*(?:\.\d+)?\s*lm\b", value))
+    # Match lumens ("3000 lm") but NOT efficacy ("130 lm/W" / "lm/ft"), so the column repair can't
+    # mistake the Efficacy column for Lumen Output (which swapped the two).
+    return bool(re.search(r"(?i)\b\d[\d,]*(?:\.\d+)?\s*lm\b(?!\s*/\s*(?:w|ft))", value))
 
 
 def is_efficacy_value(value: str) -> bool:
