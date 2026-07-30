@@ -1778,48 +1778,56 @@ function writeProductNameRegistry(registry: ProductNameRegistry) {
   window.localStorage.setItem(PRODUCT_NAME_REGISTRY_KEY, JSON.stringify(registry));
 }
 
-// Retail / lifestyle-style name pools chosen to match where the fixture is used, so the suggested
-// product names read like a branded lighting range that fits the space (e.g. an office downlight ->
-// "Meridian Downlight", a hotel fixture -> "Aura …", a warehouse high bay -> "Titan …") rather than
-// an arbitrary codename. The fixture's application areas (plus category) pick the pool.
+// Single-word, lighting-brand-style name pools, keyed to where the fixture is used, so each suggested
+// product name is ONE evocative word that sounds like a premium lighting range fitting the space
+// (office -> "Meridian", hotel -> "Aura", retail -> "Lumina", warehouse -> "Ignis"). No fixture-type
+// suffix is appended — the name is just the word. Application areas (plus category) pick the pool.
 const APPLICATION_NAME_POOLS: Array<{ keys: string[]; names: string[] }> = [
   {
     keys: ["hospitality", "hotel", "restaurant", "lounge", "cafe", "bar", "resort", "leisure", "spa", "banquet"],
-    names: ["Aura", "Haven", "Lumen", "Sonata", "Aria", "Serena", "Verano", "Sol"],
+    names: ["Aura", "Halo", "Lumen", "Aria", "Solace", "Ember", "Verano", "Sol"],
   },
   {
     keys: ["retail", "store", "boutique", "showroom", "mall", "shop", "display", "merchandis", "fashion"],
-    names: ["Vista", "Allure", "Lumina", "Prism", "Vivid", "Marquee", "Radiance", "Muse"],
+    names: ["Lumina", "Allure", "Vivid", "Prism", "Radia", "Muse", "Eclat", "Marquee"],
   },
   {
     keys: ["office", "commercial", "corporate", "workspace", "workplace", "conference", "meeting", "coworking"],
-    names: ["Meridian", "Vertex", "Axis", "Cadence", "Zenith", "Summit", "Atlas", "Nova"],
+    names: ["Meridian", "Zenith", "Lucent", "Lumio", "Vero", "Nova", "Vantage", "Axion"],
   },
   {
     keys: ["health", "hospital", "clinic", "medical", "care", "dental", "lab", "pharma", "wellness"],
-    names: ["Clarity", "Halo", "Vital", "Lucent", "Pure", "Aegis", "Serene", "Calm"],
+    names: ["Clarity", "Lucent", "Pure", "Vita", "Serene", "Nimbus", "Aegis", "Halo"],
   },
   {
     keys: ["educat", "school", "campus", "classroom", "university", "college", "library", "academ"],
-    names: ["Beacon", "Scholar", "Insight", "Focus", "Sage", "Aspire", "Lyceum", "Nova"],
+    names: ["Beacon", "Insight", "Sage", "Aspire", "Vega", "Nova", "Lumen", "Focal"],
   },
   {
     keys: ["warehouse", "industrial", "factory", "manufactur", "logistic", "distribution", "plant", "workshop"],
-    names: ["Titan", "Forge", "Apex", "Vanguard", "Fortis", "Anvil", "Colossus", "Atlas"],
+    names: ["Ignis", "Flare", "Blaze", "Volt", "Apex", "Titan", "Forge", "Halo"],
   },
   {
     keys: ["parking", "garage", "outdoor", "street", "roadway", "area", "facade", "landscape", "yard", "perimeter", "canopy", "stadium", "sports"],
-    names: ["Horizon", "Aurora", "Sentinel", "Vista", "Terra", "Beacon", "Meridian", "Summit"],
+    names: ["Horizon", "Aurora", "Beacon", "Sentinel", "Solaris", "Lumos", "Astra", "Vega"],
   },
   {
     keys: ["residential", "home", "apartment", "living", "villa", "condo"],
-    names: ["Haven", "Hearth", "Dwell", "Aura", "Nest", "Cove", "Solace", "Lumen"],
+    names: ["Haven", "Aura", "Glow", "Ember", "Cove", "Sol", "Lumen", "Halcyon"],
   },
 ];
 
-/** Ordered pool of first-word names for this fixture, drawn from the retail/lifestyle pools that
- *  match its application areas (and category), then topped up with the constellation codenames so
- *  the pool is always large and distinct. Falls back to codenames when nothing matches. */
+// General lighting-brand words used to top up any pool so there is always a large, on-brand supply.
+const GENERAL_LIGHTING_NAMES = [
+  "Lumen", "Lumina", "Lumio", "Luxor", "Aura", "Halo", "Nova", "Aurora", "Beacon", "Lucent",
+  "Radia", "Vivid", "Prism", "Sol", "Solaris", "Photon", "Gleam", "Ray", "Spark", "Ember",
+  "Flare", "Illume", "Ignis", "Vega", "Lyra", "Astra", "Zenith", "Eclipse", "Halcyon", "Elara",
+  "Nimbus", "Lumos", "Vero", "Solace", "Meridian", "Horizon", "Aria", "Muse", "Allure", "Vantage",
+];
+
+/** Ordered pool of single-word names for this fixture: the lighting-brand pools that match its
+ *  application areas (and category), topped up with the general lighting words and constellation
+ *  codenames so a family with many variants never runs dry. */
 function deriveApplicationNamePool(spec: ExtendedExtractedSpec): string[] {
   const src = [
     ...(Array.isArray(spec.applicationAreas) ? spec.applicationAreas : []),
@@ -1830,27 +1838,41 @@ function deriveApplicationNamePool(spec: ExtendedExtractedSpec): string[] {
     .join(" ")
     .toLowerCase();
   const pool: string[] = [];
+  const add = (name: string) => { if (name && !pool.includes(name)) pool.push(name); };
   for (const group of APPLICATION_NAME_POOLS) {
-    if (group.keys.some((key) => src.includes(key))) {
-      for (const name of group.names) if (!pool.includes(name)) pool.push(name);
-    }
+    if (group.keys.some((key) => src.includes(key))) group.names.forEach(add);
   }
-  // Top up with the constellation codenames so a family with many variants never runs dry.
-  for (const name of CONSTELLATION_CODENAMES) if (!pool.includes(name)) pool.push(name);
-  return pool.length ? pool : CONSTELLATION_CODENAMES.slice();
+  GENERAL_LIGHTING_NAMES.forEach(add);
+  CONSTELLATION_CODENAMES.forEach(add);
+  return pool;
 }
 
-/** The ordered pool of candidate names (one per name) sent to the backend registry, which reserves
- *  the first ones not already used by another product. */
+// Deterministically coin a fresh single-word lighting-brand name (root + suffix) so we can keep
+// generating UNIQUE one-word names without ever falling back to numbered variants.
+const LIGHTING_NAME_ROOTS = [
+  "Lum", "Lumi", "Lux", "Nov", "Sol", "Astr", "Veg", "Hal", "Aur", "Phot",
+  "Lume", "Ray", "Orb", "Elar", "Ver", "Cel", "Zeph", "Lyr", "Ign", "Nyx",
+];
+const LIGHTING_NAME_SUFFIXES = ["a", "o", "os", "ia", "is", "ix", "on", "ara", "ora", "ex", "us", "en"];
+function coinLightingName(index: number): string {
+  const root = LIGHTING_NAME_ROOTS[index % LIGHTING_NAME_ROOTS.length];
+  const suffix = LIGHTING_NAME_SUFFIXES[Math.floor(index / LIGHTING_NAME_ROOTS.length) % LIGHTING_NAME_SUFFIXES.length];
+  const word = (root + suffix).toLowerCase();
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+/** The ordered pool of SINGLE-WORD candidate names sent to the backend registry, which reserves the
+ *  first ones not already used by another product. Extended with many coined lighting words so the
+ *  registry practically always has a unique one-word option and never numbers a name. */
 function buildProductNameCandidates(spec: ExtendedExtractedSpec): string[] {
-  const typeCore = deriveTypeCore(spec);
   const pool = deriveApplicationNamePool(spec);
   const registryKey = buildProductNameRegistryKey(spec);
-  const baseIndex = hashString(registryKey) % pool.length;
-  return Array.from({ length: pool.length }, (_, offset) => {
-    const codename = pool[(baseIndex + offset) % pool.length];
-    return toTitleCase(normalizeText(`${codename} ${typeCore}`)).replace(/\s+/g, " ").trim();
-  }).filter(Boolean);
+  const baseIndex = pool.length ? hashString(registryKey) % pool.length : 0;
+  const rotated = Array.from({ length: pool.length }, (_, offset) =>
+    toTitleCase(normalizeText(pool[(baseIndex + offset) % pool.length])).replace(/\s+/g, " ").trim(),
+  );
+  const coined = Array.from({ length: 200 }, (_, i) => coinLightingName(i));
+  return [...rotated, ...coined].filter(Boolean);
 }
 
 function buildProductNameRecommendations(spec: ExtendedExtractedSpec) {
@@ -1869,16 +1891,13 @@ function buildProductNameRecommendations(spec: ExtendedExtractedSpec) {
 
   const usedNames = new Set(registry.used.map((item) => item.toLowerCase()));
   existing.forEach((name) => usedNames.add(name.toLowerCase()));
-  // One name per pool entry, iterating the list, so the three suggestions each use a DIFFERENT
-  // application-fit name (e.g. "Meridian …", "Vertex …", "Axis …") instead of variations of one word.
-  const baseIndex = hashString(registryKey) % namePool.length;
-  const recommendations = Array.from({ length: namePool.length }, (_, offset) => {
-    const codename = namePool[(baseIndex + offset) % namePool.length];
-    return `${codename} ${typeCore}`;
-  })
-    .map((value) => toTitleCase(normalizeText(value)))
-    .map((value) => value.replace(/\s+/g, " ").trim())
-    .filter(Boolean);
+  // One SINGLE-WORD name per pool entry, rotated by the fixture so the three suggestions are
+  // distinct, on-brand lighting words (e.g. "Meridian", "Zenith", "Lucent") — no fixture-type suffix.
+  const baseIndex = namePool.length ? hashString(registryKey) % namePool.length : 0;
+  const recommendations = Array.from({ length: namePool.length }, (_, offset) =>
+    toTitleCase(normalizeText(namePool[(baseIndex + offset) % namePool.length])).replace(/\s+/g, " ").trim(),
+  ).filter(Boolean);
+  void typeCore;
   void descriptor;
   void wattage;
   void featureToken;
@@ -1898,21 +1917,15 @@ function buildProductNameRecommendations(spec: ExtendedExtractedSpec) {
     }
   }
 
-  if (uniqueRecommendations.length < 3) {
-    // Cycle through the distinct-codename list appending a number, so extra names keep DIFFERENT
-    // first words ("Orion Linear 2", "Lyra Linear 2") instead of numbering one base.
-    const bases = recommendations.length > 0 ? recommendations : [`${featureToken} ${typeCore}`.trim() || "Product"];
-    let attempt = 0;
-    while (uniqueRecommendations.length < 3 && attempt < bases.length * 100) {
-      const base = bases[attempt % bases.length];
-      const round = 2 + Math.floor(attempt / bases.length);
-      const fallbackName = `${base} ${round}`;
-      const normalized = fallbackName.toLowerCase();
-      if (!usedNames.has(normalized) && !localSeen.has(normalized)) {
-        localSeen.add(normalized);
-        uniqueRecommendations.push(fallbackName);
-      }
-      attempt += 1;
+  // Still short? Coin a fresh single-word lighting name — never a numbered variant.
+  let coinIdx = 0;
+  while (uniqueRecommendations.length < 3 && coinIdx < 500) {
+    const coined = coinLightingName(coinIdx);
+    coinIdx += 1;
+    const normalized = coined.toLowerCase();
+    if (!usedNames.has(normalized) && !localSeen.has(normalized)) {
+      localSeen.add(normalized);
+      uniqueRecommendations.push(coined);
     }
   }
 
