@@ -83,7 +83,7 @@ ENABLE_PADDLE_OCR = os.environ.get("ENABLE_PADDLE_OCR", "1").strip().lower() not
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v6"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v7"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -329,6 +329,10 @@ Rules:
 - dimensions: For each fixture size/variant, give a label and its width/height/depth in inches (convert mm using 1in=25.4mm, 2 decimals). Use "Not Specified" for any missing axis.
 - Finish Options (technicalSpecs): list EVERY available housing finish the vendor offers, joined with ", " — read the finish colour swatches AND any "available in ..." / "Finish:" sentence (e.g. "Black, Dark Bronze, Silver Gray, White"). If the vendor also names a coating/treatment (e.g. "corrosion-resistant powder coat"), append it after the colours. Capture ALL finishes, not just the first. Use "Not Specified" only when the PDF truly gives none.
 - IKIO STANDARDS (how IKIO builds its finished TDS from a vendor sheet — follow these):
+  * POWER COLUMN: the Power value MUST come from the vendor's Wattage/Power column — the actual
+    wattage list (e.g. "25W-40W-50W-60W"). NEVER put the part/model number or a fragment of it in
+    Power (e.g. never "60W-XXK G2", "EDI-UFO-60W"). The part number belongs in Fixture Type / Part
+    Number, not Power. If a model row lists a selectable wattage range, put that whole range in Power.
   * PER-WATTAGE LUMENS: for each wattage/step, use the vendor's TESTED lumen value at the DEFAULT CCT
     (usually 4000K or 5000K), NOT a nominal/marketing "up to" number. Keep Power, Lumen Output and
     Efficacy positionally aligned and the SAME length (Nth power ↔ Nth lumen ↔ Nth efficacy).
@@ -854,7 +858,37 @@ def normalize_variant_overview(value: Any) -> dict[str, list[Any]]:
 
 
 def is_power_value(value: str) -> bool:
-    return bool(re.search(r"(?i)\b\d+(?:\.\d+)?\s*(?:w|watt|watts)\b", value))
+    text = str(value)
+    if not re.search(r"(?i)\b\d+(?:\.\d+)?\s*(?:w|watt|watts)\b", text):
+        return False
+    # A CLEAN power cell is only wattage tokens + separators (and words like max/typical). Reject a
+    # part-number / catalog string that merely CONTAINS a wattage, e.g. "60W-XXK G2" — otherwise the
+    # column repair can pick the part-number column as Power. Remove the wattage tokens and any
+    # allowed words, then require no stray letters remain.
+    residue = re.sub(r"(?i)\d+(?:\.\d+)?\s*(?:watts?|w)\b", " ", text)
+    residue = re.sub(r"(?i)\b(?:max|maximum|typ|typical|nominal|selectable|per|and|to)\b", " ", residue)
+    residue = re.sub(r"(?i)[^a-z]", "", residue)
+    return residue == ""
+
+
+def clean_power_cell(value: str) -> str:
+    """Keep only the wattage tokens in a Power cell (hyphen-joined), dropping any leaked model / CCT
+    code — "60W-XXK G2" -> "60W", "25W-40W-50W-60W" unchanged, "70W / 100W" -> "70W-100W". Preserves
+    multiple lines (one per size)."""
+    out_lines: list[str] = []
+    for line in str(value).split("\n"):
+        watts = re.findall(r"(\d+(?:\.\d+)?)\s*(?:w|watt|watts)\b", line, re.I)
+        if watts:
+            norm: list[str] = []
+            for raw in watts:
+                num = raw[:-2] if raw.endswith(".0") else raw
+                token = f"{num}W"
+                if token not in norm:
+                    norm.append(token)
+            out_lines.append("-".join(norm))
+        else:
+            out_lines.append(line.strip())
+    return "\n".join(out_lines)
 
 
 def is_lumen_value(value: str) -> bool:
@@ -1063,12 +1097,13 @@ def derive_variant_overview(technical_specs: list[dict[str, str]], current: dict
 def _derive_variant_overview_impl(technical_specs: list[dict[str, str]], current: dict[str, Any]) -> dict[str, Any]:
     variant_overview = normalize_variant_overview(current.get("variantOverview"))
     if variant_overview["matrix"]:
-        # Scrub SKU fragments from the Power column (index 2) that feeds the spec table.
+        # Scrub SKU / model-code fragments from the Power column (index 2) that feeds the spec
+        # table, keeping only the wattage tokens (e.g. "60W-XXK G2" -> "60W").
         params = variant_overview.get("parameters", [])
         power_idx = params.index("Power") if "Power" in params else 2
         for row in variant_overview["matrix"]:
             if isinstance(row, list) and len(row) > power_idx:
-                row[power_idx] = strip_catalog_code(str(row[power_idx]))
+                row[power_idx] = clean_power_cell(strip_catalog_code(str(row[power_idx])))
         # Safety net for the "repeated list" extraction error: if every row carries the SAME
         # Power AND Lumen (index 3) — i.e. the combined list was pasted onto each size — collapse
         # to a single row so the overview doesn't show the identical line N times.
