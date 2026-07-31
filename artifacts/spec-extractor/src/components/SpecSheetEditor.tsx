@@ -5909,7 +5909,10 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   // (or a user clearing the field) never re-fills it — it applies once per detected type.
   const lastAutoPredictRef = useRef<string | null>(null);
   // Spec id that still needs its description auto-generated (fresh extraction, no saved draft).
-  const pendingAutoDescribeRef = useRef<string | null>(null);
+  // Spec id that still needs its description + features auto-generated (fresh extraction, no saved
+  // draft). STATE (not a ref) so setting it reliably re-runs the auto-generate effect — a ref set
+  // inside the async hydration wouldn't trigger a re-render.
+  const [autoGenSpecId, setAutoGenSpecId] = useState<string | null>(null);
   const [previewScale, setPreviewScale] = useState(1);
   const [descriptionPrompt, setDescriptionPrompt] = useState(DEFAULT_DESCRIPTION_PROMPT);
   const [featuresPrompt, setFeaturesPrompt] = useState(DEFAULT_FEATURES_PROMPT);
@@ -5930,6 +5933,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
 
     // Hydrate any saved edits for this extraction from IndexedDB.
     hydratedSpecIdRef.current = null;
+    setAutoGenSpecId(null);
     // A fresh extraction may auto-fill its category / sub-category from the fixture profile.
     lastAutoPredictRef.current = null;
     let cancelled = false;
@@ -5958,9 +5962,9 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
         );
         if (savedProfile) lastAutoPredictRef.current = `${spec.id}::${savedProfile.id}`;
       } else {
-        // Fresh extraction with no saved edits — auto-generate the description from the
+        // Fresh extraction with no saved edits — auto-generate the description + features from the
         // recommended product name so the user doesn't have to click Generate.
-        pendingAutoDescribeRef.current = String(spec.id);
+        setAutoGenSpecId(String(spec.id));
       }
       hydratedSpecIdRef.current = String(spec.id);
 
@@ -6748,21 +6752,22 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     }
   };
 
-  // Auto-generate the description once for a fresh extraction, using the (settled) recommended
-  // product name — so the user never has to click Generate. The 1.2s debounce lets the reserved
-  // unique name arrive first; re-scheduling on title change means it always uses the final name.
+  // Auto-generate BOTH the description and the features once for a fresh extraction, using the
+  // (settled) recommended product name — so the user never has to click Generate. The 1.2s debounce
+  // lets the reserved unique name arrive first; re-scheduling on title change means it always uses
+  // the final name. Description runs first, then features (sequential AI calls).
   useEffect(() => {
-    if (pendingAutoDescribeRef.current !== String(spec.id)) return undefined;
+    if (autoGenSpecId !== String(spec.id)) return undefined;
     if (hydratedSpecIdRef.current !== String(spec.id)) return undefined;
     if (!isSpecified(draft.title) || aiBusy) return undefined;
-    const handle = window.setTimeout(() => {
-      if (pendingAutoDescribeRef.current !== String(spec.id)) return;
-      pendingAutoDescribeRef.current = null;
-      void runAiContent("description", descriptionPrompt);
+    const handle = window.setTimeout(async () => {
+      setAutoGenSpecId(null);
+      await runAiContent("description", descriptionPrompt);
+      await runAiContent("features", featuresPrompt);
     }, 1200);
     return () => window.clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec.id, draft.title, aiBusy]);
+  }, [spec.id, autoGenSpecId, draft.title, aiBusy]);
 
   const renderControlsPanel = (className?: string) => (
     <Card className={cn("sheet-editor-controls flex h-full min-h-0 flex-col overflow-hidden", className)}>
