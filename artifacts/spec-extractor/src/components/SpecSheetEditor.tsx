@@ -681,9 +681,8 @@ function isPowerSelectableOverviewLabel(label: string) {
   return key === "power" || key === "power selectable" || key === "max power" || key === "wattage";
 }
 
-/** Power (Selectable) → ONE hyphen-joined line of distinct wattages (ascending), so a selectable
- *  power never renders across new lines. "22W\n30W\n38W" or "22W / 30W / 38W" -> "22W-30W-38W". */
-function formatPowerSelectable(value: string) {
+/** Format ONE power string into distinct, ascending, hyphen-joined wattages ("30W / 22W" -> "22W-30W"). */
+function formatSelectableWatts(value: string) {
   const seen = new Set<string>();
   const tokens: string[] = [];
   for (const raw of String(value ?? "").match(/\d+(?:\.\d+)?\s*W\b/gi) ?? []) {
@@ -693,9 +692,34 @@ function formatPowerSelectable(value: string) {
       tokens.push(token);
     }
   }
-  if (tokens.length === 0) return value;
   tokens.sort((a, b) => parseFloat(a) - parseFloat(b));
   return tokens.join("-");
+}
+
+/** Power display normaliser that RESPECTS per-variant grouping:
+ *  - one selectable fixture (bare wattages, maybe split across lines) -> ONE hyphen-joined line,
+ *    e.g. "22W\n30W\n38W" -> "22W-30W-38W" (never render a lone selectable list across lines);
+ *  - genuine size/attribute variants (lines carry a "size/label:" prefix) -> KEEP one line per
+ *    variant, only tidying the wattages inside each line, e.g. "11 inch: 20W / 24W" stays its own
+ *    line. So power shows PER VARIANT/SIZE instead of every wattage collapsed into one line. */
+function formatPowerSelectable(value: string) {
+  const raw = String(value ?? "");
+  const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const formatLine = (line: string) => {
+    const prefixMatch = line.match(/^(.*?:\s*)(.*)$/);
+    const prefix = prefixMatch ? prefixMatch[1] : "";
+    const body = prefixMatch ? prefixMatch[2] : line;
+    const watts = formatSelectableWatts(body);
+    return watts ? `${prefix}${watts}` : line;
+  };
+  // Bare wattages (no "label:" on any line) = ONE selectable fixture -> merge to a single line.
+  const hasVariantLabels = lines.some((line) => /:/.test(line));
+  if (lines.length <= 1 || !hasVariantLabels) {
+    const merged = formatSelectableWatts(raw);
+    return merged || value;
+  }
+  // Labelled variants -> one line per variant, wattages tidied within each.
+  return lines.map(formatLine).join("\n");
 }
 
 /** Normalize an overview row value for display (dimensions -> US units, CCT -> Kelvin only,
@@ -1543,23 +1567,9 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
     };
 
     if (isPowerSelectableLabel) {
-      // Power (Selectable): ONE hyphen-joined line of every distinct wattage (ascending) — never
-      // split across new lines and never prefixed with the variant/fixture label.
-      const seen = new Set<string>();
-      const tokens: string[] = [];
-      for (const row of variantRows) {
-        const powerValue = compactSelectableValue(label, normalizeText(row.power));
-        if (!isSpecified(powerValue)) continue;
-        for (const raw of powerValue.match(/\d+(?:\.\d+)?\s*W\b/gi) ?? []) {
-          const token = raw.replace(/\s+/g, "").toUpperCase();
-          if (!seen.has(token)) {
-            seen.add(token);
-            tokens.push(token);
-          }
-        }
-      }
-      tokens.sort((a, b) => parseFloat(a) - parseFloat(b));
-      return tokens.join("-");
+      // Power shows PER VARIANT/SIZE: one selectable fixture -> a single hyphen-joined line; genuine
+      // size/attribute variants -> one labelled line each (never every wattage merged into one line).
+      return buildVariantPowerValue(spec, label);
     }
 
     if (isCctLabel) {
@@ -3616,6 +3626,33 @@ function buildPreviewVariantRows(spec: ExtendedExtractedSpec) {
     .filter((row) => isSpecified(row.fixture) || isSpecified(row.power) || isSpecified(row.lumens));
 }
 
+/** Power overview value grouped BY VARIANT/SIZE:
+ *  - ONE selectable fixture, or variants that don't differ by size/label -> a single hyphen-joined
+ *    ascending wattage line (e.g. "22W-30W-38W");
+ *  - GENUINE size/attribute variants (each row has its own size/label) -> one line per variant,
+ *    prefixed with the size/label (e.g. "11 inch: 20W-24W" / "14 inch: 30W-36W"), so power is shown
+ *    per variant instead of every wattage merged into one line. */
+function buildVariantPowerValue(spec: ExtendedExtractedSpec, label: string) {
+  const variantRows = buildPreviewVariantRows(spec);
+  if (variantRows.length === 0) return "";
+  const groups = variantRows
+    .map((row) => ({
+      fixture: normalizeText(row.fixture),
+      watts: formatSelectableWatts(compactSelectableValue(label, normalizeText(row.power))),
+    }))
+    .filter((entry) => isSpecified(entry.watts));
+  if (groups.length === 0) return "";
+  const distinctFixtures = new Set(groups.map((group) => group.fixture).filter(isSpecified));
+  // No real per-variant distinction (single row, or no distinguishing size/label) -> merge to one
+  // ascending, distinct line. Otherwise keep each size/variant on its own labelled line.
+  if (groups.length === 1 || distinctFixtures.size <= 1) {
+    return formatSelectableWatts(groups.map((group) => group.watts).join("-"));
+  }
+  return groups
+    .map((group) => (isSpecified(group.fixture) ? `${group.fixture}: ${group.watts}` : group.watts))
+    .join("\n");
+}
+
 type VariantOption = { key: string; power: string; lumen: string; efficacy: string };
 type VariantGroup = {
   id: string;
@@ -4215,13 +4252,20 @@ function SheetPageOne({
   // Efficacy is ALWAYS recomputed from THIS fixture's own Power & Lumen (lumens / power) at render
   // time — never the vendor's stated figure — so even drafts saved before this rule self-correct.
   const computedEfficacy = deriveEfficacyFromPowerLumen(spec);
+  // Power is recomputed from the variant matrix at render time so it shows PER VARIANT/SIZE (one
+  // line per size, or a single selectable line) — old drafts that stored one merged line self-correct.
+  const computedPower = buildVariantPowerValue(spec, "Power");
   const filteredOverviewRows = draft.overviewRows
     .filter((row) => row.included !== false)
     .filter((row) => isSpecified(row.label) && isSpecified(row.value))
     .filter((row) => !isExcludedOverviewLabel(row.label))
     .map((row) => {
-      if (normalizeSpecKey(row.label) === "efficacy" && isSpecified(computedEfficacy)) {
+      const key = normalizeSpecKey(row.label);
+      if (key === "efficacy" && isSpecified(computedEfficacy)) {
         return { ...row, value: computedEfficacy };
+      }
+      if (isPowerSelectableOverviewLabel(row.label) && isSpecified(computedPower)) {
+        return { ...row, value: computedPower };
       }
       return { ...row, value: normalizeOverviewRowValue(row.label, row.value) };
     });
