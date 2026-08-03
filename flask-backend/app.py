@@ -83,7 +83,7 @@ ENABLE_PADDLE_OCR = os.environ.get("ENABLE_PADDLE_OCR", "1").strip().lower() not
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v7"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v8"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -229,6 +229,19 @@ Return ONLY valid JSON with this exact structure:
 
 Rules:
 - Read the vendor source first. Do not invent missing specs.
+- READ EVERY LANGUAGE: the vendor PDF is often in Chinese, or mixed Chinese + English (or another
+  language). Read ALL text in EVERY language — headers, table cells, footnotes, callouts — and
+  TRANSLATE it to English to understand it. NEVER skip or mark a value "Not Specified" just because
+  its label is written in Chinese/another language; translate the label, match it to the right field,
+  and fill the value. Numbers/units are usually universal even when the label is Chinese.
+- SCAN EVERY SPEC TABLE ON EVERY PAGE: vendors put the detailed parameters in a "Specifications" /
+  "Technical Parameters" / "参数" table (frequently on page 2+). Read that table row by row and pull
+  EACH parameter into the matching field, including ones easy to miss: Power Factor (功率因数),
+  Total Harmonic Distortion / THD (总谐波失真), Surge Protection (浪涌保护), Operating Temperature
+  (工作温度), Ingress Protection / IP rating (防护等级), IK rating, Average Life / lifespan (寿命),
+  Warranty (质保), CRI (显色指数), Beam Angle (光束角), Driver (驱动), LED source (光源), Housing
+  (外壳), Finish (表面处理), Cover/Lens material (透镜/罩), Cover Type. If the value exists ANYWHERE
+  in the PDF (in any language), extract it — only use "Not Specified" when it is truly absent.
 - NEVER leave a field blank. Use "Not Specified" for missing scalar values.
 - Preserve fixture availability. If different fixture sizes or SKUs have different power/lumen packages, keep those relationships intact in variantOverview.matrix and variants.
 - Prefer vendor source wording for title/product family; do not rename the product creatively.
