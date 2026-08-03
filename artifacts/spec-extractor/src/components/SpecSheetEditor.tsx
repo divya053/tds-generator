@@ -3795,7 +3795,13 @@ function overviewHeadWithSelectable(head: string, label: string, value: string) 
   const isPower = /^(power|max power)$/i.test(base);
   const isCct = isCctLabel(label) || /\bcct\b/i.test(base) || /color\s*temp/i.test(base);
   if (!isPower && !isCct) return head;
-  return / - /.test(String(value ?? "")) ? `${base} (Selectable)` : base;
+  // Multi-option when the value has 2+ tokens, whether dash-joined with spaces ("40W - 60W") or
+  // without ("10W-12W-15W"), or slash/pipe/newline separated.
+  const optionCount = String(value ?? "")
+    .split(/\s*[-–—/|]\s*|\n/)
+    .map((token) => token.trim())
+    .filter(Boolean).length;
+  return optionCount > 1 ? `${base} (Selectable)` : base;
 }
 
 /** Render an overview head with the bracketed portion in normal (non-bold) weight — the head cell
