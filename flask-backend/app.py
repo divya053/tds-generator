@@ -87,7 +87,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v11"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v12"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -313,6 +313,14 @@ Rules:
   Lumen Output "2800/4200/5600/7000/8400 lm", keeping the wattage<->lumen order aligned. If there are two
   wattage families (e.g. a 60W package and a 120W package), return one variant per family in variantOverview.matrix
   with that family's individual wattages in the Power cell.
+- VARIANTS BY SIZE / ATTRIBUTE (predict this smartly): if the vendor's model list is grouped by a distinguishing
+  attribute — SIZE (e.g. 11 inch vs 14 inch, 2FT vs 4FT, 6" vs 8"), DIAMETER, length, or series — and EACH group has
+  its OWN set of wattages/lumens, create ONE variantOverview.matrix ROW PER GROUP. Put that group's OWN selectable
+  wattage list in its Power cell, its OWN lumen list in Lumen Output, and the group's distinguishing label (e.g.
+  "11 inch", "14 inch", "4FT") in the Fixture Type cell. NEVER merge different sizes' wattages into one row.
+  Example — model numbers "N-AURA-11IN-{18,15,12,10}W" and "N-AURA-14IN-{32,28,24,18}W" become TWO rows:
+  Fixture Type "11 inch", Power "10W/12W/15W/18W", Lumen "1000/1200/1500/1800 lm"; and Fixture Type "14 inch",
+  Power "18W/24W/28W/32W", Lumen "1800/2400/2800/3200 lm". Read the model-number/size column to decide the groups.
 - POWER-ADJUSTABLE PERCENTAGE STEPS (critical for field-adjustable fixtures): when the vendor says the fixture is
   power-adjustable / field-selectable in PERCENTAGE steps (e.g. "Power adjustable: 100%, 80%, 60%, 40%") AND the
   lumen table has MORE values than the named model wattages, the REAL selectable wattages are each model's max
