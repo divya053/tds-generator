@@ -87,7 +87,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v12"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v13"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -248,6 +248,16 @@ Rules:
   in the PDF (in any language), extract it — only use "Not Specified" when it is truly absent.
 - NEVER leave a field blank. Use "Not Specified" for missing scalar values.
 - Preserve fixture availability. If different fixture sizes or SKUs have different power/lumen packages, keep those relationships intact in variantOverview.matrix and variants.
+- DECIDE THE VARIANT PATTERN SMARTLY (read the vendor's structure — do NOT over-split or under-split):
+  1. SINGLE SELECTABLE fixture: ONE physical product with a field switch for wattage and/or CCT, with NO size/model
+     grouping. Output ONE variantOverview.matrix row whose Power cell holds the full selectable wattage list (and one
+     Lumen per wattage). Most floods/downlights/high-bays labelled "power selectable / switchable" are this — do NOT
+     invent sizes that aren't printed.
+  2. SIZE / ATTRIBUTE variants: the model list is grouped by size/diameter/length/series, each group with its OWN
+     wattage/lumen set. ONE matrix row per group, with the group label in Fixture Type (see the size rule below).
+  3. DISCRETE models: separate part numbers each with a SINGLE wattage. ONE matrix row per model.
+  Read the model-number / size column and any "selectable / switchable / adjustable" wording to choose. If there is
+  no size or model grouping, it is pattern 1 — a single selectable variant; never fabricate size groups.
 - Prefer vendor source wording for title/product family; do not rename the product creatively.
 - Use degree symbol only for beam angles, for example "20°/40°" or "113°". Never use "deg", "degree", or "degrees".
 - Normalize common units: "120-277V", "5000K", "130lm/W", "50000 Hours", "5 Years", "Dimensions	always in inches or " Ø5.51in x H9.53in"
