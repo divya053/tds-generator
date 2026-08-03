@@ -676,10 +676,33 @@ function formatAverageLife(value: string) {
   return pick.toLocaleString("en-US");
 }
 
+function isPowerSelectableOverviewLabel(label: string) {
+  const key = normalizeSpecKey(label);
+  return key === "power" || key === "power selectable" || key === "max power" || key === "wattage";
+}
+
+/** Power (Selectable) → ONE hyphen-joined line of distinct wattages (ascending), so a selectable
+ *  power never renders across new lines. "22W\n30W\n38W" or "22W / 30W / 38W" -> "22W-30W-38W". */
+function formatPowerSelectable(value: string) {
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const raw of String(value ?? "").match(/\d+(?:\.\d+)?\s*W\b/gi) ?? []) {
+    const token = raw.replace(/\s+/g, "").toUpperCase();
+    if (!seen.has(token)) {
+      seen.add(token);
+      tokens.push(token);
+    }
+  }
+  if (tokens.length === 0) return value;
+  tokens.sort((a, b) => parseFloat(a) - parseFloat(b));
+  return tokens.join("-");
+}
+
 /** Normalize an overview row value for display (dimensions -> US units, CCT -> Kelvin only,
  *  beam angle -> degrees only, BUG -> highest, EPA -> lowest, IP -> IPxx tokens, Suitable Location
  *  -> DRY/DAMP/WET, Finish -> colours, Driver -> name without class, Voltage -> range+V, THD -> %,
- *  Power Factor -> number, Average Life -> grouped hours), then sentence-case the text. */
+ *  Power Factor -> number, Average Life -> grouped hours, Power -> hyphen-joined wattages),
+ *  then sentence-case the text. */
 function normalizeOverviewRowValue(label: string, value: string) {
   let result = value;
   if (isDimensionLabel(label)) result = convertDimensionUnits(value);
@@ -694,6 +717,7 @@ function normalizeOverviewRowValue(label: string, value: string) {
   else if (isVoltageLabel(label)) return formatVoltage(value); // keep "V" casing
   else if (isThdLabel(label)) return formatThd(value);
   else if (isPowerFactorLabel(label)) return formatPowerFactor(value);
+  else if (isPowerSelectableOverviewLabel(label)) return formatPowerSelectable(value); // keep "W" casing
   else if (isAverageLifeLabel(label)) return formatAverageLife(value);
   return toOverviewSentenceCase(result);
 }
@@ -1516,14 +1540,23 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
     };
 
     if (isPowerSelectableLabel) {
-      return variantRows
-        .map((row) => {
-          const powerValue = compactSelectableValue(label, normalizeText(row.power));
-          if (!isSpecified(powerValue)) return "";
-          return isSpecified(row.fixture) ? `${row.fixture} - ${powerValue}` : powerValue;
-        })
-        .filter(Boolean)
-        .join("\n");
+      // Power (Selectable): ONE hyphen-joined line of every distinct wattage (ascending) — never
+      // split across new lines and never prefixed with the variant/fixture label.
+      const seen = new Set<string>();
+      const tokens: string[] = [];
+      for (const row of variantRows) {
+        const powerValue = compactSelectableValue(label, normalizeText(row.power));
+        if (!isSpecified(powerValue)) continue;
+        for (const raw of powerValue.match(/\d+(?:\.\d+)?\s*W\b/gi) ?? []) {
+          const token = raw.replace(/\s+/g, "").toUpperCase();
+          if (!seen.has(token)) {
+            seen.add(token);
+            tokens.push(token);
+          }
+        }
+      }
+      tokens.sort((a, b) => parseFloat(a) - parseFloat(b));
+      return tokens.join("-");
     }
 
     if (isCctLabel) {
