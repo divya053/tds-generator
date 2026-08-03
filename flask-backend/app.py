@@ -87,7 +87,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v10"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v11"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -1217,6 +1217,35 @@ def derive_variant_overview(technical_specs: list[dict[str, str]], current: dict
     return repair_power_lumen_efficacy(_derive_variant_overview_impl(technical_specs, current))
 
 
+def _reconcile_selectable_lumens(variant_overview: dict[str, Any], technical_specs: list[dict[str, str]]) -> dict[str, Any]:
+    """For a SINGLE selectable row, the structured matrix Lumen is often botched by the model
+    (a value dropped/duplicated/out of order), while the flat technicalSpecs "Lumen Output" list is
+    correct. If the flat list has exactly one lumen per wattage, all distinct and ascending (matching
+    the ascending wattages), rebuild the matrix Lumen from it."""
+    params = variant_overview.get("parameters", []) or []
+    matrix = variant_overview.get("matrix", []) or []
+    if len(matrix) != 1 or "Power" not in params or "Lumen Output" not in params:
+        return variant_overview
+    row = matrix[0]
+    power_i, lumen_i = params.index("Power"), params.index("Lumen Output")
+    if not isinstance(row, list) or max(power_i, lumen_i) >= len(row):
+        return variant_overview
+    watts = re.findall(r"(?i)\d+(?:\.\d+)?\s*(?:w|watt|watts)\b", str(row[power_i]))
+    if len(watts) < 2:
+        return variant_overview
+    lookup = {item.get("parameter"): item.get("specification") for item in technical_specs}
+    flat = re.findall(r"(?i)\d[\d,]*(?:\.\d+)?\s*lm\b", str(lookup.get("Lumen Output", "")))
+    nums: list[float] = []
+    for token in flat:
+        try:
+            nums.append(float(re.sub(r"[^\d.]", "", token)))
+        except ValueError:
+            pass
+    if len(nums) == len(watts) and len(set(nums)) == len(nums) and nums == sorted(nums):
+        row[lumen_i] = "-".join(f"{int(round(n))}lm" for n in nums)
+    return variant_overview
+
+
 def _derive_variant_overview_impl(technical_specs: list[dict[str, str]], current: dict[str, Any]) -> dict[str, Any]:
     variant_overview = normalize_variant_overview(current.get("variantOverview"))
     if variant_overview["matrix"]:
@@ -1240,6 +1269,7 @@ def _derive_variant_overview_impl(technical_specs: list[dict[str, str]], current
             for row in matrix
         ):
             variant_overview["matrix"] = [matrix[0]]
+        variant_overview = _reconcile_selectable_lumens(variant_overview, technical_specs)
         return variant_overview
 
     lookup = {item["parameter"]: item["specification"] for item in technical_specs}
