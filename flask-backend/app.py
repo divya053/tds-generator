@@ -83,7 +83,7 @@ ENABLE_PADDLE_OCR = os.environ.get("ENABLE_PADDLE_OCR", "1").strip().lower() not
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v8"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v9"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -557,7 +557,41 @@ def extract_tables_from_page(page) -> list[str]:
 def should_use_ocr(page_text: str, table_rows: list[str]) -> bool:
     dense_text = normalize_whitespace(page_text)
     alpha_count = len(re.findall(r"[A-Za-z0-9]", dense_text))
-    return alpha_count < 120 and len(table_rows) < 3
+    # Run OCR when the page is image-heavy (little selectable text) OR when pdfplumber could not pull
+    # a real table out of it (< 2 table rows). Many vendor SPEC TABLES are rendered as IMAGES, so
+    # their values (THD, Surge Protection, IP, Operating Temperature, Warranty, Lifespan…) are absent
+    # from both the text layer and pdfplumber — only OCR recovers them. This catches those pages even
+    # when they also carry some marketing text.
+    return alpha_count < 600 or len(table_rows) < 2
+
+
+def _paddle_result_texts(results: Any) -> list[str]:
+    """Pull recognized text out of a PaddleOCR result, supporting BOTH the new PP-OCRv5 predict()
+    format (OCRResult with 'rec_texts') and the legacy ocr() format ([box, (text, conf)])."""
+    lines: list[str] = []
+    for res in results or []:
+        texts = None
+        try:  # new API: OCRResult is subscriptable
+            texts = res["rec_texts"]
+        except Exception:
+            texts = res.get("rec_texts") if isinstance(res, dict) else None
+        if texts is not None:
+            for token in texts:
+                token = normalize_whitespace(str(token))
+                if token:
+                    lines.append(token)
+            continue
+        # legacy API: iterable of [box, (text, conf)]
+        try:
+            for item in res or []:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    value = item[1]
+                    token = normalize_whitespace(str(value[0] if isinstance(value, (list, tuple)) else value))
+                    if token:
+                        lines.append(token)
+        except Exception:
+            pass
+    return lines
 
 
 def run_paddle_ocr_on_page(pdf_path: str, page_index: int) -> str:
@@ -565,30 +599,47 @@ def run_paddle_ocr_on_page(pdf_path: str, page_index: int) -> str:
     if ocr is None:
         return ""
 
-    pdf = pdfium.PdfDocument(pdf_path)
+    # Render the page to a NUMPY array — current PaddleOCR rejects PIL images ("Only numpy.ndarray
+    # and str are supported"), which silently returned nothing before.
     try:
-        page = pdf[page_index]
-        try:
-            bitmap = page.render(scale=max(PDF_RENDER_SCALE, 1.8))
-            try:
-                image = bitmap.to_pil()
-                results = ocr.ocr(image)
-            finally:
-                bitmap.close()
-        finally:
-            page.close()
-    finally:
-        pdf.close()
+        import numpy as np
 
-    lines: list[str] = []
-    for page_result in results or []:
-        for item in page_result or []:
-            if len(item) < 2:
-                continue
-            text = normalize_whitespace(item[1][0] if isinstance(item[1], (list, tuple)) else "")
-            if text:
-                lines.append(text)
-    return "\n".join(lines)
+        pdf = pdfium.PdfDocument(pdf_path)
+        try:
+            page = pdf[page_index]
+            try:
+                bitmap = page.render(scale=max(PDF_RENDER_SCALE, 1.8))
+                try:
+                    image = np.array(bitmap.to_pil().convert("RGB"))
+                finally:
+                    bitmap.close()
+            finally:
+                page.close()
+        finally:
+            pdf.close()
+    except Exception as exc:  # noqa: BLE001 - never fail extraction over a render error
+        print(f"OCR render failed on page {page_index + 1}: {exc}", file=sys.stderr)
+        return ""
+
+    # Try the new predict() API first, then the legacy ocr(); fail gracefully if the paddle build is
+    # broken on this host (e.g. a Windows oneDNN issue) so extraction still completes.
+    results = None
+    for method in ("predict", "ocr"):
+        call = getattr(ocr, method, None)
+        if call is None:
+            continue
+        try:
+            results = call(image)
+            break
+        except Exception as exc:  # noqa: BLE001
+            print(f"PaddleOCR .{method}() failed on page {page_index + 1}: {str(exc)[:120]}", file=sys.stderr)
+            results = None
+    if results is None:
+        return ""
+    try:
+        return "\n".join(_paddle_result_texts(results))
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def extract_text_from_pdf(pdf_path: str) -> tuple[str, list[str]]:
