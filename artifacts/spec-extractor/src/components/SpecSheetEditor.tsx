@@ -4212,13 +4212,19 @@ function SheetPageOne({
       ? [selectedImage, ...productOwnedImages.filter((image) => image.id !== selectedImage.id)]
       : productOwnedImages
   ).slice(0, 2);
+  // Efficacy is ALWAYS recomputed from THIS fixture's own Power & Lumen (lumens / power) at render
+  // time — never the vendor's stated figure — so even drafts saved before this rule self-correct.
+  const computedEfficacy = deriveEfficacyFromPowerLumen(spec);
   const filteredOverviewRows = draft.overviewRows
     .filter((row) => row.included !== false)
     .filter((row) => isSpecified(row.label) && isSpecified(row.value))
     .filter((row) => !isExcludedOverviewLabel(row.label))
-    .map((row) =>
-      ({ ...row, value: normalizeOverviewRowValue(row.label, row.value) }),
-    );
+    .map((row) => {
+      if (normalizeSpecKey(row.label) === "efficacy" && isSpecified(computedEfficacy)) {
+        return { ...row, value: computedEfficacy };
+      }
+      return { ...row, value: normalizeOverviewRowValue(row.label, row.value) };
+    });
   // Overview auto-fit: measure the rendered table against the fixed box and grow the font to fill
   // the space, or shrink it to fit — so EVERYTHING is shown (never clipped) while using as much of
   // the box as possible. Padding scales with the font so the column stays balanced top-to-bottom.
