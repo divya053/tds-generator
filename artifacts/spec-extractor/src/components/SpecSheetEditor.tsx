@@ -1467,11 +1467,14 @@ function deriveEstimatedOverviewValue(spec: ExtendedExtractedSpec, label: string
 function deriveEfficacyFromPowerLumen(spec: ExtendedExtractedSpec) {
   const wattages = parseWattages(spec);
   const lumens = parseLumens(spec);
-  if (wattages.length < 1 || wattages.length !== lumens.length) return "";
+  // Compute efficacy = lumens / power for each aligned pair (never copy the vendor's stated value).
+  const pairCount = Math.min(wattages.length, lumens.length);
+  if (pairCount < 1) return "";
 
   const values = uniquePreserveOrder(
-    wattages
-      .map((wattage, index) => (wattage > 0 ? Math.round(lumens[index] / wattage) : NaN))
+    Array.from({ length: pairCount }, (_, index) =>
+      wattages[index] > 0 ? Math.round(lumens[index] / wattages[index]) : NaN,
+    )
       .filter((value) => Number.isFinite(value) && value > 0)
       .map((value) => String(value)),
   ).map(Number);
@@ -1596,19 +1599,18 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
   };
 
   const templateRows = template.map((row, index) => {
-    // Efficacy: compute from this fixture's own Power & Lumen lists first, so it's always correct
-    // per power/lumen (falls back to the vendor's stated efficacy when the lists aren't aligned).
-    const efficacyFromPowerLumen =
-      normalizeSpecKey(row.label) === "efficacy" ? deriveEfficacyFromPowerLumen(spec) : "";
+    // Efficacy is ALWAYS computed from this fixture's own Power & Lumen (lumens / power) — never
+    // copied from the vendor's stated efficacy. If power/lumen aren't available it stays blank.
+    const isEfficacyRow = normalizeSpecKey(row.label) === "efficacy";
     return {
       id: `template-${index}-${normalizeSpecKey(row.label)}`,
       label: row.label,
       included: true,
-      value:
-        efficacyFromPowerLumen ||
-        buildVariantOverviewValue(row.label) ||
-        formatOverviewValue(row.label, getOverviewValue(spec, row.keys)) ||
-        deriveEstimatedOverviewValue(spec, row.label),
+      value: isEfficacyRow
+        ? deriveEfficacyFromPowerLumen(spec)
+        : buildVariantOverviewValue(row.label) ||
+          formatOverviewValue(row.label, getOverviewValue(spec, row.keys)) ||
+          deriveEstimatedOverviewValue(spec, row.label),
     };
   });
 
@@ -4795,13 +4797,13 @@ function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
             ? cctTokens.map((token) => token.replace(/\s+/g, "").toUpperCase()).join("-")
             : normalizeText(group.cct);
           return options.map((option, index) => {
-            // Efficacy per power = that power's own lumen / watt (exact), with the lm/W unit.
+            // Efficacy per power = that power's own lumen / watt (computed, never the vendor value).
             const w = Number((option.power.match(/[\d.]+/) ?? [])[0]);
             const lm = Number((option.lumen.replace(/,/g, "").match(/[\d.]+/) ?? [])[0]);
             const optionEfficacy =
               Number.isFinite(w) && w > 0 && Number.isFinite(lm) && lm > 0
                 ? `${Math.round(lm / w)} lm/W`
-                : normalizeText(group.efficacy);
+                : "";
             return (
               <tr key={`${group.id}-${index}`} className="align-middle">
                 {index === 0 && (
