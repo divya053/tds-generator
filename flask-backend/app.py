@@ -78,12 +78,16 @@ MAX_PROMPT_CHARS = int(os.environ.get("MAX_PROMPT_CHARS", "36000").strip())
 LLM_VISION = os.environ.get("LLM_VISION", "1").strip().lower() not in {"0", "false", "no"}
 LLM_VISION_MAX_PAGES = int(os.environ.get("LLM_VISION_MAX_PAGES", "8").strip())
 ENABLE_PADDLE_OCR = os.environ.get("ENABLE_PADDLE_OCR", "1").strip().lower() not in {"0", "false", "no"}
+# docTR (deep-learning OCR) is the PRIMARY OCR engine — it reads image-based spec tables reliably.
+ENABLE_DOCTR_OCR = os.environ.get("ENABLE_DOCTR_OCR", "1").strip().lower() not in {"0", "false", "no"}
+DOCTR_MODEL = None
+DOCTR_READY = None
 
 # Cache extraction results by PDF content so the same file is never re-analyzed (saves
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v9"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v10"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -565,6 +569,61 @@ def should_use_ocr(page_text: str, table_rows: list[str]) -> bool:
     return alpha_count < 600 or len(table_rows) < 2
 
 
+def get_doctr_model():
+    """Lazily load the docTR OCR model once (heavy). Returns None if docTR isn't installed/usable."""
+    global DOCTR_MODEL, DOCTR_READY
+    if not ENABLE_DOCTR_OCR:
+        return None
+    if DOCTR_READY is not None:
+        return DOCTR_MODEL
+    try:
+        from doctr.models import ocr_predictor  # type: ignore
+
+        DOCTR_MODEL = ocr_predictor(pretrained=True)
+        DOCTR_READY = True
+    except Exception as exc:  # noqa: BLE001
+        print(f"docTR unavailable: {exc}", file=sys.stderr)
+        DOCTR_MODEL = None
+        DOCTR_READY = False
+    return DOCTR_MODEL
+
+
+def run_doctr_ocr_on_page(pdf_path: str, page_index: int) -> str:
+    """OCR a single PDF page with docTR (renders to a numpy image, keeps line structure)."""
+    model = get_doctr_model()
+    if model is None:
+        return ""
+    try:
+        import numpy as np
+
+        pdf = pdfium.PdfDocument(pdf_path)
+        try:
+            page = pdf[page_index]
+            try:
+                bitmap = page.render(scale=max(PDF_RENDER_SCALE, 1.8))
+                try:
+                    image = np.array(bitmap.to_pil().convert("RGB"))
+                finally:
+                    bitmap.close()
+            finally:
+                page.close()
+        finally:
+            pdf.close()
+        result = model([image])
+        return result.render() if hasattr(result, "render") else ""
+    except Exception as exc:  # noqa: BLE001 - never fail extraction over OCR
+        print(f"docTR OCR failed on page {page_index + 1}: {str(exc)[:150]}", file=sys.stderr)
+        return ""
+
+
+def run_ocr_on_page(pdf_path: str, page_index: int) -> str:
+    """Run OCR on a page: docTR first (best on image spec tables), PaddleOCR as a fallback."""
+    text = run_doctr_ocr_on_page(pdf_path, page_index)
+    if normalize_whitespace(text):
+        return text
+    return run_paddle_ocr_on_page(pdf_path, page_index)
+
+
 def _paddle_result_texts(results: Any) -> list[str]:
     """Pull recognized text out of a PaddleOCR result, supporting BOTH the new PP-OCRv5 predict()
     format (OCRResult with 'rec_texts') and the legacy ocr() format ([box, (text, conf)])."""
@@ -653,9 +712,9 @@ def extract_text_from_pdf(pdf_path: str) -> tuple[str, list[str]]:
             ocr_text = ""
 
             if should_use_ocr(page_text, table_rows):
-                ocr_text = run_paddle_ocr_on_page(pdf_path, index)
+                ocr_text = run_ocr_on_page(pdf_path, index)
                 if ocr_text:
-                    notes.append(f"Used PaddleOCR on vendor page {index + 1}.")
+                    notes.append(f"Used OCR on vendor page {index + 1}.")
 
             page_chunks = [chunk for chunk in [page_text, "\n".join(table_rows), ocr_text] if normalize_whitespace(chunk)]
             if page_chunks:
