@@ -1483,10 +1483,11 @@ function deriveEstimatedOverviewValue(spec: ExtendedExtractedSpec, label: string
  *  whole lm/W). Requires the two lists to be aligned (equal length) so each power pairs with its own
  *  lumen. Returns a dash-joined list of the distinct efficacies (selectable style), or a "min - max
  *  lm/W" range when there are many. Empty when the lists aren't aligned. */
-function deriveEfficacyFromPowerLumen(spec: ExtendedExtractedSpec) {
-  const wattages = parseWattages(spec);
-  const lumens = parseLumens(spec);
-  // Compute efficacy = lumens / power for each aligned pair (never copy the vendor's stated value).
+/** Efficacy = lumens / power for each aligned pair (NEVER the vendor's stated value), formatted
+ *  as a hyphen list. Works from two raw strings so it can run off the draft's own Power/Lumen rows. */
+function efficacyFromWattsLumens(powerText: string, lumenText: string) {
+  const wattages = extractNumericValues(powerText, /(\d+(?:\.\d+)?)\s*(?:w|watt|watts)\b/gi);
+  const lumens = extractNumericValues(lumenText, /(\d[\d,]*(?:\.\d+)?)\s*lm\b/gi);
   const pairCount = Math.min(wattages.length, lumens.length);
   if (pairCount < 1) return "";
 
@@ -1501,6 +1502,13 @@ function deriveEfficacyFromPowerLumen(spec: ExtendedExtractedSpec) {
   if (values.length === 1) return `${values[0]} lm/W`;
   if (values.length <= 8) return `${values.join(" - ")} lm/W`;
   return `${Math.min(...values)} - ${Math.max(...values)} lm/W`;
+}
+
+function deriveEfficacyFromPowerLumen(spec: ExtendedExtractedSpec) {
+  return efficacyFromWattsLumens(
+    getOverviewValue(spec, ["Wattage", "Power"]),
+    getOverviewValue(spec, ["Lumen Output", "Lumens"]),
+  );
 }
 
 function getCategoryLabel(spec: ExtendedExtractedSpec) {
@@ -4246,9 +4254,18 @@ function SheetPageOne({
   ).slice(0, 2);
   // Efficacy is ALWAYS recomputed from THIS fixture's own Power & Lumen (lumens / power) at render
   // time — never the vendor's stated figure — so even drafts saved before this rule self-correct.
-  // Power is NOT overridden here: its per-variant grouping is set when the sheet is built
-  // (buildVariantPowerValue) and stays editable, so a manual split typed in the editor sticks.
-  const computedEfficacy = deriveEfficacyFromPowerLumen(spec);
+  // Compute it from the DRAFT's own Power/Lumen rows (the values actually on the sheet), because a
+  // reconstructed spec may not carry variantOverview/technicalSpecs; fall back to the spec if the
+  // draft rows are absent. Power is NOT overridden here: its per-variant grouping is set when the
+  // sheet is built (buildVariantPowerValue) and stays editable, so a manual split typed in sticks.
+  const draftOverviewRowValue = (match: (label: string) => boolean) =>
+    draft.overviewRows.find((row) => isSpecified(row.value) && match(row.label))?.value ?? "";
+  const draftPowerText = draftOverviewRowValue(isPowerSelectableOverviewLabel);
+  const draftLumenText = draftOverviewRowValue(
+    (label) => normalizeSpecKey(label) === "lumen output" || normalizeSpecKey(label) === "lumens",
+  );
+  const computedEfficacy =
+    efficacyFromWattsLumens(draftPowerText, draftLumenText) || deriveEfficacyFromPowerLumen(spec);
   const filteredOverviewRows = draft.overviewRows
     .filter((row) => row.included !== false)
     .filter((row) => isSpecified(row.label) && isSpecified(row.value))
