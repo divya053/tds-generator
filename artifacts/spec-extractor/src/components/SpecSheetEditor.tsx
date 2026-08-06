@@ -3131,9 +3131,17 @@ function ImageEditorDialog({
           const w = Math.max(10, (Math.abs(xmax - xmin) / 1000) * W);
           const h = Math.max(10, (Math.abs(ymax - ymin) / 1000) * H);
           const pad = h * 0.3;
+          const text = String(edit.replacement);
+          // Size the replacement to FIT the original label's box — by height AND width — so a longer
+          // value (e.g. "592mm" -> "23.32in.") never balloons past the label. ~0.55 is Arial's mean
+          // glyph-width-to-font-size ratio. Then vertically centre it in the box.
+          const size = Math.max(
+            9,
+            Math.round(Math.min(h * 0.82, (w * 0.94) / Math.max(1, text.length * 0.55))),
+          );
           // White box over the old text (dimension drawings are on white), then the new text.
           eraseLayers.push({ id: `ai-erase-${stamp}-${i}`, x: x - pad, y: y - pad, width: w + pad * 2, height: h + pad * 2, color: "#ffffff" });
-          textLayers.push({ id: `ai-text-${stamp}-${i}`, x, y: y + h * 0.1, text: String(edit.replacement), color: "#111827", size: Math.max(11, Math.round(h * 0.85)) });
+          textLayers.push({ id: `ai-text-${stamp}-${i}`, x, y: y + Math.max(0, (h - size) / 2), text, color: "#111827", size });
         });
         return { ...current, eraseLayers, textLayers };
       });
@@ -4476,10 +4484,12 @@ function SheetPageOne({
   draft,
   selectedImage,
   spec,
+  variantSelected,
 }: {
   draft: EditorDraft;
   selectedImage: SourceImage | null;
   spec: ExtendedExtractedSpec;
+  variantSelected?: boolean;
 }) {
   const features = normalizePreviewFeatures(draft.featuresText);
   const applicationAreas = splitCommaList(draft.applicationAreasText);
@@ -4509,9 +4519,12 @@ function SheetPageOne({
   // Power: when the fixture has MULTIPLE variants, recompute the row so each variant's selectable
   // powers show on their OWN line (never every wattage merged into one line) — this self-corrects
   // drafts saved before the per-variant rule. For a single selectable fixture we leave the stored
-  // value alone so a manual edit still sticks.
+  // value alone so a manual edit still sticks. When a single variant is CHOSEN from the sheet-variant
+  // selector, don't override: the narrowed draft already holds just that variant's powers.
   const computedPower =
-    buildPreviewVariantRows(spec).length > 1 ? buildVariantPowerValue(spec, "Power") : "";
+    !variantSelected && buildPreviewVariantRows(spec).length > 1
+      ? buildVariantPowerValue(spec, "Power")
+      : "";
   const filteredOverviewRows = draft.overviewRows
     .filter((row) => row.included !== false)
     .filter((row) => isSpecified(row.label) && isSpecified(row.value))
@@ -5968,11 +5981,13 @@ function SheetPreview({
   draft,
   selectedImage,
   spec,
+  variantSelected,
   onImagePlacementChange,
 }: {
   draft: EditorDraft;
   selectedImage: SourceImage | null;
   spec: ExtendedExtractedSpec;
+  variantSelected?: boolean;
   onImagePlacementChange?: (imageId: string, placement: ImagePlacement) => void;
 }) {
   const sourceImages = getDraftSourceImages(spec, draft);
@@ -5992,7 +6007,7 @@ function SheetPreview({
   return (
     <SheetImageEditingContext.Provider value={imageEditing}>
       <div className="flex flex-col items-center gap-8">
-        <SheetPageOne draft={draft} selectedImage={selectedImage} spec={spec} />
+        <SheetPageOne draft={draft} selectedImage={selectedImage} spec={spec} variantSelected={variantSelected} />
         {pages.map((page, index) => (
           <SheetPageFrame key={`page-${index}`} draft={draft} pageNumber={2 + index}>
             <div className="flex w-[727px] flex-col gap-5">
@@ -8210,6 +8225,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               draft={displayDraft}
               selectedImage={selectedImage}
               spec={spec}
+              variantSelected={sheetVariant !== null}
               onImagePlacementChange={handleImagePlacementChange}
             />
           </div>
