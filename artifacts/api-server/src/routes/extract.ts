@@ -46,7 +46,18 @@ type ExtractedPayload = {
   vendorInfo?: { vendorName: string; vendorContact: string };
   sourceImages?: SourceAsset[];
   sourcePages?: SourceAsset[];
+  // Fields the Flask extractor returns that the editor also needs — must be passed through.
+  subCategory?: string;
+  orderingInfo?: Record<string, { code?: string; description?: string }[]>;
+  orderingExample?: string;
+  accessories?: { code?: string; description?: string }[];
+  dimensions?: { label?: string; width?: string; height?: string; depth?: string }[];
+  extraTables?: { title?: string; headers?: string[]; rows?: string[][] }[];
 };
+
+type CodeEntry = { code?: string; description?: string };
+type DimensionEntry = { label?: string; width?: string; height?: string; depth?: string };
+type ExtraTableEntry = { title?: string; headers?: string[]; rows?: string[][] };
 
 type StoredExtraction = {
   id: number;
@@ -57,11 +68,17 @@ type StoredExtraction = {
   productFeatures: string[];
   applicationAreas: string[];
   productCategory: string;
+  subCategory: string;
   isProductFamily: boolean;
   variantOverview: VariantOverview;
   variants: Record<string, unknown>[];
   technicalSpecs: TechnicalSpec[];
   categorySpecificSpecs: TechnicalSpec[];
+  orderingInfo: Record<string, CodeEntry[]>;
+  orderingExample: string;
+  accessories: CodeEntry[];
+  dimensions: DimensionEntry[];
+  extraTables: ExtraTableEntry[];
   notes: string[];
   vendorInfo: { vendorName: string; vendorContact: string };
   sourceImages: SourceAsset[];
@@ -248,11 +265,18 @@ router.post("/extract", upload.single("file"), async (req, res) => {
       productFeatures: normalizeStringArray(extracted.productFeatures),
       applicationAreas: normalizeStringArray(extracted.applicationAreas),
       productCategory: extracted.productCategory ?? "",
+      subCategory: extracted.subCategory ?? "",
       isProductFamily: typeof extracted.isProductFamily === "boolean" ? extracted.isProductFamily : false,
       variantOverview: normalizeVariantOverview(extracted.variantOverview),
       variants: normalizeVariants(extracted.variants),
       technicalSpecs: normalizeTechnicalSpecs(extracted.technicalSpecs),
       categorySpecificSpecs: normalizeTechnicalSpecs(extracted.categorySpecificSpecs),
+      // Pass through the editor-facing structured data the extractor produced (previously dropped).
+      orderingInfo: (extracted.orderingInfo && typeof extracted.orderingInfo === "object" ? extracted.orderingInfo : {}) as Record<string, CodeEntry[]>,
+      orderingExample: extracted.orderingExample ?? "",
+      accessories: Array.isArray(extracted.accessories) ? extracted.accessories : [],
+      dimensions: Array.isArray(extracted.dimensions) ? extracted.dimensions : [],
+      extraTables: Array.isArray(extracted.extraTables) ? extracted.extraTables : [],
       notes: normalizeStringArray(extracted.notes),
       vendorInfo: extracted.vendorInfo ?? { vendorName: "", vendorContact: "" },
       sourceImages: normalizeSourceAssets(extracted.sourceImages),
