@@ -223,6 +223,9 @@ type EditorDraft = {
   selectedQualificationIds: QualificationBadgeId[];
   // Page 2 — Product Specifications
   specGroups: SpecGroup[];
+  // Editable header/unit/visibility for each of the 9 spec-table columns (same order as
+  // SPEC_COLUMNS). Absent on older drafts → the defaults are used.
+  specColumns?: { label: string; unit: string; hidden?: boolean }[];
   specsNote: string;
   // Page 3 — Product Ordering Information + Accessories
   orderingExample: string;
@@ -2723,6 +2726,7 @@ function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendation
     imageOwners: {},
     selectedQualificationIds: inferQualificationBadgeIds(spec as ExtendedExtractedSpec),
     specGroups: buildSpecGroups(spec),
+    specColumns: SPEC_COLUMNS.map((column) => ({ label: column.label, unit: column.unit })),
     specsNote:
       "Custom manufacturing options in CCT, wattage, voltage, light distribution, finish, and more are available upon request, subject to MOQ and lead time considerations.",
     orderingExample: isSpecified(spec.orderingExample) ? String(spec.orderingExample).trim() : "",
@@ -5307,103 +5311,81 @@ function repairSpecOptions<T extends { power: string; lumen: string }>(options: 
   });
 }
 
-function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
+type SpecColumnConfig = { label: string; unit: string; hidden?: boolean };
+
+/** Resolve the 9 spec columns from the draft (editable label/unit/hidden), falling back to defaults. */
+function resolveSpecColumns(columns?: SpecColumnConfig[]): SpecColumnConfig[] {
+  return SPEC_COLUMNS.map((base, i) => ({
+    label: columns?.[i]?.label ?? base.label,
+    unit: columns?.[i]?.unit ?? base.unit,
+    hidden: columns?.[i]?.hidden ?? false,
+  }));
+}
+
+function SpecificationsTable({ groups, columns }: { groups: SpecGroup[]; columns?: SpecColumnConfig[] }) {
+  const cols = resolveSpecColumns(columns);
+  const visible = cols.map((column, index) => ({ ...column, index })).filter((column) => !column.hidden);
+  const lastVisible = visible.length - 1;
+  const headerClass = (i: number) =>
+    cn(
+      "border border-[#414042] bg-[#414042] px-1 py-1 text-center align-middle text-[8px] font-bold uppercase leading-[1.1] text-white",
+      i === 0 && "border-l-0",
+      i === lastVisible && "border-r-0",
+    );
+  const unitClass = (i: number) =>
+    cn(
+      "border border-[#d6d6d8] bg-[#eeeeef] px-1 py-1.5 text-center align-middle text-[7px] font-bold leading-none text-black",
+      i === 0 && "border-l-0",
+      i === lastVisible && "border-r-0",
+    );
+  // Body cell edge classes depend on whether this column is the first/last VISIBLE one.
+  const cellEdge = (colIndex: number) =>
+    cn(visible[0]?.index === colIndex && "border-l-0", visible[lastVisible]?.index === colIndex && "border-r-0");
+  const show = (colIndex: number) => !cols[colIndex].hidden;
+
   return (
     <table className="w-full table-fixed border-collapse" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
       <colgroup>
-        {SPEC_COL_WIDTHS.map((width, index) => (
-          <col key={index} style={{ width }} />
+        {visible.map((column) => (
+          <col key={column.index} style={{ width: SPEC_COL_WIDTHS[column.index] }} />
         ))}
       </colgroup>
       <thead>
-        <tr>
-          {SPEC_COLUMNS.map((column, i, arr) => (
-            <th
-              key={column.label}
-              className={cn(
-                "border border-[#414042] bg-[#414042] px-1 py-1 text-center align-middle text-[8px] font-bold uppercase leading-[1.1] text-white",
-                i === 0 && "border-l-0",
-                i === arr.length - 1 && "border-r-0",
-              )}
-            >
-              {column.label}
-            </th>
-          ))}
-        </tr>
-        <tr>
-          {SPEC_COLUMNS.map((column, i, arr) => (
-            <th
-              key={column.label}
-              className={cn(
-                "border border-[#d6d6d8] bg-[#eeeeef] px-1 py-1.5 text-center align-middle text-[7px] font-bold leading-none text-black",
-                i === 0 && "border-l-0",
-                i === arr.length - 1 && "border-r-0",
-              )}
-            >
-              {column.unit}
-            </th>
-          ))}
-        </tr>
+        <tr>{visible.map((column, i) => (<th key={column.index} className={headerClass(i)}>{column.label}</th>))}</tr>
+        <tr>{visible.map((column, i) => (<th key={column.index} className={unitClass(i)}>{column.unit}</th>))}</tr>
       </thead>
       <tbody>
         {groups.map((group) => {
           const options = repairSpecOptions(group.options.length > 0 ? group.options : [{ power: "", lumen: "" }]);
           const span = options.length;
-          // Selectable CCT as a single dash-joined line WITH the K unit (e.g. "3000K-4000K-5000K").
           const cctTokens = group.cct.match(/\d[\d.]*\s*K\b/gi);
           const cctDisplay = cctTokens && cctTokens.length > 0
             ? cctTokens.map((token) => token.replace(/\s+/g, "").toUpperCase()).join("-")
             : normalizeText(group.cct);
           return options.map((option, index) => {
-            // Efficacy per power = that power's own lumen / watt (computed, never the vendor value).
             const w = Number((option.power.match(/[\d.]+/) ?? [])[0]);
             const lm = Number((option.lumen.replace(/,/g, "").match(/[\d.]+/) ?? [])[0]);
             const optionEfficacy =
-              Number.isFinite(w) && w > 0 && Number.isFinite(lm) && lm > 0
-                ? `${Math.round(lm / w)} lm/W`
-                : "";
+              Number.isFinite(w) && w > 0 && Number.isFinite(lm) && lm > 0 ? `${Math.round(lm / w)} lm/W` : "";
+            const cell = "border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black";
             return (
               <tr key={`${group.id}-${index}`} className="align-middle">
-                {index === 0 && (
-                  <td rowSpan={span} className="border border-l-0 border-slate-200 px-1 py-1.5 text-center text-[7px] font-bold leading-[1.2] text-black">
+                {show(0) && index === 0 && (
+                  <td rowSpan={span} className={cn(cell, "font-bold", cellEdge(0))}>
                     <div className="whitespace-nowrap">{group.partNumber}</div>
                     {isSpecified(group.sku) && (
-                      <div className="mt-0.5 whitespace-nowrap font-normal text-slate-500">
-                        SKU: {group.sku}
-                      </div>
+                      <div className="mt-0.5 whitespace-nowrap font-normal text-slate-500">SKU: {group.sku}</div>
                     )}
                   </td>
                 )}
-                <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                  {option.power}
-                </td>
-                {index === 0 && (
-                  <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                    {group.voltage}
-                  </td>
-                )}
-                <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                  {option.lumen}
-                </td>
-                <td className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                  {optionEfficacy}
-                </td>
-                {index === 0 && (
-                  <>
-                    <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                      {group.cri}
-                    </td>
-                    <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                      {cctDisplay}
-                    </td>
-                    <td rowSpan={span} className="border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                      {group.thd}
-                    </td>
-                    <td rowSpan={span} className="border border-r-0 border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black">
-                      {group.lightDistribution}
-                    </td>
-                  </>
-                )}
+                {show(1) && <td className={cn(cell, cellEdge(1))}>{option.power}</td>}
+                {show(2) && index === 0 && <td rowSpan={span} className={cn(cell, cellEdge(2))}>{group.voltage}</td>}
+                {show(3) && <td className={cn(cell, cellEdge(3))}>{option.lumen}</td>}
+                {show(4) && <td className={cn(cell, cellEdge(4))}>{optionEfficacy}</td>}
+                {show(5) && index === 0 && <td rowSpan={span} className={cn(cell, cellEdge(5))}>{group.cri}</td>}
+                {show(6) && index === 0 && <td rowSpan={span} className={cn(cell, cellEdge(6))}>{cctDisplay}</td>}
+                {show(7) && index === 0 && <td rowSpan={span} className={cn(cell, cellEdge(7))}>{group.thd}</td>}
+                {show(8) && index === 0 && <td rowSpan={span} className={cn(cell, cellEdge(8))}>{group.lightDistribution}</td>}
               </tr>
             );
           });
@@ -5433,7 +5415,7 @@ function SheetSpecificationsPage({
         {/* Product Specifications — takes only the height it needs */}
         <section className="shrink-0 overflow-hidden">
           <SheetPageHeading title="Product Specifications" />
-          <SpecificationsTable groups={groups} />
+          <SpecificationsTable groups={groups} columns={draft.specColumns} />
           {isSpecified(draft.specsNote) && <SheetNote>{draft.specsNote}</SheetNote>}
         </section>
 
@@ -6038,7 +6020,7 @@ function buildSheetBlocks(
       node: (
         <section>
           <SheetPageHeading title={first ? "Product Specifications" : "Product Specifications (cont.)"} />
-          <SpecificationsTable groups={chunk} />
+          <SpecificationsTable groups={chunk} columns={draft.specColumns} />
           {showNote && <SheetNote>{draft.specsNote}</SheetNote>}
         </section>
       ),
@@ -7178,6 +7160,14 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     }));
   };
 
+  // ---- Product Specifications COLUMNS (rename label/unit, show/hide) ----
+  const updateSpecColumn = (index: number, patch: Partial<{ label: string; unit: string; hidden: boolean }>) => {
+    setDraft((current) => ({
+      ...current,
+      specColumns: resolveSpecColumns(current.specColumns).map((column, i) => (i === index ? { ...column, ...patch } : column)),
+    }));
+  };
+
   // ---- Ordering COLUMNS (dynamic: rename / add / delete a whole column) ----
   const renameOrderingColumn = (columnIndex: number, header: string) => {
     setDraft((current) => ({
@@ -8044,6 +8034,42 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               </h2>
               <Badge variant="outline">{draft.specGroups.length} rows</Badge>
             </div>
+            <details className="rounded-2xl border border-border/70 bg-card/40 p-3">
+              <summary className="cursor-pointer text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+                Table columns — rename or hide
+              </summary>
+              <div className="mt-2 space-y-1.5">
+                {resolveSpecColumns(draft.specColumns).map((column, columnIndex) => (
+                  <div key={columnIndex} className="flex items-center gap-2">
+                    <Input
+                      value={column.label}
+                      onChange={(event) => updateSpecColumn(columnIndex, { label: event.target.value })}
+                      placeholder="Column name"
+                      className={cn("h-9 text-[12px]", column.hidden && "opacity-50")}
+                    />
+                    <Input
+                      value={column.unit}
+                      onChange={(event) => updateSpecColumn(columnIndex, { unit: event.target.value })}
+                      placeholder="Unit"
+                      className={cn("h-9 w-[64px] shrink-0 text-[12px]", column.hidden && "opacity-50")}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => updateSpecColumn(columnIndex, { hidden: !column.hidden })}
+                      className="h-9 shrink-0 px-2 text-[11px]"
+                      title={column.hidden ? "Show this column" : "Hide this column"}
+                    >
+                      {column.hidden ? "Show" : "Hide"}
+                    </Button>
+                  </div>
+                ))}
+                <p className="pt-1 text-[10px] text-muted-foreground">
+                  Hidden columns are removed from the printed table. Rename any header (e.g. keep
+                  "Power" in US units) or its unit above.
+                </p>
+              </div>
+            </details>
             <div className="space-y-3">
               {draft.specGroups.map((group, groupIndex) => (
                 <div key={group.id} className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
