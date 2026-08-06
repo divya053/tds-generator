@@ -5602,6 +5602,15 @@ function SheetDimensionsPage({
   );
 }
 
+/** US standard: selectable value lists use "-" not "/" (e.g. "20W/16W/10W" -> "20W-16W-10W",
+ *  "3000K/4000K/5000K" -> "3000K-4000K-5000K"). Keeps "lm/W" and "N/A" intact. */
+function hyphenateSelectable(text: string) {
+  return String(text ?? "")
+    .split(/(lm\s*\/\s*w|n\s*\/\s*a)/i)
+    .map((part, i) => (i % 2 === 1 ? part : part.replace(/\s*\/\s*/g, "-")))
+    .join("");
+}
+
 const ORDERING_GROUP_ORDER: OrderingGroupId[] = ["family", "performance", "construction"];
 
 const ORDERING_COL_WIDTHS: Record<string, string> = {
@@ -5691,13 +5700,13 @@ function OrderingDecoderTable({
               <td
                 key={column.id}
                 className={cn(
-                  "border border-slate-200 px-1 py-[3px] text-center text-[7.5px] font-bold text-black",
+                  "border border-slate-200 px-1 py-[3px] text-center text-[7.5px] font-bold text-black [overflow-wrap:anywhere]",
                   isMulti ? "bg-[#e2e2e4]" : "bg-[#f6f6f7]",
                   i === 0 && "border-l-0",
                   i === arr.length - 1 && "border-r-0",
                 )}
               >
-                {code || " "}
+                {hyphenateSelectable(code) || " "}
               </td>
             );
           })}
@@ -5734,9 +5743,13 @@ function OrderingDecoderTable({
                   .filter((entry) => isSpecified(entry.code) || isSpecified(entry.description))
                   .map((entry, index) => (
                     <div key={index} className="leading-[1.3]">
-                      <div className="text-[7px] font-bold text-black">{entry.code}</div>
+                      <div className="text-[7px] font-bold text-black [overflow-wrap:anywhere]">
+                        {hyphenateSelectable(entry.code)}
+                      </div>
                       {isSpecified(entry.description) && (
-                        <div className="text-[6.5px] text-black">{entry.description}</div>
+                        <div className="text-[6.5px] text-black [overflow-wrap:anywhere]">
+                          {hyphenateSelectable(entry.description)}
+                        </div>
                       )}
                     </div>
                   ))}
@@ -7338,6 +7351,22 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
       ],
     }));
   };
+  // Insert a new column at a specific position (in the same group as the column it's inserted before),
+  // so a column can be added BETWEEN any two existing ones.
+  const insertOrderingColumn = (beforeIndex: number) => {
+    setDraft((current) => {
+      const next = [...current.orderingColumns];
+      const group = next[beforeIndex]?.group ?? "construction";
+      next.splice(beforeIndex, 0, {
+        id: `ordering-col-${Date.now()}`,
+        group,
+        header: "New Column",
+        unit: "",
+        entries: [{ code: "", description: "" }],
+      });
+      return { ...current, orderingColumns: next };
+    });
+  };
 
   // ---- Extra vendor tables (editable, prefilled) ----
   const mapExtraTables = (fn: (t: ExtraTable) => ExtraTable) =>
@@ -8376,6 +8405,14 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
             <div className="space-y-3">
               {draft.orderingColumns.map((column, columnIndex) => (
                 <div key={column.id} className="space-y-1.5 rounded-2xl border border-border/70 bg-card/40 p-3">
+                  <button
+                    type="button"
+                    onClick={() => insertOrderingColumn(columnIndex)}
+                    className="flex w-full items-center justify-center gap-1 rounded-lg border border-dashed border-primary/30 py-0.5 text-[10px] text-primary/80 hover:border-primary hover:bg-primary/5"
+                    title="Insert a new column before this one"
+                  >
+                    <Plus className="h-3 w-3" /> Insert column here
+                  </button>
                   <div className="flex items-center gap-2">
                     <Input
                       value={column.header}
