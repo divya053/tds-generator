@@ -297,7 +297,19 @@ type ImageEraseLayer = {
   shape?: "rect" | "circle";
 };
 
-type ImageEditorMode = "text" | "movetext" | "erase" | "pen" | "crop";
+// A drawn line or arrow — to redraw dimension leaders/arrows erased while editing unit labels.
+type ImageShapeLayer = {
+  id: string;
+  type: "line" | "arrow";
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  color: string;
+  width: number;
+};
+
+type ImageEditorMode = "text" | "movetext" | "erase" | "pen" | "crop" | "line" | "arrow";
 
 // Which part of the crop rectangle a drag is manipulating.
 type CropHandle = "new" | "move" | "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
@@ -315,6 +327,7 @@ type ImageEditorState = {
   grayscale: boolean;
   textLayers: ImageTextLayer[];
   eraseLayers: ImageEraseLayer[];
+  shapeLayers: ImageShapeLayer[];
 };
 
 type OverviewTemplateRow = { label: string; keys: string[] };
@@ -846,7 +859,37 @@ function createImageEditorState(): ImageEditorState {
     grayscale: false,
     textLayers: [],
     eraseLayers: [],
+    shapeLayers: [],
   };
+}
+
+/** Draw a line or arrow (with a filled arrowhead) onto a canvas context — used both for committed
+ *  shape layers and the live drag preview, so dimension leaders/arrows can be redrawn. */
+function drawShapeOnContext(
+  context: CanvasRenderingContext2D,
+  shape: { type: "line" | "arrow"; x1: number; y1: number; x2: number; y2: number; color: string; width: number },
+) {
+  const { x1, y1, x2, y2, color, width } = shape;
+  context.save();
+  context.strokeStyle = color;
+  context.fillStyle = color;
+  context.lineWidth = Math.max(1, width);
+  context.lineCap = "round";
+  context.beginPath();
+  context.moveTo(x1, y1);
+  context.lineTo(x2, y2);
+  context.stroke();
+  if (shape.type === "arrow") {
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    const head = Math.max(8, width * 3.5);
+    context.beginPath();
+    context.moveTo(x2, y2);
+    context.lineTo(x2 - head * Math.cos(angle - Math.PI / 6), y2 - head * Math.sin(angle - Math.PI / 6));
+    context.lineTo(x2 - head * Math.cos(angle + Math.PI / 6), y2 - head * Math.sin(angle + Math.PI / 6));
+    context.closePath();
+    context.fill();
+  }
+  context.restore();
 }
 
 /**
@@ -2781,6 +2824,11 @@ function ImageEditorDialog({
   // Move/edit placed text (Illustrator-style): the selected layer + the active drag offset.
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
   const textDragRef = useRef<{ id: string; dx: number; dy: number } | null>(null);
+  // Draw lines / arrows (to redraw dimension leaders erased while editing units).
+  const [shapeColor, setShapeColor] = useState("#111827");
+  const [shapeWidth, setShapeWidth] = useState(3);
+  const shapeDragRef = useRef<{ x1: number; y1: number } | null>(null);
+  const [shapePreview, setShapePreview] = useState<ImageShapeLayer | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -2860,6 +2908,10 @@ function ImageEditorDialog({
         } else {
           context.fillRect(layer.x, layer.y, layer.width, layer.height);
         }
+      });
+
+      editor.shapeLayers.forEach((layer) => {
+        drawShapeOnContext(context, layer);
       });
 
       editor.textLayers.forEach((layer) => {
@@ -3100,6 +3152,35 @@ function ImageEditorDialog({
     setSelectedTextId(null);
   };
 
+  // ---- Draw line / arrow (redraw erased dimension leaders) ----
+  const handleShapeDown = (point: { x: number; y: number }) => {
+    shapeDragRef.current = { x1: point.x, y1: point.y };
+    setShapePreview({
+      id: "preview", type: mode === "arrow" ? "arrow" : "line",
+      x1: point.x, y1: point.y, x2: point.x, y2: point.y, color: shapeColor, width: shapeWidth,
+    });
+  };
+  const handleShapeMove = (point: { x: number; y: number }) => {
+    const start = shapeDragRef.current;
+    if (!start) return;
+    setShapePreview({
+      id: "preview", type: mode === "arrow" ? "arrow" : "line",
+      x1: start.x1, y1: start.y1, x2: point.x, y2: point.y, color: shapeColor, width: shapeWidth,
+    });
+  };
+  const handleShapeUp = () => {
+    const start = shapeDragRef.current;
+    const preview = shapePreview;
+    shapeDragRef.current = null;
+    setShapePreview(null);
+    if (start && preview && (Math.abs(preview.x2 - preview.x1) > 2 || Math.abs(preview.y2 - preview.y1) > 2)) {
+      setEditor((current) => ({
+        ...current,
+        shapeLayers: [...current.shapeLayers, { ...preview, id: `shape-${Date.now()}-${current.shapeLayers.length}` }],
+      }));
+    }
+  };
+
   // Initialise a centred crop box when entering crop mode with none set.
   useEffect(() => {
     if (mode === "crop" && !crop && canvasEl && canvasEl.width > 0) {
@@ -3129,6 +3210,11 @@ function ImageEditorDialog({
       }
       return;
     }
+    if (mode === "line" || mode === "arrow") {
+      // Live preview of the line/arrow being dragged (committed shapes are on the main canvas).
+      if (shapePreview) drawShapeOnContext(ctx, shapePreview);
+      return;
+    }
     if (mode !== "crop" || !crop) return;
     ctx.fillStyle = "rgba(0,0,0,0.45)";
     ctx.fillRect(0, 0, ov.width, ov.height);
@@ -3152,7 +3238,7 @@ function ImageEditorDialog({
       ctx.beginPath(); ctx.rect(hx - r, hy - r, r * 2, r * 2); ctx.fill(); ctx.stroke();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, crop, canvasEl, overlayEl, editor, baseDataUrl, selectedTextId]);
+  }, [mode, crop, canvasEl, overlayEl, editor, baseDataUrl, selectedTextId, shapePreview]);
 
   const handleCanvasPointerDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (mode === "crop") {
@@ -3163,6 +3249,11 @@ function ImageEditorDialog({
     if (mode === "movetext") {
       const point = getCanvasPoint(event);
       if (point) handleTextDown(point);
+      return;
+    }
+    if (mode === "line" || mode === "arrow") {
+      const point = getCanvasPoint(event);
+      if (point) handleShapeDown(point);
       return;
     }
     handlePenDown(event);
@@ -3180,6 +3271,12 @@ function ImageEditorDialog({
       if (point) handleTextMove(point);
       return;
     }
+    if (mode === "line" || mode === "arrow") {
+      if (!shapeDragRef.current) return;
+      const point = getCanvasPoint(event);
+      if (point) handleShapeMove(point);
+      return;
+    }
     handlePenMove(event);
   };
   const handleCanvasPointerUp = () => {
@@ -3191,12 +3288,16 @@ function ImageEditorDialog({
       textDragRef.current = null;
       return;
     }
+    if (mode === "line" || mode === "arrow") {
+      handleShapeUp();
+      return;
+    }
     handlePenUp();
   };
 
   const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (!image) return;
-    if (mode === "pen" || mode === "crop" || mode === "movetext") return; // handled by drag (down/move)
+    if (mode === "pen" || mode === "crop" || mode === "movetext" || mode === "line" || mode === "arrow") return; // handled by drag (down/move)
 
     const canvas = canvasEl;
     if (!canvas) return;
@@ -3532,8 +3633,41 @@ function ImageEditorDialog({
                   <Button type="button" variant={mode === "pen" ? "default" : "outline"} className="px-2 text-[12px]" onClick={() => setMode("pen")}>
                     Erase Pen
                   </Button>
+                  <Button type="button" variant={mode === "line" ? "default" : "outline"} className="px-2 text-[12px]" onClick={() => setMode("line")}>
+                    ╱ Line
+                  </Button>
+                  <Button type="button" variant={mode === "arrow" ? "default" : "outline"} className="px-2 text-[12px]" onClick={() => setMode("arrow")}>
+                    ➤ Arrow
+                  </Button>
                 </div>
-                {mode === "movetext" ? (
+                {mode === "line" || mode === "arrow" ? (
+                  <div className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
+                    <div className="text-xs text-muted-foreground">
+                      Drag on the image to draw a {mode}. Use this to redraw a dimension leader or arrow
+                      that got covered while editing units.
+                    </div>
+                    <label className="block space-y-1 text-sm">
+                      <span>Colour</span>
+                      <input
+                        type="color"
+                        value={shapeColor}
+                        onChange={(event) => setShapeColor(event.target.value)}
+                        className="h-10 w-full cursor-pointer rounded-lg border border-border bg-background p-1"
+                      />
+                    </label>
+                    <label className="block space-y-1 text-sm">
+                      <span>Thickness: {shapeWidth}px</span>
+                      <input
+                        type="range"
+                        min="1"
+                        max="12"
+                        value={shapeWidth}
+                        onChange={(event) => setShapeWidth(Number(event.target.value))}
+                        className="w-full"
+                      />
+                    </label>
+                  </div>
+                ) : mode === "movetext" ? (
                   <div className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
                     {selectedTextLayer ? (
                       <>
@@ -3744,8 +3878,16 @@ function ImageEditorDialog({
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => setEditor((current) => ({ ...current, textLayers: [], eraseLayers: [] }))}
-                    disabled={editor.textLayers.length === 0 && editor.eraseLayers.length === 0}
+                    onClick={() => setEditor((current) => ({ ...current, shapeLayers: current.shapeLayers.slice(0, -1) }))}
+                    disabled={editor.shapeLayers.length === 0}
+                  >
+                    Remove Last Line/Arrow
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setEditor((current) => ({ ...current, textLayers: [], eraseLayers: [], shapeLayers: [] }))}
+                    disabled={editor.textLayers.length === 0 && editor.eraseLayers.length === 0 && editor.shapeLayers.length === 0}
                   >
                     Clear All Layers
                   </Button>
