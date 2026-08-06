@@ -2596,7 +2596,8 @@ function buildSampleAccessoryRows(): AccessoryRow[] {
 function buildOrderingColumns(spec: ExtendedExtractedSpec): OrderingColumn[] {
   const info = spec.orderingInfo ?? {};
   return createDefaultOrderingColumns().map((column) => {
-    const entries = info[column.header];
+    // Accept a vendor "Wattage" decoder for the US-standard "Power" column.
+    const entries = info[column.header] ?? (column.header === "Power" ? info["Wattage"] ?? info["Watts"] : undefined);
     if (!Array.isArray(entries)) return column;
     const mapped = entries
       .map((entry) => ({
@@ -2625,11 +2626,20 @@ function buildAccessoryRowsFromSpec(spec: ExtendedExtractedSpec): AccessoryRow[]
     }));
 }
 
+/** US convention: the electrical column is "Power" (in W), never "Wattage". Rename a header that is
+ *  essentially "Wattage"/"Watts" (optionally with a unit in parentheses) to "Power". Compound headers
+ *  (e.g. "Wattage Package") are left alone. */
+function normalizeUsColumnHeader(header: string) {
+  const h = String(header ?? "").trim();
+  if (/^watt(age|s|)\s*(\([^)]*\))?$/i.test(h)) return "Power";
+  return h;
+}
+
 function buildExtraTablesFromSpec(spec: ExtendedExtractedSpec): ExtraTable[] {
   const list = Array.isArray(spec.extraTables) ? spec.extraTables : [];
   return list
     .map((table, index) => {
-      const headers = (Array.isArray(table?.headers) ? table.headers : []).map((h) => String(h ?? "").trim());
+      const headers = (Array.isArray(table?.headers) ? table.headers : []).map((h) => normalizeUsColumnHeader(String(h ?? "").trim()));
       const rows = (Array.isArray(table?.rows) ? table.rows : [])
         .map((row) => (Array.isArray(row) ? row.map((cell) => String(cell ?? "").trim()) : []))
         .filter((row) => row.some((cell) => cell));
@@ -5524,7 +5534,10 @@ function OrderingDecoderTable({
     <table className="w-full table-fixed border-collapse" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
       <colgroup>
         {ordered.map((column) => (
-          <col key={column.id} style={{ width: ORDERING_COL_WIDTHS[column.header] }} />
+          <col
+            key={column.id}
+            style={{ width: ORDERING_COL_WIDTHS[column.header] ?? `${(100 / Math.max(1, ordered.length)).toFixed(1)}%` }}
+          />
         ))}
       </colgroup>
       <thead>
@@ -7165,6 +7178,35 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     }));
   };
 
+  // ---- Ordering COLUMNS (dynamic: rename / add / delete a whole column) ----
+  const renameOrderingColumn = (columnIndex: number, header: string) => {
+    setDraft((current) => ({
+      ...current,
+      orderingColumns: current.orderingColumns.map((column, i) => (i === columnIndex ? { ...column, header } : column)),
+    }));
+  };
+  const setOrderingColumnUnit = (columnIndex: number, unit: string) => {
+    setDraft((current) => ({
+      ...current,
+      orderingColumns: current.orderingColumns.map((column, i) => (i === columnIndex ? { ...column, unit } : column)),
+    }));
+  };
+  const removeOrderingColumn = (columnIndex: number) => {
+    setDraft((current) => ({
+      ...current,
+      orderingColumns: current.orderingColumns.filter((_, i) => i !== columnIndex),
+    }));
+  };
+  const addOrderingColumn = () => {
+    setDraft((current) => ({
+      ...current,
+      orderingColumns: [
+        ...current.orderingColumns,
+        { id: `ordering-col-${Date.now()}`, group: "construction", header: "New Column", unit: "", entries: [{ code: "", description: "" }] },
+      ],
+    }));
+  };
+
   // ---- Extra vendor tables (editable, prefilled) ----
   const mapExtraTables = (fn: (t: ExtraTable) => ExtraTable) =>
     setDraft((current) => ({ ...current, extraTables: (current.extraTables ?? []).map(fn) }));
@@ -8166,9 +8208,29 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
             <div className="space-y-3">
               {draft.orderingColumns.map((column, columnIndex) => (
                 <div key={column.id} className="space-y-1.5 rounded-2xl border border-border/70 bg-card/40 p-3">
-                  <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
-                    {column.header}
-                    {isSpecified(column.unit) ? ` (${column.unit})` : ""}
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={column.header}
+                      onChange={(event) => renameOrderingColumn(columnIndex, event.target.value)}
+                      placeholder="Column name"
+                      className="h-9 font-semibold"
+                    />
+                    <Input
+                      value={column.unit}
+                      onChange={(event) => setOrderingColumnUnit(columnIndex, event.target.value)}
+                      placeholder="Unit"
+                      className="h-9 w-[70px] shrink-0"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => removeOrderingColumn(columnIndex)}
+                      className="h-9 w-9 shrink-0 rounded-xl border-[#7a3b3b] bg-[#5f2a2a] p-0 text-red-100 hover:bg-[#743636] [&>svg]:!size-4 [&>svg]:!text-red-100"
+                      aria-label="Delete column"
+                      title="Delete this column"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
                   </div>
                   {column.entries.map((entry, entryIndex) => (
                     <div key={entryIndex} className="flex items-center gap-2">
@@ -8206,6 +8268,15 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                   </Button>
                 </div>
               ))}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={addOrderingColumn}
+                className="h-11 w-full rounded-2xl border-dashed border-primary/40 bg-primary/5 text-primary hover:border-primary hover:bg-primary/10"
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Add Column
+              </Button>
             </div>
             <Textarea
               value={draft.orderingNote}
