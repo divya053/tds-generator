@@ -1538,13 +1538,19 @@ function efficacyFromWattsLumens(powerText: string, lumenText: string) {
   const pairCount = Math.min(wattages.length, lumens.length);
   if (pairCount < 1) return "";
 
-  const values = uniquePreserveOrder(
+  const allValues = uniquePreserveOrder(
     Array.from({ length: pairCount }, (_, index) =>
       wattages[index] > 0 ? Math.round(lumens[index] / wattages[index]) : NaN,
     )
       .filter((value) => Number.isFinite(value) && value > 0)
       .map((value) => String(value)),
   ).map(Number);
+  // Keep only PHYSICALLY POSSIBLE efficacies (real LEDs are ~40-220 lm/W). A value outside this
+  // band means the power/lumen pair was misaligned by the extraction, not a true efficacy — drop it
+  // so the sheet never shows an impossible figure like "228 lm/W". Fall back to the raw set only if
+  // filtering would leave nothing.
+  const plausible = allValues.filter((value) => value >= 40 && value <= 220);
+  const values = plausible.length > 0 ? plausible : allValues;
   if (values.length === 0) return "";
   if (values.length === 1) return `${values[0]} lm/W`;
   if (values.length <= 8) return `${values.join(" - ")} lm/W`;
@@ -6388,6 +6394,36 @@ function buildReviewReport(draft: EditorDraft, spec: ExtendedExtractedSpec) {
         detail: `${isSpecified(variant.fixture) ? `${variant.fixture}: ` : ""}${powerCount} wattages vs ${lumenCount} lumen values — they should pair 1:1.`,
         severity: "high",
       });
+    }
+  }
+
+  // 2b) Efficacy cross-check: every computed efficacy must be physically possible (real LEDs are
+  // ~40-220 lm/W) AND not wildly above the vendor's own stated figure. An impossible value means the
+  // Power↔Lumen pairing is misaligned in the extraction — flag it so the user re-checks that variant.
+  {
+    const wattages = extractNumericValues(getOverviewValue(spec, ["Wattage", "Power"]), /(\d+(?:\.\d+)?)\s*(?:w|watt|watts)\b/gi);
+    const lumens = extractNumericValues(getOverviewValue(spec, ["Lumen Output", "Lumens"]), /(\d[\d,]*(?:\.\d+)?)\s*lm\b/gi);
+    const pairs = Math.min(wattages.length, lumens.length);
+    const effs = Array.from({ length: pairs }, (_, i) => (wattages[i] > 0 ? lumens[i] / wattages[i] : NaN)).filter((v) => Number.isFinite(v));
+    const impossible = effs.filter((v) => v > 220 || v < 30);
+    if (impossible.length > 0) {
+      verify.push({
+        label: "Efficacy",
+        detail: `Computed ${Math.round(Math.max(...impossible))} lm/W is physically impossible — the Power↔Lumen pairing is misaligned. Verify each variant's wattages line up 1:1 with its lumens in the vendor table.`,
+        severity: "high",
+      });
+    }
+    const stated = (source.match(/(\d{2,3})\s*lm\s*\/\s*w/gi) ?? []).map((token) => Number((token.match(/\d+/) ?? ["0"])[0]));
+    if (stated.length > 0 && effs.length > 0) {
+      const maxComputed = Math.max(...effs);
+      const maxStated = Math.max(...stated);
+      if (maxStated > 0 && maxComputed > maxStated * 1.15) {
+        verify.push({
+          label: "Efficacy",
+          detail: `Sheet computes up to ${Math.round(maxComputed)} lm/W but the vendor states up to ${maxStated} lm/W — re-check the lumen values against the PDF.`,
+          severity: "med",
+        });
+      }
     }
   }
 
