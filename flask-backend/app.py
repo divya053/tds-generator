@@ -87,7 +87,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v17"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v18"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -607,11 +607,16 @@ def _classify_vendor_image(image) -> str:
     aspect = (width / height) if height else 1.0
     max_dim = max(width, height)
     is_square = 0.6 <= aspect <= 1.7
-    # Certification badge / icon FIRST: smallish + roughly square + a simple palette (uniform
-    # background, few colours) OR a light icon-on-white. Catches DLC/IP65/UL/"3CCT SELECTABLE" etc.
+    num_colours = len(quant)
+    # Certification badge / brand logo (any of):
+    #  - small square icon (uniform bg / few colours / light-icon-on-white): 3CCT, IP65, Photocell…
+    #  - a FLAT logo (very few colours) that is very dark or very light: the black "UL CERTIFIED" mark
+    #  - a highly SATURATED limited-palette logo at any size: the red/blue "RZ" brand mark
+    # Real product photos have many colours and moderate saturation, so they are not caught.
     if (
-        max_dim < 360 and is_square
-        and (top_frac > 0.45 or len(quant) < 55 or (mean_bright > 0.72 and mean_sat < 0.2))
+        (is_square and max_dim < 360 and (top_frac > 0.45 or num_colours < 55 or (mean_bright > 0.72 and mean_sat < 0.2)))
+        or (is_square and num_colours <= 12 and (mean_bright < 0.4 or mean_bright > 0.92))
+        or (mean_sat > 0.5 and num_colours < 32)
     ):
         return "badge"
     # Line-drawing dimension figure: mostly white with thin dark lines (near-grayscale), and large
