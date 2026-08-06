@@ -54,6 +54,9 @@ type OverviewRow = {
   // false = kept in the optional pool (not shown on the sheet) until the user opts to include it.
   // undefined is treated as included (backward-compatible with older saved drafts).
   included?: boolean;
+  // true once the user has hand-edited this value — auto-recompute (Efficacy/Power) then leaves it
+  // alone so a manual override sticks instead of being overwritten on every render.
+  manual?: boolean;
 };
 
 // ---- Page 2: Product Specifications ----
@@ -4722,10 +4725,11 @@ function SheetPageOne({
     .filter((row) => isSpecified(row.label) && isSpecified(row.value))
     .filter((row) => !isExcludedOverviewLabel(row.label))
     .map((row) => {
-      if (normalizeSpecKey(row.label) === "efficacy" && isSpecified(computedEfficacy)) {
+      // A hand-edited value always wins — never overwrite it with the auto-computed figure.
+      if (!row.manual && normalizeSpecKey(row.label) === "efficacy" && isSpecified(computedEfficacy)) {
         return { ...row, value: computedEfficacy };
       }
-      if (isPowerSelectableOverviewLabel(row.label) && isSpecified(computedPower)) {
+      if (!row.manual && isPowerSelectableOverviewLabel(row.label) && isSpecified(computedPower)) {
         return { ...row, value: computedPower };
       }
       return { ...row, value: normalizeOverviewRowValue(row.label, row.value) };
@@ -6984,7 +6988,9 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     setDraft((current) => ({
       ...current,
       overviewRows: current.overviewRows.map((row, rowIndex) =>
-        rowIndex === index ? { ...row, [field]: value } : row,
+        rowIndex === index
+          ? { ...row, [field]: value, ...(field === "value" ? { manual: true } : {}) }
+          : row,
       ),
     }));
   };
