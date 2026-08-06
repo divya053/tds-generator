@@ -916,6 +916,18 @@ function getDraftSourceImages(spec: ExtendedExtractedSpec, draft: EditorDraft) {
   );
 }
 
+/** Vendor-library images are the embedded photos/diagrams the backend harvested from the PDF
+ *  (id prefixed "vendorimg-"). They are a PICKABLE library — never auto-placed as the hero. */
+function isLibraryImageId(id: string) {
+  return typeof id === "string" && id.startsWith("vendorimg-");
+}
+
+/** Default owner for an image: library images belong to the pickable library (not the product) so
+ *  they never auto-render as the hero photo; everything else defaults to the product. */
+function defaultImageOwner(imageId: string) {
+  return isLibraryImageId(imageId) ? "library" : "product";
+}
+
 function slugifyName(value: string) {
   return normalizeText(value)
     .toLowerCase()
@@ -4474,7 +4486,7 @@ function SheetPageOne({
   // Product images to show on the sheet: the selected hero first, then any other product-owned
   // images, capped at 2 so up to two product visuals appear (not always just one).
   const productOwnedImages = getDraftSourceImages(spec, draft).filter(
-    (image) => (draft.imageOwners[image.id] ?? "product") === "product",
+    (image) => (draft.imageOwners[image.id] ?? defaultImageOwner(image.id)) === "product",
   );
   const productDisplayImages = (
     selectedImage
@@ -6249,6 +6261,10 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   const [pendingImageTarget, setPendingImageTarget] = useState<
     { kind: "dimension" | "accessory" | "custom"; id: string } | null
   >(null);
+  // Vendor-image suggestion picker: which section is choosing a vendor library image (null = closed).
+  const [vendorImagePicker, setVendorImagePicker] = useState<
+    { kind: "product" | "accessory" | "dimension" | "custom"; id: string } | null
+  >(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -6448,6 +6464,8 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   }, [isWideWorkspace]);
 
   const displaySourceImages = getDraftSourceImages(spec, draft);
+  // The vendor's embedded photos/diagrams, offered as one-click suggestions per section.
+  const vendorLibraryImages = displaySourceImages.filter((image) => isLibraryImageId(image.id));
   // Images owned by a given section (plus the one currently assigned to that row, for legacy drafts).
   const imagesForOwner = (ownerKey: string, currentId: string | null) =>
     draft.manualSourceImages
@@ -6597,6 +6615,44 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     });
     setPendingImageTarget(null);
     setIsCropDialogOpen(false);
+  };
+
+  // Assign a chosen vendor-library image to a section. We copy it into manualSourceImages with a
+  // fresh id + owner, so the same vendor photo can be used by several rows and behaves like an
+  // uploaded image (editable, croppable), while the original stays in the pickable library.
+  const assignVendorImage = (
+    target: { kind: "product" | "accessory" | "dimension" | "custom"; id: string },
+    vendorImage: SourceImage,
+  ) => {
+    const newId = `vpick-${target.kind}-${target.id}-${vendorImage.id}`;
+    setDraft((current) => {
+      const already = current.manualSourceImages.some((image) => image.id === newId);
+      const owner = target.kind === "product" ? "product" : `${target.kind}:${target.id}`;
+      const next: EditorDraft = {
+        ...current,
+        manualSourceImages: already
+          ? current.manualSourceImages
+          : [...current.manualSourceImages, { ...vendorImage, id: newId }],
+        imageOwners: { ...current.imageOwners, [newId]: owner },
+      };
+      if (target.kind === "product") {
+        next.selectedImageId = newId;
+      } else if (target.kind === "accessory") {
+        next.accessoryRows = current.accessoryRows.map((row) =>
+          row.id === target.id ? { ...row, imageId: newId } : row,
+        );
+      } else if (target.kind === "dimension") {
+        next.dimensionItems = current.dimensionItems.map((item) =>
+          item.id === target.id ? { ...item, imageId: newId } : item,
+        );
+      } else if (target.kind === "custom") {
+        next.customSections = current.customSections.map((section) =>
+          section.id === target.id ? { ...section, imageId: newId } : section,
+        );
+      }
+      return next;
+    });
+    setVendorImagePicker(null);
   };
 
   const removeSourceImage = (imageId: string) => {
@@ -7237,16 +7293,30 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                 {productImages.length} {productImages.length === 1 ? "image" : "images"}
               </Badge>
             </div>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => triggerImageUpload()}
-              className="h-10 w-full gap-2 rounded-xl border-dashed border-primary/40 bg-primary/5 text-primary hover:border-primary hover:bg-primary/10"
-              title="Upload a product image from your computer"
-            >
-              <Upload className="h-4 w-4" />
-              Upload Image
-            </Button>
+            <div className="flex gap-2">
+              {vendorLibraryImages.length > 0 && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setVendorImagePicker({ kind: "product", id: "product" })}
+                  className="h-10 flex-1 gap-2 rounded-xl border-primary/40 bg-primary/5 text-primary hover:border-primary hover:bg-primary/10"
+                  title="Pick a suggested product image from the vendor PDF"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  Suggest
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => triggerImageUpload()}
+                className="h-10 flex-1 gap-2 rounded-xl border-dashed border-primary/40 bg-primary/5 text-primary hover:border-primary hover:bg-primary/10"
+                title="Upload a product image from your computer"
+              >
+                <Upload className="h-4 w-4" />
+                Upload
+              </Button>
+            </div>
             {productImages.length > 0 ? (
               <div className="grid grid-cols-2 gap-3">
                 {productImages.map((image) => (
@@ -7850,6 +7920,18 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                         onChange={(value) => updateAccessoryRow(index, { imageId: value })}
                       />
                     </div>
+                    {vendorLibraryImages.length > 0 && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setVendorImagePicker({ kind: "accessory", id: row.id })}
+                        className="h-10 shrink-0 gap-1 rounded-xl border-primary/40 bg-primary/5 px-3 text-[12px] text-primary"
+                        title="Pick a suggested image from the vendor PDF"
+                      >
+                        <Sparkles className="h-3.5 w-3.5" />
+                        Suggest
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       variant="outline"
@@ -7932,6 +8014,18 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                         onChange={(value) => updateDimensionItem(index, { imageId: value })}
                       />
                     </div>
+                    {vendorLibraryImages.length > 0 && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setVendorImagePicker({ kind: "dimension", id: item.id })}
+                        className="h-10 shrink-0 gap-1 rounded-xl border-primary/40 bg-primary/5 px-3 text-[12px] text-primary"
+                        title="Pick a suggested drawing from the vendor PDF"
+                      >
+                        <Sparkles className="h-3.5 w-3.5" />
+                        Suggest
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       variant="outline"
@@ -8325,6 +8419,41 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
         }}
         onSave={addManualSourceImage}
       />
+      <Dialog open={vendorImagePicker !== null} onOpenChange={(open) => !open && setVendorImagePicker(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Suggested images from the vendor PDF</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Pick an image to use for this {vendorImagePicker?.kind === "product" ? "product" : vendorImagePicker?.kind}.
+            You can crop or clean it afterwards with the Edit tool.
+          </p>
+          {vendorLibraryImages.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted-foreground">
+              No embedded images were found in this vendor PDF. Use Crop to capture one from a page.
+            </div>
+          ) : (
+            <div className="grid max-h-[60vh] grid-cols-2 gap-3 overflow-auto p-1 sm:grid-cols-3">
+              {vendorLibraryImages.map((image) => (
+                <button
+                  key={image.id}
+                  type="button"
+                  onClick={() => vendorImagePicker && assignVendorImage(vendorImagePicker, image)}
+                  className="group flex flex-col items-center gap-1 rounded-xl border border-border/70 bg-card/40 p-2 transition hover:border-primary hover:bg-primary/5"
+                  title={`Use this image (page ${image.page})`}
+                >
+                  <img
+                    src={image.dataUrl}
+                    alt={`Vendor image on page ${image.page}`}
+                    className="h-28 w-full rounded-lg bg-white object-contain"
+                  />
+                  <span className="text-[11px] text-muted-foreground">Page {image.page}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
       <input
         ref={uploadInputRef}
         type="file"

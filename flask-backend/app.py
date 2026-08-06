@@ -87,7 +87,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v14"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v15"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -573,6 +573,62 @@ def render_pdf_pages(pdf_path: str) -> list[dict[str, Any]]:
         pdf.close()
 
     return source_pages
+
+
+def extract_embedded_images(pdf_path: str, max_pages: int = 6, max_images: int = 14) -> list[dict[str, Any]]:
+    """Pull embedded raster images (product photos, accessory / dimension diagrams) out of the PDF so
+    the editor can offer them as pickable thumbnails — e.g. one-click suggested images per accessory.
+    Filters out header banners, rules and tiny icons; de-dupes repeated logos. IDs are prefixed
+    'vendorimg-' so the UI treats them as a pickable LIBRARY (they never auto-place as the hero)."""
+    from pypdfium2 import raw as pdfium_raw
+
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    pdf = pdfium.PdfDocument(pdf_path)
+    try:
+        for index in range(min(max_pages, len(pdf))):
+            page = pdf[index]
+            try:
+                try:
+                    objects = list(page.get_objects(filter=[pdfium_raw.FPDF_PAGEOBJ_IMAGE]))
+                except Exception:
+                    objects = []
+                for obj_index, obj in enumerate(objects):
+                    try:
+                        bitmap = obj.get_bitmap(render=True)
+                        image = bitmap.to_pil()
+                    except Exception:
+                        continue
+                    width, height = image.size
+                    if width < 64 or height < 64:
+                        continue  # icons / bullets / certification marks
+                    aspect = (width / height) if height else 99.0
+                    if aspect > 4.5 or aspect < 0.22:
+                        continue  # header banners, rules, thin colour strips
+                    thumb = image.convert("RGB").resize((16, 16))
+                    key = hashlib.md5(thumb.tobytes()).hexdigest()
+                    if key in seen:
+                        continue  # same logo/photo repeated across pages
+                    seen.add(key)
+                    if max(width, height) > 900:
+                        scale = 900.0 / max(width, height)
+                        image = image.resize((max(1, int(width * scale)), max(1, int(height * scale))))
+                    results.append(
+                        {
+                            "id": f"vendorimg-{index + 1}-{obj_index}",
+                            "page": index + 1,
+                            "width": image.width,
+                            "height": image.height,
+                            "dataUrl": pil_image_to_data_url(image.convert("RGB")),
+                        }
+                    )
+                    if len(results) >= max_images:
+                        return results
+            finally:
+                page.close()
+    finally:
+        pdf.close()
+    return results
 
 
 def extract_tables_from_page(page) -> list[str]:
@@ -2331,6 +2387,13 @@ def process_pdf():
             pass
 
         result = post_process_extraction(reviewed_result, extracted_text, source_pages, extraction_notes)
+        # Pull the vendor's embedded images (product photos, accessory/dimension diagrams) so the
+        # editor can offer them as one-click suggested thumbnails (e.g. per accessory).
+        try:
+            result["sourceImages"] = extract_embedded_images(pdf_path, LLM_VISION_MAX_PAGES)
+        except Exception as exc:  # never fail an extraction because of image harvesting
+            print(f"[images] embedded-image extraction skipped: {exc}", flush=True)
+            result["sourceImages"] = []
         # Save so this exact PDF is never analyzed from scratch again.
         save_cached_extraction(pdf_bytes, result)
         return jsonify(result)
