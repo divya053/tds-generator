@@ -87,7 +87,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v16"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v17"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -165,6 +165,10 @@ Return ONLY valid JSON with this exact structure:
   ],
   "dimensions": [
     {"label": "Fixture/variant label", "width": "value in", "height": "value in", "depth": "value in"}
+  ],
+  "extraTables": [
+    {"title": "Photometric Performance", "headers": ["Model", "Watts", "3000K", "4000K", "5000K"],
+     "rows": [["MAL08100W", "100W", "14540lm", "15800lm", "15000lm"]]}
   ],
   "variantOverview": {
     "parameters": ["Fixture Type", "Power", "Lumen Output", "CCT", "Efficacy"],
@@ -374,6 +378,15 @@ Rules:
   accessories into one, and do NOT invent accessories the PDF doesn't list. Return [] ONLY when the
   PDF truly lists no accessories, options, sensors, mounts, or emergency/surge parts anywhere.
 - dimensions: For each fixture size/variant, give a label and its width/height/depth in inches (convert mm using 1in=25.4mm, 2 decimals). Use "Not Specified" for any missing axis.
+- extraTables: Capture any NOTABLE data TABLE in the vendor PDF that does NOT already map to the
+  sections above (Overview/technicalSpecs, the specifications/variant matrix, orderingInfo,
+  accessories, dimensions). Good candidates: a photometric / performance-data table (lumens per
+  CCT and distribution), a lumen-multiplier or wattage-vs-output matrix, an operating-parameters
+  table, a compatibility / control chart, a projected-life (L70/L80) table. For EACH such table
+  return {title, headers:[...], rows:[[...]]} with the vendor's real cell values (verbatim; convert
+  units to US where the value is a measurement). Return AT MOST 3 tables, each at most 12 columns
+  and 40 rows. Do NOT duplicate the main specifications or ordering tables, and do NOT invent tables
+  — return [] when the PDF has no such extra table.
 - Finish Options (technicalSpecs): list EVERY available housing finish the vendor offers, joined with ", " — read the finish colour swatches AND any "available in ..." / "Finish:" sentence (e.g. "Black, Dark Bronze, Silver Gray, White"). If the vendor also names a coating/treatment (e.g. "corrosion-resistant powder coat"), append it after the colours. Capture ALL finishes, not just the first. Use "Not Specified" only when the PDF truly gives none.
 - IKIO STANDARDS (how IKIO builds its finished TDS from a vendor sheet — follow these):
   * POWER COLUMN: the Power value MUST come from the vendor's Wattage/Power column — the actual
@@ -2043,6 +2056,37 @@ def backfill_accessories_from_specs(
     return result[:15]
 
 
+def normalize_extra_tables(value: Any) -> list[dict[str, Any]]:
+    """Clean the model's extraTables into [{title, headers:[str], rows:[[str]]}], capped so a stray
+    huge table can't bloat the payload. Drops empty tables and pads/truncates rows to the header count."""
+    if not isinstance(value, list):
+        return []
+    tables: list[dict[str, Any]] = []
+    for entry in value[:3]:
+        if not isinstance(entry, dict):
+            continue
+        title = normalize_whitespace(str(entry.get("title", ""))) or "Additional Data"
+        headers = [normalize_whitespace(str(h)) for h in (entry.get("headers") or []) if isinstance(entry.get("headers"), list)][:12]
+        headers = [h for h in headers if h]
+        raw_rows = entry.get("rows") or []
+        rows: list[list[str]] = []
+        if isinstance(raw_rows, list):
+            col_count = len(headers) if headers else 0
+            for raw_row in raw_rows[:40]:
+                if not isinstance(raw_row, list):
+                    continue
+                cells = [normalize_whitespace(str(c)) for c in raw_row][:12]
+                if col_count:
+                    cells = (cells + [""] * col_count)[:col_count]
+                if any(cells):
+                    rows.append(cells)
+        if not headers and rows:
+            headers = [f"Column {i + 1}" for i in range(len(rows[0]))]
+        if headers and rows:
+            tables.append({"title": title, "headers": headers, "rows": rows})
+    return tables
+
+
 def normalize_dimensions_list(value: Any) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     if isinstance(value, list):
@@ -2097,6 +2141,7 @@ def post_process_extraction(model_output: dict[str, Any], source_text: str, sour
         "orderingExample": normalize_whitespace(str(model_output.get("orderingExample", ""))),
         "accessories": normalize_accessories(model_output.get("accessories")),
         "dimensions": normalize_dimensions_list(model_output.get("dimensions")),
+        "extraTables": normalize_extra_tables(model_output.get("extraTables")),
         "technicalSpecs": technical_specs,
         "categorySpecificSpecs": normalize_technical_specs(model_output.get("categorySpecificSpecs")),
         "notes": normalize_string_list(model_output.get("notes"), "Generated from vendor PDF source.", 8) + notes,

@@ -110,6 +110,14 @@ type CustomSection = {
   imageId: string | null;
 };
 
+// An extra vendor table (photometric/performance/etc.) captured verbatim and shown at the end.
+type ExtraTable = {
+  id: string;
+  title: string;
+  headers: string[];
+  rows: string[][];
+};
+
 const ORDERING_GROUP_LABELS: Record<OrderingGroupId, string> = {
   family: "Luminaire Family",
   performance: "Electrical / Lighting Performance",
@@ -164,6 +172,7 @@ type ExtendedExtractedSpec = ExtractedSpec & {
   orderingExample?: string;
   accessories?: ExtractedCodeEntry[];
   dimensions?: ExtractedDimension[];
+  extraTables?: { title?: string; headers?: string[]; rows?: string[][] }[];
 };
 
 type QualificationBadgeId =
@@ -224,6 +233,8 @@ type EditorDraft = {
   dimensionItems: DimensionItem[];
   // User-added custom sections (extra page): heading + text points and/or image.
   customSections: CustomSection[];
+  // Extra vendor tables (photometric/performance/etc.) captured verbatim, shown at the end.
+  extraTables: ExtraTable[];
   // Per-image manual placement on the sheet (keyed by source-image id): the user can drag ANY sheet
   // image (product, dimensions, accessories, custom sections) around its box and resize it. An
   // absent id = centered at 100% (default).
@@ -2605,6 +2616,24 @@ function buildAccessoryRowsFromSpec(spec: ExtendedExtractedSpec): AccessoryRow[]
     }));
 }
 
+function buildExtraTablesFromSpec(spec: ExtendedExtractedSpec): ExtraTable[] {
+  const list = Array.isArray(spec.extraTables) ? spec.extraTables : [];
+  return list
+    .map((table, index) => {
+      const headers = (Array.isArray(table?.headers) ? table.headers : []).map((h) => String(h ?? "").trim());
+      const rows = (Array.isArray(table?.rows) ? table.rows : [])
+        .map((row) => (Array.isArray(row) ? row.map((cell) => String(cell ?? "").trim()) : []))
+        .filter((row) => row.some((cell) => cell));
+      return {
+        id: `extratable-${index}`,
+        title: String(table?.title ?? "").trim() || "Additional Data",
+        headers,
+        rows,
+      };
+    })
+    .filter((table) => table.headers.length > 0 && table.rows.length > 0);
+}
+
 function buildDimensionItemsFromSpec(spec: ExtendedExtractedSpec): DimensionItem[] {
   const list = Array.isArray(spec.dimensions) ? spec.dimensions : [];
   const clean = (value: string) => (isSpecified(value) ? value.trim() : "");
@@ -2684,6 +2713,7 @@ function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendation
     accessoryRows: buildAccessoryRowsFromSpec(spec),
     dimensionItems: buildDimensionItemsFromSpec(spec),
     customSections: [],
+    extraTables: buildExtraTablesFromSpec(spec),
     imagePlacements: {},
   };
 }
@@ -5894,6 +5924,56 @@ function estimateCustomSectionHeight(section: CustomSection, hasImage: boolean) 
   return 40 + bodyHeight + 16;
 }
 
+/** Render an extra vendor table (photometric/performance/etc.) in the IKIO spec-table style. */
+function ExtraTableView({ table }: { table: ExtraTable }) {
+  const colCount = Math.max(1, table.headers.length);
+  return (
+    <div className="overflow-hidden">
+      <table className="w-full table-fixed border-collapse" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+        <colgroup>
+          {table.headers.map((_, index) => (
+            <col key={index} style={{ width: `${100 / colCount}%` }} />
+          ))}
+        </colgroup>
+        <thead>
+          <tr>
+            {table.headers.map((header, i, arr) => (
+              <th
+                key={i}
+                className={cn(
+                  "border border-[#414042] bg-[#414042] px-1 py-1 text-center align-middle text-[8px] font-bold uppercase leading-[1.1] text-white",
+                  i === 0 && "border-l-0",
+                  i === arr.length - 1 && "border-r-0",
+                )}
+              >
+                {header}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {table.rows.map((row, ri) => (
+            <tr key={ri} className="align-middle">
+              {table.headers.map((_, ci, arr) => (
+                <td
+                  key={ci}
+                  className={cn(
+                    "border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black",
+                    ci === 0 && "border-l-0",
+                    ci === arr.length - 1 && "border-r-0",
+                  )}
+                >
+                  {row[ci] ?? ""}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /** Build the ordered, height-estimated section blocks that follow page 1. */
 function buildSheetBlocks(
   draft: EditorDraft,
@@ -6061,6 +6141,22 @@ function buildSheetBlocks(
               </div>
             )}
           </div>
+        </section>
+      ),
+    });
+  }
+
+  // Extra vendor tables (photometric/performance/etc.) — shown LAST, in the IKIO table style.
+  for (const table of draft.extraTables ?? []) {
+    if (table.headers.length === 0 || table.rows.length === 0) continue;
+    blocks.push({
+      key: `extratable-${table.id}`,
+      group: "custom",
+      height: 54 + (table.rows.length + 1) * 22 + 24,
+      node: (
+        <section>
+          <SheetPageHeading title={table.title || "Additional Data"} />
+          <ExtraTableView table={table} />
         </section>
       ),
     });
@@ -7026,6 +7122,38 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
       ),
     }));
   };
+
+  // ---- Extra vendor tables (editable, prefilled) ----
+  const mapExtraTables = (fn: (t: ExtraTable) => ExtraTable) =>
+    setDraft((current) => ({ ...current, extraTables: (current.extraTables ?? []).map(fn) }));
+  const updateExtraTableTitle = (id: string, title: string) =>
+    mapExtraTables((t) => (t.id === id ? { ...t, title } : t));
+  const updateExtraTableHeader = (id: string, col: number, value: string) =>
+    mapExtraTables((t) => (t.id === id ? { ...t, headers: t.headers.map((h, i) => (i === col ? value : h)) } : t));
+  const updateExtraTableCell = (id: string, row: number, col: number, value: string) =>
+    mapExtraTables((t) =>
+      t.id === id
+        ? { ...t, rows: t.rows.map((r, ri) => (ri === row ? r.map((c, ci) => (ci === col ? value : c)) : r)) }
+        : t,
+    );
+  const addExtraTableRow = (id: string) =>
+    mapExtraTables((t) => (t.id === id ? { ...t, rows: [...t.rows, t.headers.map(() => "")] } : t));
+  const removeExtraTableRow = (id: string, row: number) =>
+    mapExtraTables((t) => (t.id === id ? { ...t, rows: t.rows.filter((_, ri) => ri !== row) } : t));
+  const addExtraTableColumn = (id: string) =>
+    mapExtraTables((t) =>
+      t.id === id ? { ...t, headers: [...t.headers, `Column ${t.headers.length + 1}`], rows: t.rows.map((r) => [...r, ""]) } : t,
+    );
+  const removeExtraTable = (id: string) =>
+    setDraft((current) => ({ ...current, extraTables: (current.extraTables ?? []).filter((t) => t.id !== id) }));
+  const addExtraTable = () =>
+    setDraft((current) => ({
+      ...current,
+      extraTables: [
+        ...(current.extraTables ?? []),
+        { id: `extratable-${Date.now()}`, title: "Additional Data", headers: ["Column 1", "Column 2"], rows: [["", ""]] },
+      ],
+    }));
 
   // ---- Page 3: Accessories ----
   const addAccessoryRow = () => {
@@ -8336,6 +8464,107 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               >
                 <Plus className="mr-2 h-4 w-4" />
                 Add Section
+              </Button>
+            </div>
+          </section>
+
+          {/* Extra Tables — vendor tables captured verbatim, rendered at the end, editable here. */}
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
+                Extra Tables
+              </h2>
+              <Badge variant="outline">{(draft.extraTables ?? []).length} tables</Badge>
+            </div>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              Extra vendor tables (e.g. photometric / performance data) captured from the PDF. They
+              render in IKIO style at the end of the sheet — edit any title, header or cell here.
+            </p>
+            <div className="space-y-3">
+              {(draft.extraTables ?? []).map((table) => (
+                <div key={table.id} className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={table.title}
+                      onChange={(event) => updateExtraTableTitle(table.id, event.target.value)}
+                      placeholder="Table title"
+                      className="font-semibold"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => removeExtraTable(table.id)}
+                      className="h-10 w-10 shrink-0 rounded-xl border-[#7a3b3b] bg-[#5f2a2a] p-0 text-red-100 hover:bg-[#743636] [&>svg]:!size-5 [&>svg]:!text-red-100"
+                      aria-label="Delete table"
+                      title="Delete table"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="border-collapse">
+                      <thead>
+                        <tr>
+                          {table.headers.map((header, ci) => (
+                            <th key={ci} className="p-0.5">
+                              <Input
+                                value={header}
+                                onChange={(event) => updateExtraTableHeader(table.id, ci, event.target.value)}
+                                className="h-8 min-w-[92px] text-[11px] font-semibold"
+                                placeholder={`Col ${ci + 1}`}
+                              />
+                            </th>
+                          ))}
+                          <th className="p-0.5">
+                            <Button type="button" variant="outline" className="h-8 whitespace-nowrap px-2 text-[11px]" onClick={() => addExtraTableColumn(table.id)}>
+                              + Col
+                            </Button>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {table.rows.map((row, ri) => (
+                          <tr key={ri}>
+                            {table.headers.map((_, ci) => (
+                              <td key={ci} className="p-0.5">
+                                <Input
+                                  value={row[ci] ?? ""}
+                                  onChange={(event) => updateExtraTableCell(table.id, ri, ci, event.target.value)}
+                                  className="h-8 min-w-[92px] text-[11px]"
+                                />
+                              </td>
+                            ))}
+                            <td className="p-0.5">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-8 w-8 p-0 [&>svg]:!size-4"
+                                onClick={() => removeExtraTableRow(table.id, ri)}
+                                title="Remove row"
+                                aria-label="Remove row"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <Button type="button" variant="outline" className="h-9 w-full text-[12px]" onClick={() => addExtraTableRow(table.id)}>
+                    <Plus className="mr-1 h-3.5 w-3.5" />
+                    Add Row
+                  </Button>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={addExtraTable}
+                className="h-11 w-full rounded-2xl border-dashed border-primary/40 bg-primary/5 text-primary hover:border-primary hover:bg-primary/10"
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Add Table
               </Button>
             </div>
           </section>
