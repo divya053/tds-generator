@@ -280,7 +280,7 @@ type ImageEraseLayer = {
   shape?: "rect" | "circle";
 };
 
-type ImageEditorMode = "text" | "erase" | "pen" | "crop";
+type ImageEditorMode = "text" | "movetext" | "erase" | "pen" | "crop";
 
 // Which part of the crop rectangle a drag is manipulating.
 type CropHandle = "new" | "move" | "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
@@ -2704,6 +2704,9 @@ function ImageEditorDialog({
   const [crop, setCrop] = useState<CropSelection | null>(null);
   const [cropAspect, setCropAspect] = useState<number | null>(null); // null = free
   const cropDragRef = useRef<{ handle: CropHandle; startX: number; startY: number; orig: CropSelection } | null>(null);
+  // Move/edit placed text (Illustrator-style): the selected layer + the active drag offset.
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const textDragRef = useRef<{ id: string; dx: number; dy: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -2713,6 +2716,8 @@ function ImageEditorDialog({
     setCrop(null);
     setCropAspect(null);
     cropDragRef.current = null;
+    setSelectedTextId(null);
+    textDragRef.current = null;
     setTextValue("");
     setTextColor("#111827");
     setTextSize(30);
@@ -2964,6 +2969,63 @@ function ImageEditorDialog({
     setMode("crop"); // stay in crop so a re-crop initialises on the smaller image
   };
 
+  // ---- Move / edit placed text -------------------------------------------
+  const textLayerBounds = (layer: ImageTextLayer) => {
+    const ctx = canvasEl?.getContext("2d");
+    let width = layer.size * Math.max(1, layer.text.length) * 0.5;
+    if (ctx) {
+      ctx.save();
+      ctx.font = `700 ${layer.size}px Arial`;
+      width = ctx.measureText(layer.text).width;
+      ctx.restore();
+    }
+    return { x: layer.x, y: layer.y, width, height: layer.size };
+  };
+  const selectedTextLayer = editor.textLayers.find((layer) => layer.id === selectedTextId) ?? null;
+  const handleTextDown = (point: { x: number; y: number }) => {
+    // Topmost text under the pointer (last drawn = on top).
+    for (let i = editor.textLayers.length - 1; i >= 0; i -= 1) {
+      const layer = editor.textLayers[i];
+      const b = textLayerBounds(layer);
+      if (
+        point.x >= b.x - b.height * 0.15 && point.x <= b.x + b.width + b.height * 0.15 &&
+        point.y >= b.y - b.height * 0.25 && point.y <= b.y + b.height * 1.25
+      ) {
+        setSelectedTextId(layer.id);
+        textDragRef.current = { id: layer.id, dx: point.x - layer.x, dy: point.y - layer.y };
+        return;
+      }
+    }
+    setSelectedTextId(null);
+  };
+  const handleTextMove = (point: { x: number; y: number }) => {
+    const drag = textDragRef.current;
+    if (!drag) return;
+    setEditor((current) => ({
+      ...current,
+      textLayers: current.textLayers.map((layer) =>
+        layer.id === drag.id ? { ...layer, x: point.x - drag.dx, y: point.y - drag.dy } : layer,
+      ),
+    }));
+  };
+  const updateSelectedText = (patch: Partial<ImageTextLayer>) => {
+    if (!selectedTextId) return;
+    setEditor((current) => ({
+      ...current,
+      textLayers: current.textLayers.map((layer) =>
+        layer.id === selectedTextId ? { ...layer, ...patch } : layer,
+      ),
+    }));
+  };
+  const deleteSelectedText = () => {
+    if (!selectedTextId) return;
+    setEditor((current) => ({
+      ...current,
+      textLayers: current.textLayers.filter((layer) => layer.id !== selectedTextId),
+    }));
+    setSelectedTextId(null);
+  };
+
   // Initialise a centred crop box when entering crop mode with none set.
   useEffect(() => {
     if (mode === "crop" && !crop && canvasEl && canvasEl.width > 0) {
@@ -2980,6 +3042,19 @@ function ImageEditorDialog({
     const ctx = ov.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, ov.width, ov.height);
+    if (mode === "movetext") {
+      // Dashed outline around the selected text so the user can see what they're moving/resizing.
+      if (selectedTextLayer) {
+        const b = textLayerBounds(selectedTextLayer);
+        const m = Math.max(3, b.height * 0.2);
+        ctx.strokeStyle = "#3b82f6";
+        ctx.lineWidth = Math.max(1.5, ov.width * 0.0025);
+        ctx.setLineDash([Math.max(4, ov.width * 0.01), Math.max(3, ov.width * 0.007)]);
+        ctx.strokeRect(b.x - m, b.y - m, b.width + m * 2, b.height + m * 2);
+        ctx.setLineDash([]);
+      }
+      return;
+    }
     if (mode !== "crop" || !crop) return;
     ctx.fillStyle = "rgba(0,0,0,0.45)";
     ctx.fillRect(0, 0, ov.width, ov.height);
@@ -3003,12 +3078,17 @@ function ImageEditorDialog({
       ctx.beginPath(); ctx.rect(hx - r, hy - r, r * 2, r * 2); ctx.fill(); ctx.stroke();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, crop, canvasEl, overlayEl, editor, baseDataUrl]);
+  }, [mode, crop, canvasEl, overlayEl, editor, baseDataUrl, selectedTextId]);
 
   const handleCanvasPointerDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (mode === "crop") {
       const point = getCanvasPoint(event);
       if (point) handleCropDown(point);
+      return;
+    }
+    if (mode === "movetext") {
+      const point = getCanvasPoint(event);
+      if (point) handleTextDown(point);
       return;
     }
     handlePenDown(event);
@@ -3020,6 +3100,12 @@ function ImageEditorDialog({
       if (point) handleCropMove(point);
       return;
     }
+    if (mode === "movetext") {
+      if (!textDragRef.current) return;
+      const point = getCanvasPoint(event);
+      if (point) handleTextMove(point);
+      return;
+    }
     handlePenMove(event);
   };
   const handleCanvasPointerUp = () => {
@@ -3027,12 +3113,16 @@ function ImageEditorDialog({
       cropDragRef.current = null;
       return;
     }
+    if (mode === "movetext") {
+      textDragRef.current = null;
+      return;
+    }
     handlePenUp();
   };
 
   const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (!image) return;
-    if (mode === "pen" || mode === "crop") return; // pen & crop are handled by drag (mouse down/move)
+    if (mode === "pen" || mode === "crop" || mode === "movetext") return; // handled by drag (down/move)
 
     const canvas = canvasEl;
     if (!canvas) return;
@@ -3359,6 +3449,9 @@ function ImageEditorDialog({
                   <Button type="button" variant={mode === "text" ? "default" : "outline"} className="px-2 text-[12px]" onClick={() => setMode("text")}>
                     Add Text
                   </Button>
+                  <Button type="button" variant={mode === "movetext" ? "default" : "outline"} className="px-2 text-[12px]" onClick={() => setMode("movetext")}>
+                    Move / Edit Text
+                  </Button>
                   <Button type="button" variant={mode === "erase" ? "default" : "outline"} className="px-2 text-[12px]" onClick={() => setMode("erase")}>
                     Erase Box
                   </Button>
@@ -3366,7 +3459,49 @@ function ImageEditorDialog({
                     Erase Pen
                   </Button>
                 </div>
-                {mode === "crop" ? (
+                {mode === "movetext" ? (
+                  <div className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
+                    {selectedTextLayer ? (
+                      <>
+                        <label className="block space-y-1 text-sm">
+                          <span>Text</span>
+                          <Input
+                            value={selectedTextLayer.text}
+                            onChange={(event) => updateSelectedText({ text: event.target.value })}
+                          />
+                        </label>
+                        <label className="block space-y-1 text-sm">
+                          <span>Size: {selectedTextLayer.size}px</span>
+                          <input
+                            type="range"
+                            min="8"
+                            max="140"
+                            value={selectedTextLayer.size}
+                            onChange={(event) => updateSelectedText({ size: Number(event.target.value) })}
+                            className="w-full"
+                          />
+                        </label>
+                        <label className="block space-y-1 text-sm">
+                          <span>Colour</span>
+                          <input
+                            type="color"
+                            value={selectedTextLayer.color}
+                            onChange={(event) => updateSelectedText({ color: event.target.value })}
+                            className="h-10 w-full cursor-pointer rounded-lg border border-border bg-background p-1"
+                          />
+                        </label>
+                        <Button type="button" variant="outline" className="w-full border-[#7a3b3b] bg-[#5f2a2a] text-red-100 hover:bg-[#743636]" onClick={deleteSelectedText}>
+                          Delete this text
+                        </Button>
+                      </>
+                    ) : (
+                      <div className="text-xs text-muted-foreground">
+                        Click a text label on the image to select it, then drag to move it or use the
+                        controls here to resize, recolour, retype, or delete it.
+                      </div>
+                    )}
+                  </div>
+                ) : mode === "crop" ? (
                   <div className="space-y-3 rounded-2xl border border-border/70 bg-card/40 p-3">
                     <div className="text-xs text-muted-foreground">
                       Drag on the image to draw a crop, or drag the handles/box to adjust. Fine-tune with the
