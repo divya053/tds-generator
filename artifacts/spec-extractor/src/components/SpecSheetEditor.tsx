@@ -917,9 +917,30 @@ function getDraftSourceImages(spec: ExtendedExtractedSpec, draft: EditorDraft) {
 }
 
 /** Vendor-library images are the embedded photos/diagrams the backend harvested from the PDF
- *  (id prefixed "vendorimg-"). They are a PICKABLE library — never auto-placed as the hero. */
+ *  (id "vendorimg-<kind>-<page>-<i>"). They are a PICKABLE library — never auto-placed as the hero. */
 function isLibraryImageId(id: string) {
   return typeof id === "string" && id.startsWith("vendorimg-");
+}
+
+/** The backend's classification of a vendor library image: "photo" | "diagram" (or "" if unknown). */
+function libraryImageKind(id: string): "photo" | "diagram" | "" {
+  const match = /^vendorimg-(photo|diagram)-/.exec(id);
+  return (match?.[1] as "photo" | "diagram") ?? "";
+}
+
+/** Sort vendor images so the most relevant for a section come first: dimension drawings surface
+ *  line-drawing "diagram" images; product/accessory surface real "photo" images. */
+function sortVendorImagesFor(
+  images: SourceImage[],
+  target: "product" | "accessory" | "dimension" | "custom",
+) {
+  const preferDiagram = target === "dimension";
+  const rank = (id: string) => {
+    const kind = libraryImageKind(id);
+    if (preferDiagram) return kind === "diagram" ? 0 : kind === "photo" ? 1 : 2;
+    return kind === "photo" ? 0 : kind === "diagram" ? 1 : 2;
+  };
+  return [...images].sort((a, b) => rank(a.id) - rank(b.id));
 }
 
 /** Default owner for an image: library images belong to the pickable library (not the product) so
@@ -8585,7 +8606,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
             </div>
           ) : (
             <div className="grid max-h-[60vh] grid-cols-2 gap-3 overflow-auto p-1 sm:grid-cols-3">
-              {vendorLibraryImages.map((image) => (
+              {(vendorImagePicker ? sortVendorImagesFor(vendorLibraryImages, vendorImagePicker.kind) : vendorLibraryImages).map((image) => (
                 <button
                   key={image.id}
                   type="button"

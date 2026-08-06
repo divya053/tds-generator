@@ -87,7 +87,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v15"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v16"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -575,11 +575,45 @@ def render_pdf_pages(pdf_path: str) -> list[dict[str, Any]]:
     return source_pages
 
 
-def extract_embedded_images(pdf_path: str, max_pages: int = 6, max_images: int = 14) -> list[dict[str, Any]]:
+def _classify_vendor_image(image) -> str:
+    """Heuristically label an embedded image as 'diagram' (line drawing / dimension figure),
+    'badge' (small square certification icon / logo — DLC, IP65, UL, "3CCT SELECTABLE"...), or
+    'photo' (a real product / accessory photo). Used to keep certification badges out of the
+    suggestion picker and to sort diagrams vs photos per section."""
+    from collections import Counter
+
+    rgb = image.convert("RGB")
+    width, height = rgb.size
+    small = rgb.resize((48, 48))
+    pixels = list(small.getdata())
+    count = len(pixels) or 1
+    mean_bright = sum(sum(p) for p in pixels) / (3 * count) / 255.0
+    mean_sat = sum(0.0 if max(p) == 0 else (max(p) - min(p)) / max(p) for p in pixels) / count
+    quant = Counter((p[0] // 32, p[1] // 32, p[2] // 32) for p in pixels)
+    top_frac = quant.most_common(1)[0][1] / count
+    aspect = (width / height) if height else 1.0
+    max_dim = max(width, height)
+    is_square = 0.6 <= aspect <= 1.7
+    # Certification badge / icon FIRST: smallish + roughly square + a simple palette (uniform
+    # background, few colours) OR a light icon-on-white. Catches DLC/IP65/UL/"3CCT SELECTABLE" etc.
+    if (
+        max_dim < 360 and is_square
+        and (top_frac > 0.45 or len(quant) < 55 or (mean_bright > 0.72 and mean_sat < 0.2))
+    ):
+        return "badge"
+    # Line-drawing dimension figure: mostly white with thin dark lines (near-grayscale), and large
+    # or clearly wide/tall (not a small square icon).
+    if mean_bright > 0.8 and mean_sat < 0.1 and (max_dim >= 360 or aspect > 1.6 or aspect < 0.62):
+        return "diagram"
+    return "photo"
+
+
+def extract_embedded_images(pdf_path: str, max_pages: int = 6, max_images: int = 16) -> list[dict[str, Any]]:
     """Pull embedded raster images (product photos, accessory / dimension diagrams) out of the PDF so
     the editor can offer them as pickable thumbnails — e.g. one-click suggested images per accessory.
-    Filters out header banners, rules and tiny icons; de-dupes repeated logos. IDs are prefixed
-    'vendorimg-' so the UI treats them as a pickable LIBRARY (they never auto-place as the hero)."""
+    Filters out header banners, rules, tiny icons AND certification badges; de-dupes repeated logos.
+    IDs are 'vendorimg-<kind>-<page>-<i>' so the UI treats them as a pickable LIBRARY (never auto-
+    placed as the hero) and can sort diagrams vs photos per section."""
     from pypdfium2 import raw as pdfium_raw
 
     results: list[dict[str, Any]] = []
@@ -605,6 +639,9 @@ def extract_embedded_images(pdf_path: str, max_pages: int = 6, max_images: int =
                     aspect = (width / height) if height else 99.0
                     if aspect > 4.5 or aspect < 0.22:
                         continue  # header banners, rules, thin colour strips
+                    kind = _classify_vendor_image(image)
+                    if kind == "badge":
+                        continue  # certification icons are never useful as a product/accessory image
                     thumb = image.convert("RGB").resize((16, 16))
                     key = hashlib.md5(thumb.tobytes()).hexdigest()
                     if key in seen:
@@ -615,7 +652,7 @@ def extract_embedded_images(pdf_path: str, max_pages: int = 6, max_images: int =
                         image = image.resize((max(1, int(width * scale)), max(1, int(height * scale))))
                     results.append(
                         {
-                            "id": f"vendorimg-{index + 1}-{obj_index}",
+                            "id": f"vendorimg-{kind}-{index + 1}-{obj_index}",
                             "page": index + 1,
                             "width": image.width,
                             "height": image.height,
