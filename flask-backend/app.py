@@ -87,7 +87,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v13"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v14"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -360,7 +360,19 @@ Rules:
 - productDescription: write one concise paragraph covering what the product is, where it is used, its main performance or design advantage, and its broader project value (400-450 characters). Ground it in the source PDF.
 - orderingInfo: Fill EVERY column with at least one {code, description} option. If the vendor PDF has a part-number / ordering decoder, copy its exact codes and meanings for each field. If it does NOT, best-effort DERIVE options from the real specs: Power codes from the wattage packages, CCT codes from the color temperatures, Voltage from the input voltage, etc. Use short codes (e.g. "50K" for 5000K, "MV" for 120-277V, "WH" for White, "D" for Dimmable). Never leave orderingInfo empty.
 - orderingExample: assemble one concrete example part number by joining one chosen code from each column with "-".
-- accessories: Read the vendor's Accessories / Ordering / Options / Mounting section ROW BY ROW and extract EVERY accessory as a separate item — mounting brackets/arms/slipfitters, poles, photocells/sensors, surge protectors, wire guards, glare shields, occupancy/daylight controllers, emergency battery kits, etc. For each, copy the vendor's EXACT ordering/part code when printed (otherwise best-effort like "IK-ACC-...") and a short description of what it is. Do NOT skip rows, do NOT merge multiple accessories into one, and do NOT invent accessories the PDF doesn't list. Return [] only if the PDF truly has none.
+- accessories (CAPTURE EVERY ONE — this is a required, high-priority section): Read the vendor's
+  Accessories / Optional / Options / Ordering / Mounting / Add-ons section ROW BY ROW and extract
+  EVERY accessory as a SEPARATE item. Look under these headings in ANY language, e.g. "Accessories",
+  "Optional", "Options", "Mounting", "Add-ons", and Chinese "配件" (accessories), "选配"/"选配件"
+  (optional), "附件" (attachments), "安装" (mounting/installation). ALSO treat these as accessories
+  even when they appear only as a spec/feature LINE rather than a table: mounting brackets / arms /
+  slipfitters / trunnions / yokes / knuckles, poles, chain/pendant/surface mount KITS, photocells,
+  occupancy / PIR / microwave / motion / daylight SENSORS, remote controllers, SURGE protectors,
+  wire guards, glare shields / visors / louvers, and EMERGENCY BATTERY / backup kits. For each,
+  copy the vendor's EXACT ordering/part code when printed (otherwise best-effort like "ACC-..." or
+  "IK-ACC-...") and a short plain description of what it is. Do NOT skip rows, do NOT merge multiple
+  accessories into one, and do NOT invent accessories the PDF doesn't list. Return [] ONLY when the
+  PDF truly lists no accessories, options, sensors, mounts, or emergency/surge parts anywhere.
 - dimensions: For each fixture size/variant, give a label and its width/height/depth in inches (convert mm using 1in=25.4mm, 2 decimals). Use "Not Specified" for any missing axis.
 - Finish Options (technicalSpecs): list EVERY available housing finish the vendor offers, joined with ", " — read the finish colour swatches AND any "available in ..." / "Finish:" sentence (e.g. "Black, Dark Bronze, Silver Gray, White"). If the vendor also names a coating/treatment (e.g. "corrosion-resistant powder coat"), append it after the colours. Capture ALL finishes, not just the first. Use "Not Specified" only when the PDF truly gives none.
 - IKIO STANDARDS (how IKIO builds its finished TDS from a vendor sheet — follow these):
@@ -1869,7 +1881,73 @@ def normalize_ordering_info(value: Any) -> dict[str, list[dict[str, str]]]:
 
 
 def normalize_accessories(value: Any) -> list[dict[str, str]]:
-    return _clean_code_entries(value)[:12]
+    return _clean_code_entries(value)[:15]
+
+
+# Spec parameters whose VALUES are, in practice, orderable accessories/options rather than a
+# fixed attribute of the fixture. Used only as a backstop when the model returns no accessories.
+_ACCESSORY_PARAM_HINTS = (
+    "accessor", "optional", "options", "add-on", "add on",
+    "sensor", "occupancy", "photocell", "daylight", "motion", "pir", "microwave",
+    "emergency", "battery", "backup", "surge", "wire guard", "guard", "glare shield",
+    "shield", "slipfitter", "slip fitter", "trunnion", "yoke", "visor", "louver", "louvre",
+    "bracket", "mount", "pole", "arm", "adapter", "remote", "controller",
+)
+# Values that are the fixture's own fixed attribute, NOT an orderable accessory.
+_NON_ACCESSORY_VALUES = {
+    "surface", "recessed", "surface mounted", "recessed mounted", "pendant", "suspended",
+    "wall", "ceiling", "not specified", "n/a", "na", "none", "no", "yes", "standard", "-",
+}
+# Parameters to skip even if they contain a hint word (they are electrical/optical, not parts).
+_ACCESSORY_PARAM_BLOCK = ("dimming", "driver", "input", "voltage", "control gear", "control:", "cct", "current")
+
+
+def _accessory_code_from_desc(desc: str) -> str:
+    words = re.findall(r"[A-Za-z0-9]+", desc.upper())
+    slug = "-".join(words[:3]) if words else "ITEM"
+    return f"ACC-{slug}"[:26]
+
+
+def backfill_accessories_from_specs(
+    accessories: list[dict[str, str]],
+    technical_specs: list[dict[str, str]],
+    category_specs: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """If the model captured no accessories, recover them from accessory-type spec lines
+    (mounting kits, sensors, emergency battery, surge protector, guards, etc.). Conservative:
+    it only runs when the model returned nothing, and skips electrical/optical parameters."""
+    result = list(accessories or [])
+    if len(result) >= 1:
+        return result[:15]  # trust the model's list when it found anything
+    seen: set[str] = set()
+    for spec in list(technical_specs or []) + list(category_specs or []):
+        param = normalize_whitespace(str(spec.get("parameter", "")))
+        param_l = param.lower()
+        value = normalize_whitespace(str(spec.get("specification", "")))
+        if not value:
+            continue
+        if any(block in param_l for block in _ACCESSORY_PARAM_BLOCK):
+            continue
+        if not any(hint in param_l for hint in _ACCESSORY_PARAM_HINTS):
+            continue
+        for piece in re.split(r"\s*[,/;]\s*|\s+and\s+|\s*\|\s*", value):
+            piece = normalize_whitespace(piece)
+            low = piece.lower().strip(".")
+            if len(piece) < 3 or low in _NON_ACCESSORY_VALUES:
+                continue
+            key = low
+            if key in seen:
+                continue
+            seen.add(key)
+            # Keep the parameter name for context unless the piece already reads like a part.
+            part_words = ("sensor", "battery", "surge", "bracket", "mount", "guard", "shield",
+                          "pole", "remote", "kit", "adapter", "photocell", "controller",
+                          "emergency", "slipfitter", "trunnion", "visor", "louver", "louvre")
+            desc = piece if any(w in low for w in part_words) else f"{param}: {piece}"
+            result.append({"code": _accessory_code_from_desc(desc), "description": desc})
+            if len(result) >= 12:
+                return result
+    return result[:15]
 
 
 def normalize_dimensions_list(value: Any) -> list[dict[str, str]]:
@@ -1937,6 +2015,13 @@ def post_process_extraction(model_output: dict[str, Any], source_text: str, sour
         "sourceText": (source_text or "")[:60000],
         "variants": normalize_variants(model_output.get("variants")),
     }
+
+    # Backstop: if the model returned no accessories, recover them from accessory-type spec lines
+    # (mounting kits, sensors, emergency battery, surge protector, guards) so a vendor's optional
+    # parts still reach the sheet even when they weren't printed as a tidy accessories table.
+    payload["accessories"] = backfill_accessories_from_specs(
+        payload["accessories"], payload["technicalSpecs"], payload["categorySpecificSpecs"],
+    )
 
     payload["variantOverview"] = derive_variant_overview(technical_specs, model_output)
     return payload
