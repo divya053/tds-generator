@@ -73,6 +73,22 @@ type SpecGroup = {
   cct: string;
   thd: string;
   lightDistribution: string;
+  // Per-variant values for user-inserted custom spec columns, keyed by the column's field id.
+  extra?: Record<string, string>;
+};
+
+// A spec-table column: a built-in (fixed data field) or a user-inserted custom column. Order in the
+// list = column order, so a custom column can be inserted BETWEEN any two.
+type SpecColumn = {
+  id: string;
+  label: string;
+  unit: string;
+  hidden?: boolean;
+  // Built-in fields drive their own data; "custom:<id>" columns read/write group.extra[field].
+  field:
+    | "partNumber" | "power" | "voltage" | "lumen" | "efficacy" | "cri" | "cct" | "thd" | "lightDistribution"
+    | `custom:${string}`;
+  scope: "group" | "option"; // group = one value per variant (rowSpan); option = per power row
 };
 
 // ---- Page 3: Product Ordering Information (part-number decoder) ----
@@ -223,9 +239,9 @@ type EditorDraft = {
   selectedQualificationIds: QualificationBadgeId[];
   // Page 2 — Product Specifications
   specGroups: SpecGroup[];
-  // Editable header/unit/visibility for each of the 9 spec-table columns (same order as
-  // SPEC_COLUMNS). Absent on older drafts → the defaults are used.
-  specColumns?: { label: string; unit: string; hidden?: boolean }[];
+  // Ordered spec-table columns (built-ins + any inserted custom columns), each with editable
+  // label/unit/visibility. Absent on older drafts → the defaults are used.
+  specColumns?: SpecColumn[];
   specsNote: string;
   // Page 3 — Product Ordering Information + Accessories
   orderingExample: string;
@@ -2769,7 +2785,7 @@ function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendation
     imageOwners: {},
     selectedQualificationIds: inferQualificationBadgeIds(spec as ExtendedExtractedSpec),
     specGroups: buildSpecGroups(spec),
-    specColumns: SPEC_COLUMNS.map((column) => ({ label: column.label, unit: column.unit })),
+    specColumns: DEFAULT_SPEC_COLUMNS,
     specsNote:
       "Custom manufacturing options in CCT, wattage, voltage, light distribution, finish, and more are available upon request, subject to MOQ and lead time considerations.",
     orderingExample: isSpecified(spec.orderingExample) ? String(spec.orderingExample).trim() : "",
@@ -5453,48 +5469,80 @@ function repairSpecOptions<T extends { power: string; lumen: string }>(options: 
   });
 }
 
-type SpecColumnConfig = { label: string; unit: string; hidden?: boolean };
+// The 9 built-in spec columns, in order, with their data field + scope.
+const DEFAULT_SPEC_COLUMNS: SpecColumn[] = [
+  { id: "col-partnumber", label: "Part Number", unit: "", field: "partNumber", scope: "group" },
+  { id: "col-power", label: "Power Selectable", unit: "W", field: "power", scope: "option" },
+  { id: "col-voltage", label: "Voltage", unit: "V", field: "voltage", scope: "group" },
+  { id: "col-lumen", label: "Lumen Output", unit: "lm", field: "lumen", scope: "option" },
+  { id: "col-efficacy", label: "Efficacy", unit: "lm/W", field: "efficacy", scope: "option" },
+  { id: "col-cri", label: "CRI", unit: "", field: "cri", scope: "group" },
+  { id: "col-cct", label: "CCT", unit: "K", field: "cct", scope: "group" },
+  { id: "col-thd", label: "THD", unit: "", field: "thd", scope: "group" },
+  { id: "col-distribution", label: "Light Distribution", unit: "", field: "lightDistribution", scope: "group" },
+];
 
-/** Resolve the 9 spec columns from the draft (editable label/unit/hidden), falling back to defaults. */
-function resolveSpecColumns(columns?: SpecColumnConfig[]): SpecColumnConfig[] {
-  return SPEC_COLUMNS.map((base, i) => ({
-    label: columns?.[i]?.label ?? base.label,
-    unit: columns?.[i]?.unit ?? base.unit,
-    hidden: columns?.[i]?.hidden ?? false,
+/** Resolve the ordered spec columns from the draft. Handles the new format, the OLD positional
+ *  {label,unit,hidden}[] format (migrated onto the defaults), and absence (defaults). */
+function resolveSpecColumns(columns?: SpecColumn[] | { label: string; unit: string; hidden?: boolean }[]): SpecColumn[] {
+  if (!Array.isArray(columns) || columns.length === 0) return DEFAULT_SPEC_COLUMNS;
+  if (columns.every((column) => typeof (column as SpecColumn).field === "string")) {
+    return columns as SpecColumn[];
+  }
+  // Legacy positional overrides.
+  return DEFAULT_SPEC_COLUMNS.map((base, i) => ({
+    ...base,
+    label: columns[i]?.label ?? base.label,
+    unit: columns[i]?.unit ?? base.unit,
+    hidden: columns[i]?.hidden ?? false,
   }));
 }
 
-function SpecificationsTable({ groups, columns }: { groups: SpecGroup[]; columns?: SpecColumnConfig[] }) {
-  const cols = resolveSpecColumns(columns);
-  const visible = cols.map((column, index) => ({ ...column, index })).filter((column) => !column.hidden);
-  const lastVisible = visible.length - 1;
-  const headerClass = (i: number) =>
-    cn(
-      "border border-[#414042] bg-[#414042] px-1 py-1 text-center align-middle text-[8px] font-bold uppercase leading-[1.1] text-white",
-      i === 0 && "border-l-0",
-      i === lastVisible && "border-r-0",
-    );
-  const unitClass = (i: number) =>
-    cn(
-      "border border-[#d6d6d8] bg-[#eeeeef] px-1 py-1.5 text-center align-middle text-[7px] font-bold leading-none text-black",
-      i === 0 && "border-l-0",
-      i === lastVisible && "border-r-0",
-    );
-  // Body cell edge classes depend on whether this column is the first/last VISIBLE one.
-  const cellEdge = (colIndex: number) =>
-    cn(visible[0]?.index === colIndex && "border-l-0", visible[lastVisible]?.index === colIndex && "border-r-0");
-  const show = (colIndex: number) => !cols[colIndex].hidden;
+/** The display value for a column in a given variant row (built-in field or a custom column). */
+function specColumnValue(
+  column: SpecColumn,
+  group: SpecGroup,
+  option: SpecOption,
+  cctDisplay: string,
+  optionEfficacy: string,
+): string {
+  switch (column.field) {
+    case "power": return option.power;
+    case "lumen": return option.lumen;
+    case "efficacy": return optionEfficacy;
+    case "voltage": return group.voltage;
+    case "cri": return group.cri;
+    case "cct": return cctDisplay;
+    case "thd": return group.thd;
+    case "lightDistribution": return group.lightDistribution;
+    case "partNumber": return group.partNumber;
+    default: return group.extra?.[column.field] ?? "";
+  }
+}
 
+function SpecificationsTable({ groups, columns }: { groups: SpecGroup[]; columns?: SpecColumn[] }) {
+  const visible = resolveSpecColumns(columns).filter((column) => !column.hidden);
+  const last = visible.length - 1;
+  const edge = (i: number) => cn(i === 0 && "border-l-0", i === last && "border-r-0");
+  const cell = "border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black [overflow-wrap:anywhere]";
   return (
     <table className="w-full table-fixed border-collapse" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
       <colgroup>
-        {visible.map((column) => (
-          <col key={column.index} style={{ width: SPEC_COL_WIDTHS[column.index] }} />
+        {visible.map((column, i) => (
+          <col key={column.id} style={{ width: SPEC_COL_WIDTHS[DEFAULT_SPEC_COLUMNS.findIndex((d) => d.field === column.field)] ?? `${(100 / Math.max(1, visible.length)).toFixed(1)}%` }} />
         ))}
       </colgroup>
       <thead>
-        <tr>{visible.map((column, i) => (<th key={column.index} className={headerClass(i)}>{column.label}</th>))}</tr>
-        <tr>{visible.map((column, i) => (<th key={column.index} className={unitClass(i)}>{column.unit}</th>))}</tr>
+        <tr>
+          {visible.map((column, i) => (
+            <th key={column.id} className={cn("border border-[#414042] bg-[#414042] px-1 py-1 text-center align-middle text-[8px] font-bold uppercase leading-[1.1] text-white", edge(i))}>{column.label}</th>
+          ))}
+        </tr>
+        <tr>
+          {visible.map((column, i) => (
+            <th key={column.id} className={cn("border border-[#d6d6d8] bg-[#eeeeef] px-1 py-1.5 text-center align-middle text-[7px] font-bold leading-none text-black", edge(i))}>{column.unit}</th>
+          ))}
+        </tr>
       </thead>
       <tbody>
         {groups.map((group) => {
@@ -5509,25 +5557,28 @@ function SpecificationsTable({ groups, columns }: { groups: SpecGroup[]; columns
             const lm = Number((option.lumen.replace(/,/g, "").match(/[\d.]+/) ?? [])[0]);
             const optionEfficacy =
               Number.isFinite(w) && w > 0 && Number.isFinite(lm) && lm > 0 ? `${Math.round(lm / w)} lm/W` : "";
-            const cell = "border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black";
             return (
               <tr key={`${group.id}-${index}`} className="align-middle">
-                {show(0) && index === 0 && (
-                  <td rowSpan={span} className={cn(cell, "font-bold", cellEdge(0))}>
-                    <div className="whitespace-nowrap">{group.partNumber}</div>
-                    {isSpecified(group.sku) && (
-                      <div className="mt-0.5 whitespace-nowrap font-normal text-slate-500">SKU: {group.sku}</div>
-                    )}
-                  </td>
-                )}
-                {show(1) && <td className={cn(cell, cellEdge(1))}>{option.power}</td>}
-                {show(2) && index === 0 && <td rowSpan={span} className={cn(cell, cellEdge(2))}>{group.voltage}</td>}
-                {show(3) && <td className={cn(cell, cellEdge(3))}>{option.lumen}</td>}
-                {show(4) && <td className={cn(cell, cellEdge(4))}>{optionEfficacy}</td>}
-                {show(5) && index === 0 && <td rowSpan={span} className={cn(cell, cellEdge(5))}>{group.cri}</td>}
-                {show(6) && index === 0 && <td rowSpan={span} className={cn(cell, cellEdge(6))}>{cctDisplay}</td>}
-                {show(7) && index === 0 && <td rowSpan={span} className={cn(cell, cellEdge(7))}>{group.thd}</td>}
-                {show(8) && index === 0 && <td rowSpan={span} className={cn(cell, cellEdge(8))}>{group.lightDistribution}</td>}
+                {visible.map((column, i) => {
+                  // group-scoped cells render once with rowSpan (skip on later rows); option cells per row.
+                  if (column.scope === "group" && index !== 0) return null;
+                  const rowSpan = column.scope === "group" ? span : undefined;
+                  if (column.field === "partNumber") {
+                    return (
+                      <td key={column.id} rowSpan={rowSpan} className={cn(cell, "font-bold", edge(i))}>
+                        <div>{group.partNumber}</div>
+                        {isSpecified(group.sku) && (
+                          <div className="mt-0.5 font-normal text-slate-500">SKU: {group.sku}</div>
+                        )}
+                      </td>
+                    );
+                  }
+                  return (
+                    <td key={column.id} rowSpan={rowSpan} className={cn(cell, edge(i))}>
+                      {hyphenateSelectable(specColumnValue(column, group, option, cctDisplay, optionEfficacy))}
+                    </td>
+                  );
+                })}
               </tr>
             );
           });
@@ -6118,12 +6169,12 @@ function ExtraTableView({ table }: { table: ExtraTable }) {
                 <td
                   key={ci}
                   className={cn(
-                    "border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black",
+                    "border border-slate-200 px-1 py-1.5 text-center text-[7px] leading-[1.2] text-black [overflow-wrap:anywhere]",
                     ci === 0 && "border-l-0",
                     ci === arr.length - 1 && "border-r-0",
                   )}
                 >
-                  {row[ci] ?? ""}
+                  {hyphenateSelectable(row[ci] ?? "")}
                 </td>
               ))}
             </tr>
@@ -7322,6 +7373,31 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
       specColumns: resolveSpecColumns(current.specColumns).map((column, i) => (i === index ? { ...column, ...patch } : column)),
     }));
   };
+  // Insert a user-defined custom column BEFORE the given position (one value per variant).
+  const insertSpecColumn = (beforeIndex: number) => {
+    setDraft((current) => {
+      const cols = [...resolveSpecColumns(current.specColumns)];
+      const fieldId = `custom:${Date.now()}`;
+      cols.splice(beforeIndex, 0, { id: fieldId, label: "New Column", unit: "", field: fieldId as `custom:${string}`, scope: "group" });
+      return { ...current, specColumns: cols };
+    });
+  };
+  const removeSpecColumn = (index: number) => {
+    setDraft((current) => {
+      const cols = resolveSpecColumns(current.specColumns);
+      const target = cols[index];
+      if (!target || !target.field.startsWith("custom:")) return current; // only custom columns are deletable
+      return { ...current, specColumns: cols.filter((_, i) => i !== index) };
+    });
+  };
+  const setSpecGroupExtra = (groupIndex: number, field: string, value: string) => {
+    setDraft((current) => ({
+      ...current,
+      specGroups: current.specGroups.map((group, i) =>
+        i === groupIndex ? { ...group, extra: { ...(group.extra ?? {}), [field]: value } } : group,
+      ),
+    }));
+  };
 
   // ---- Ordering COLUMNS (dynamic: rename / add / delete a whole column) ----
   const renameOrderingColumn = (columnIndex: number, header: string) => {
@@ -8210,34 +8286,59 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                 Table columns — rename or hide
               </summary>
               <div className="mt-2 space-y-1.5">
-                {resolveSpecColumns(draft.specColumns).map((column, columnIndex) => (
-                  <div key={columnIndex} className="flex items-center gap-2">
-                    <Input
-                      value={column.label}
-                      onChange={(event) => updateSpecColumn(columnIndex, { label: event.target.value })}
-                      placeholder="Column name"
-                      className={cn("h-9 text-[12px]", column.hidden && "opacity-50")}
-                    />
-                    <Input
-                      value={column.unit}
-                      onChange={(event) => updateSpecColumn(columnIndex, { unit: event.target.value })}
-                      placeholder="Unit"
-                      className={cn("h-9 w-[64px] shrink-0 text-[12px]", column.hidden && "opacity-50")}
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => updateSpecColumn(columnIndex, { hidden: !column.hidden })}
-                      className="h-9 shrink-0 px-2 text-[11px]"
-                      title={column.hidden ? "Show this column" : "Hide this column"}
-                    >
-                      {column.hidden ? "Show" : "Hide"}
-                    </Button>
-                  </div>
-                ))}
+                {resolveSpecColumns(draft.specColumns).map((column, columnIndex) => {
+                  const isCustom = column.field.startsWith("custom:");
+                  return (
+                    <div key={column.id}>
+                      <button
+                        type="button"
+                        onClick={() => insertSpecColumn(columnIndex)}
+                        className="flex w-full items-center justify-center gap-1 rounded-lg border border-dashed border-primary/30 py-0.5 text-[10px] text-primary/80 hover:border-primary hover:bg-primary/5"
+                        title="Insert a new column before this one"
+                      >
+                        <Plus className="h-3 w-3" /> Insert column here
+                      </button>
+                      <div className="mt-1 flex items-center gap-2">
+                        <Input
+                          value={column.label}
+                          onChange={(event) => updateSpecColumn(columnIndex, { label: event.target.value })}
+                          placeholder="Column name"
+                          className={cn("h-9 text-[12px]", column.hidden && "opacity-50")}
+                        />
+                        <Input
+                          value={column.unit}
+                          onChange={(event) => updateSpecColumn(columnIndex, { unit: event.target.value })}
+                          placeholder="Unit"
+                          className={cn("h-9 w-[64px] shrink-0 text-[12px]", column.hidden && "opacity-50")}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => updateSpecColumn(columnIndex, { hidden: !column.hidden })}
+                          className="h-9 shrink-0 px-2 text-[11px]"
+                          title={column.hidden ? "Show this column" : "Hide this column"}
+                        >
+                          {column.hidden ? "Show" : "Hide"}
+                        </Button>
+                        {isCustom && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => removeSpecColumn(columnIndex)}
+                            className="h-9 w-9 shrink-0 rounded-xl border-[#7a3b3b] bg-[#5f2a2a] p-0 text-red-100 hover:bg-[#743636] [&>svg]:!size-4 [&>svg]:!text-red-100"
+                            title="Delete this custom column"
+                            aria-label="Delete custom column"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
                 <p className="pt-1 text-[10px] text-muted-foreground">
-                  Hidden columns are removed from the printed table. Rename any header (e.g. keep
-                  "Power" in US units) or its unit above.
+                  Hidden columns leave the printed table; rename headers/units above. Use "Insert column
+                  here" to add a custom column — then fill its per-variant value in each part-number block below.
                 </p>
               </div>
             </details>
@@ -8313,6 +8414,17 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                     <Input value={group.cct} onChange={(event) => updateSpecGroup(groupIndex, { cct: event.target.value })} placeholder="CCT (K)" />
                     <Input value={group.thd} onChange={(event) => updateSpecGroup(groupIndex, { thd: event.target.value })} placeholder="THD" />
                     <Input value={group.lightDistribution} onChange={(event) => updateSpecGroup(groupIndex, { lightDistribution: event.target.value })} placeholder="Light Distribution" className="col-span-2" />
+                    {resolveSpecColumns(draft.specColumns)
+                      .filter((column) => column.field.startsWith("custom:"))
+                      .map((column) => (
+                        <Input
+                          key={column.id}
+                          value={group.extra?.[column.field] ?? ""}
+                          onChange={(event) => setSpecGroupExtra(groupIndex, column.field, event.target.value)}
+                          placeholder={column.label || "Custom column"}
+                          className="col-span-2"
+                        />
+                      ))}
                   </div>
                 </div>
               ))}
