@@ -87,7 +87,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v18"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v19"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -608,15 +608,15 @@ def _classify_vendor_image(image) -> str:
     max_dim = max(width, height)
     is_square = 0.6 <= aspect <= 1.7
     num_colours = len(quant)
-    # Certification badge / brand logo (any of):
-    #  - small square icon (uniform bg / few colours / light-icon-on-white): 3CCT, IP65, Photocell…
-    #  - a FLAT logo (very few colours) that is very dark or very light: the black "UL CERTIFIED" mark
-    #  - a highly SATURATED limited-palette logo at any size: the red/blue "RZ" brand mark
-    # Real product photos have many colours and moderate saturation, so they are not caught.
+    # Certification badge / brand logo — kept CONSERVATIVE so real accessory/mounting thumbnails
+    # (metal brackets, sensors — which are textured, many-coloured) are NOT dropped. Only catch:
+    #  - a small square that is VERY uniform / very flat (a true icon): 3CCT, IP65, UL, Photocell…
+    #  - a FLAT logo (<=10 colours) that is very dark or very light: the black "UL CERTIFIED" mark
+    #  - a highly SATURATED, limited-palette logo at any size: the red/blue "RZ" brand mark
     if (
-        (is_square and max_dim < 360 and (top_frac > 0.45 or num_colours < 55 or (mean_bright > 0.72 and mean_sat < 0.2)))
-        or (is_square and num_colours <= 12 and (mean_bright < 0.4 or mean_bright > 0.92))
-        or (mean_sat > 0.5 and num_colours < 32)
+        (is_square and max_dim < 300 and (top_frac > 0.6 or num_colours <= 16))
+        or (is_square and num_colours <= 10 and (mean_bright < 0.35 or mean_bright > 0.94))
+        or (mean_sat > 0.55 and num_colours < 26)
     ):
         return "badge"
     # Line-drawing dimension figure: mostly white with thin dark lines (near-grayscale), and large
@@ -626,10 +626,10 @@ def _classify_vendor_image(image) -> str:
     return "photo"
 
 
-def extract_embedded_images(pdf_path: str, max_pages: int = 6, max_images: int = 16) -> list[dict[str, Any]]:
-    """Pull embedded raster images (product photos, accessory / dimension diagrams) out of the PDF so
-    the editor can offer them as pickable thumbnails — e.g. one-click suggested images per accessory.
-    Filters out header banners, rules, tiny icons AND certification badges; de-dupes repeated logos.
+def extract_embedded_images(pdf_path: str, max_pages: int = 16, max_images: int = 48) -> list[dict[str, Any]]:
+    """Pull EVERY embedded raster image (product photos, accessory / mounting / dimension / photometric
+    figures) out of the PDF across ALL pages so the editor can offer them as pickable thumbnails.
+    Filters out only header banners, rules, tiny icons AND certification badges; de-dupes repeats.
     IDs are 'vendorimg-<kind>-<page>-<i>' so the UI treats them as a pickable LIBRARY (never auto-
     placed as the hero) and can sort diagrams vs photos per section."""
     from pypdfium2 import raw as pdfium_raw
@@ -652,10 +652,10 @@ def extract_embedded_images(pdf_path: str, max_pages: int = 6, max_images: int =
                     except Exception:
                         continue
                     width, height = image.size
-                    if width < 64 or height < 64:
+                    if width < 56 or height < 56:
                         continue  # icons / bullets / certification marks
                     aspect = (width / height) if height else 99.0
-                    if aspect > 4.5 or aspect < 0.22:
+                    if aspect > 6.5 or aspect < 0.16:
                         continue  # header banners, rules, thin colour strips
                     kind = _classify_vendor_image(image)
                     if kind == "badge":
@@ -2477,7 +2477,9 @@ def process_pdf():
         # Pull the vendor's embedded images (product photos, accessory/dimension diagrams) so the
         # editor can offer them as one-click suggested thumbnails (e.g. per accessory).
         try:
-            result["sourceImages"] = extract_embedded_images(pdf_path, LLM_VISION_MAX_PAGES)
+            # Scan ALL pages (capped generously) so accessory / mounting / photometric images on
+            # later pages are captured too — not just the first few vision pages.
+            result["sourceImages"] = extract_embedded_images(pdf_path)
         except Exception as exc:  # never fail an extraction because of image harvesting
             print(f"[images] embedded-image extraction skipped: {exc}", flush=True)
             result["sourceImages"] = []
