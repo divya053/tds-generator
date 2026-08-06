@@ -3865,20 +3865,23 @@ function buildVariantPowerValue(spec: ExtendedExtractedSpec, label: string) {
   const variantRows = buildPreviewVariantRows(spec);
   if (variantRows.length === 0) return "";
   const groups = variantRows
-    .map((row) => ({
+    .map((row, index) => ({
       fixture: normalizeText(row.fixture),
+      detail: normalizeText(row.fixtureDetail) || `Variant ${index + 1}`,
       watts: formatSelectableWatts(compactSelectableValue(label, normalizeText(row.power))),
     }))
     .filter((entry) => isSpecified(entry.watts));
   if (groups.length === 0) return "";
-  const distinctFixtures = new Set(groups.map((group) => group.fixture).filter(isSpecified));
-  // No real per-variant distinction (single row, or no distinguishing size/label) -> merge to one
-  // ascending, distinct line. Otherwise keep each size/variant on its own labelled line.
-  if (groups.length === 1 || distinctFixtures.size <= 1) {
-    return formatSelectableWatts(groups.map((group) => group.watts).join("-"));
-  }
+  // ONE variant/fixture (a single selectable product) -> one hyphen-joined ascending line.
+  if (groups.length === 1) return groups[0].watts;
+  // MULTIPLE variants -> one line PER variant so each variant's own selectable powers stay together
+  // (never every wattage merged into one line). Prefer the size/fixture label; otherwise fall back
+  // to the variant label ("Variant 1") so power-selectable variants without a size are still split.
   return groups
-    .map((group) => (isSpecified(group.fixture) ? `${group.fixture}: ${group.watts}` : group.watts))
+    .map((group) => {
+      const lbl = isSpecified(group.fixture) ? group.fixture : group.detail;
+      return isSpecified(lbl) ? `${lbl}: ${group.watts}` : group.watts;
+    })
     .join("\n");
 }
 
@@ -4482,8 +4485,7 @@ function SheetPageOne({
   // time — never the vendor's stated figure — so even drafts saved before this rule self-correct.
   // Compute it from the DRAFT's own Power/Lumen rows (the values actually on the sheet), because a
   // reconstructed spec may not carry variantOverview/technicalSpecs; fall back to the spec if the
-  // draft rows are absent. Power is NOT overridden here: its per-variant grouping is set when the
-  // sheet is built (buildVariantPowerValue) and stays editable, so a manual split typed in sticks.
+  // draft rows are absent.
   const draftOverviewRowValue = (match: (label: string) => boolean) =>
     draft.overviewRows.find((row) => isSpecified(row.value) && match(row.label))?.value ?? "";
   const draftPowerText = draftOverviewRowValue(isPowerSelectableOverviewLabel);
@@ -4492,6 +4494,12 @@ function SheetPageOne({
   );
   const computedEfficacy =
     efficacyFromWattsLumens(draftPowerText, draftLumenText) || deriveEfficacyFromPowerLumen(spec);
+  // Power: when the fixture has MULTIPLE variants, recompute the row so each variant's selectable
+  // powers show on their OWN line (never every wattage merged into one line) — this self-corrects
+  // drafts saved before the per-variant rule. For a single selectable fixture we leave the stored
+  // value alone so a manual edit still sticks.
+  const computedPower =
+    buildPreviewVariantRows(spec).length > 1 ? buildVariantPowerValue(spec, "Power") : "";
   const filteredOverviewRows = draft.overviewRows
     .filter((row) => row.included !== false)
     .filter((row) => isSpecified(row.label) && isSpecified(row.value))
@@ -4499,6 +4507,9 @@ function SheetPageOne({
     .map((row) => {
       if (normalizeSpecKey(row.label) === "efficacy" && isSpecified(computedEfficacy)) {
         return { ...row, value: computedEfficacy };
+      }
+      if (isPowerSelectableOverviewLabel(row.label) && isSpecified(computedPower)) {
+        return { ...row, value: computedPower };
       }
       return { ...row, value: normalizeOverviewRowValue(row.label, row.value) };
     });
@@ -5038,6 +5049,33 @@ const SPEC_COLUMNS: Array<{ label: string; unit: string }> = [
 
 const SPEC_COL_WIDTHS = ["24%", "9%", "9%", "11%", "9%", "6%", "10%", "6%", "16%"];
 
+/** Repair a variant's Power/Lumen pairs when one lumen is physically impossible for its wattage
+ *  (efficacy > 220 lm/W — beyond any real LED, i.e. a mis-read/misaligned value). We keep the
+ *  wattage and recompute ONLY the bad lumen from the variant's own consensus (median) efficacy of
+ *  its plausible rows, so a single scrambled number (e.g. 40W paired with the 100W model's lumen)
+ *  no longer shows an impossible figure. Rows with believable efficacy are never touched. */
+function repairSpecOptions<T extends { power: string; lumen: string }>(options: T[]): T[] {
+  const parsed = options.map((option) => {
+    const w = Number((option.power.match(/[\d.]+/) ?? [])[0]);
+    const lm = Number((option.lumen.replace(/,/g, "").match(/[\d.]+/) ?? [])[0]);
+    const eff = Number.isFinite(w) && w > 0 && Number.isFinite(lm) && lm > 0 ? lm / w : NaN;
+    return { option, w, eff };
+  });
+  const plausible = parsed
+    .map((p) => p.eff)
+    .filter((eff) => Number.isFinite(eff) && eff >= 40 && eff <= 220)
+    .sort((a, b) => a - b);
+  if (plausible.length < 2) return options; // no reliable consensus -> leave the data untouched
+  const consensus = plausible[Math.floor(plausible.length / 2)];
+  return parsed.map((p) => {
+    if (Number.isFinite(p.w) && p.w > 0 && Number.isFinite(p.eff) && (p.eff > 220 || p.eff < 30)) {
+      const unit = /lm/i.test(p.option.lumen) ? "lm" : "";
+      return { ...p.option, lumen: `${Math.round(consensus * p.w)}${unit}` };
+    }
+    return p.option;
+  });
+}
+
 function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
   return (
     <table className="w-full table-fixed border-collapse" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
@@ -5078,7 +5116,7 @@ function SpecificationsTable({ groups }: { groups: SpecGroup[] }) {
       </thead>
       <tbody>
         {groups.map((group) => {
-          const options = group.options.length > 0 ? group.options : [{ power: "", lumen: "" }];
+          const options = repairSpecOptions(group.options.length > 0 ? group.options : [{ power: "", lumen: "" }]);
           const span = options.length;
           // Selectable CCT as a single dash-joined line WITH the K unit (e.g. "3000K-4000K-5000K").
           const cctTokens = group.cct.match(/\d[\d.]*\s*K\b/gi);
