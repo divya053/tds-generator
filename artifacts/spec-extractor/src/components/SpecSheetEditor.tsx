@@ -280,7 +280,10 @@ type ImageEraseLayer = {
   shape?: "rect" | "circle";
 };
 
-type ImageEditorMode = "text" | "erase" | "pen";
+type ImageEditorMode = "text" | "erase" | "pen" | "crop";
+
+// Which part of the crop rectangle a drag is manipulating.
+type CropHandle = "new" | "move" | "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
 type ImageEditorState = {
   backgroundColor: string;
@@ -2684,12 +2687,20 @@ function ImageEditorDialog({
   const [aiError, setAiError] = useState<string | null>(null);
   const isPaintingRef = useRef(false);
   const lastPaintRef = useRef<{ x: number; y: number } | null>(null);
+  // Accurate crop: a separate overlay canvas draws the guides so they never bake into the result.
+  const [overlayEl, setOverlayEl] = useState<HTMLCanvasElement | null>(null);
+  const [crop, setCrop] = useState<CropSelection | null>(null);
+  const [cropAspect, setCropAspect] = useState<number | null>(null); // null = free
+  const cropDragRef = useRef<{ handle: CropHandle; startX: number; startY: number; orig: CropSelection } | null>(null);
 
   useEffect(() => {
     if (!open) return;
 
     setEditor(createImageEditorState());
     setMode("text");
+    setCrop(null);
+    setCropAspect(null);
+    cropDragRef.current = null;
     setTextValue("");
     setTextColor("#111827");
     setTextSize(30);
@@ -2848,9 +2859,168 @@ function ImageEditorDialog({
     lastPaintRef.current = null;
   };
 
+  // ---- Accurate crop ------------------------------------------------------
+  const clampCrop = (c: CropSelection, cw: number, ch: number): CropSelection => {
+    let { x, y, width: w, height: h } = c;
+    if (w < 0) { x += w; w = -w; }
+    if (h < 0) { y += h; h = -h; }
+    w = Math.max(8, w); h = Math.max(8, h);
+    x = clamp(x, 0, Math.max(0, cw - 8));
+    y = clamp(y, 0, Math.max(0, ch - 8));
+    w = Math.min(w, cw - x); h = Math.min(h, ch - y);
+    return { x, y, width: w, height: h };
+  };
+  const cropHandlePositions = (c: CropSelection): Array<[CropHandle, number, number]> => {
+    const { x, y, width: w, height: h } = c;
+    return [
+      ["nw", x, y], ["n", x + w / 2, y], ["ne", x + w, y],
+      ["e", x + w, y + h / 2], ["se", x + w, y + h], ["s", x + w / 2, y + h],
+      ["sw", x, y + h], ["w", x, y + h / 2],
+    ];
+  };
+  const handleCropDown = (point: { canvas: HTMLCanvasElement; x: number; y: number }) => {
+    const cw = point.canvas.width;
+    const thr = Math.max(12, cw * 0.02);
+    let handle: CropHandle = "new";
+    if (crop) {
+      for (const [name, hx, hy] of cropHandlePositions(crop)) {
+        if (Math.abs(point.x - hx) <= thr && Math.abs(point.y - hy) <= thr) { handle = name; break; }
+      }
+      if (handle === "new"
+        && point.x >= crop.x && point.x <= crop.x + crop.width
+        && point.y >= crop.y && point.y <= crop.y + crop.height) {
+        handle = "move";
+      }
+    }
+    cropDragRef.current = { handle, startX: point.x, startY: point.y, orig: crop ?? { x: point.x, y: point.y, width: 0, height: 0 } };
+    if (handle === "new") setCrop({ x: point.x, y: point.y, width: 0, height: 0 });
+  };
+  const handleCropMove = (point: { canvas: HTMLCanvasElement; x: number; y: number }) => {
+    const drag = cropDragRef.current;
+    if (!drag) return;
+    const cw = point.canvas.width, ch = point.canvas.height;
+    const o = drag.orig;
+    const anchors: Partial<Record<CropHandle, { x: number; y: number }>> = {
+      new: { x: drag.startX, y: drag.startY },
+      se: { x: o.x, y: o.y },
+      ne: { x: o.x, y: o.y + o.height },
+      sw: { x: o.x + o.width, y: o.y },
+      nw: { x: o.x + o.width, y: o.y + o.height },
+    };
+    const anchor = anchors[drag.handle];
+    let next: CropSelection;
+    if (anchor) {
+      let w = point.x - anchor.x;
+      let h = point.y - anchor.y;
+      if (cropAspect) h = (h < 0 ? -1 : 1) * (Math.abs(w) / cropAspect);
+      next = { x: anchor.x, y: anchor.y, width: w, height: h };
+    } else if (drag.handle === "move") {
+      next = {
+        x: clamp(o.x + (point.x - drag.startX), 0, cw - o.width),
+        y: clamp(o.y + (point.y - drag.startY), 0, ch - o.height),
+        width: o.width, height: o.height,
+      };
+    } else {
+      next = { ...o };
+      const dx = point.x - drag.startX, dy = point.y - drag.startY;
+      if (drag.handle === "e") next.width = o.width + dx;
+      else if (drag.handle === "w") { next.x = o.x + dx; next.width = o.width - dx; }
+      else if (drag.handle === "s") next.height = o.height + dy;
+      else if (drag.handle === "n") { next.y = o.y + dy; next.height = o.height - dy; }
+    }
+    setCrop(clampCrop(next, cw, ch));
+  };
+  const setCropField = (key: keyof CropSelection, value: number) => {
+    const canvas = canvasEl;
+    if (!canvas || !crop || Number.isNaN(value)) return;
+    setCrop(clampCrop({ ...crop, [key]: value }, canvas.width, canvas.height));
+  };
+  const applyCrop = () => {
+    const canvas = canvasEl;
+    if (!canvas || !crop) return;
+    const c = clampCrop(crop, canvas.width, canvas.height);
+    const sx = Math.round(c.x), sy = Math.round(c.y);
+    const sw = Math.max(1, Math.round(c.width)), sh = Math.max(1, Math.round(c.height));
+    const out = document.createElement("canvas");
+    out.width = sw; out.height = sh;
+    const octx = out.getContext("2d");
+    if (!octx) return;
+    octx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+    setBaseDataUrl(out.toDataURL("image/png")); // cropped image becomes the new base for further edits
+    setEditor(createImageEditorState());
+    setCrop(null);
+    setMode("crop"); // stay in crop so a re-crop initialises on the smaller image
+  };
+
+  // Initialise a centred crop box when entering crop mode with none set.
+  useEffect(() => {
+    if (mode === "crop" && !crop && canvasEl && canvasEl.width > 0) {
+      const w = canvasEl.width, h = canvasEl.height;
+      setCrop({ x: w * 0.12, y: h * 0.12, width: w * 0.76, height: h * 0.76 });
+    }
+  }, [mode, crop, canvasEl]);
+
+  // Draw the crop guides on the SEPARATE overlay canvas so they never bake into the saved image.
+  useEffect(() => {
+    const main = canvasEl, ov = overlayEl;
+    if (!ov || !main) return;
+    ov.width = main.width; ov.height = main.height;
+    const ctx = ov.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, ov.width, ov.height);
+    if (mode !== "crop" || !crop) return;
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.fillRect(0, 0, ov.width, ov.height);
+    ctx.clearRect(crop.x, crop.y, crop.width, crop.height);
+    ctx.strokeStyle = "#3b82f6";
+    ctx.lineWidth = Math.max(2, ov.width * 0.003);
+    ctx.strokeRect(crop.x, crop.y, crop.width, crop.height);
+    ctx.strokeStyle = "rgba(255,255,255,0.55)";
+    ctx.lineWidth = Math.max(1, ov.width * 0.0015);
+    for (let i = 1; i < 3; i++) {
+      const gx = crop.x + (crop.width * i) / 3;
+      ctx.beginPath(); ctx.moveTo(gx, crop.y); ctx.lineTo(gx, crop.y + crop.height); ctx.stroke();
+      const gy = crop.y + (crop.height * i) / 3;
+      ctx.beginPath(); ctx.moveTo(crop.x, gy); ctx.lineTo(crop.x + crop.width, gy); ctx.stroke();
+    }
+    const r = Math.max(5, ov.width * 0.008);
+    ctx.fillStyle = "#3b82f6";
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = Math.max(1, ov.width * 0.002);
+    for (const [, hx, hy] of cropHandlePositions(crop)) {
+      ctx.beginPath(); ctx.rect(hx - r, hy - r, r * 2, r * 2); ctx.fill(); ctx.stroke();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, crop, canvasEl, overlayEl, editor, baseDataUrl]);
+
+  const handleCanvasPointerDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (mode === "crop") {
+      const point = getCanvasPoint(event);
+      if (point) handleCropDown(point);
+      return;
+    }
+    handlePenDown(event);
+  };
+  const handleCanvasPointerMove = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (mode === "crop") {
+      if (!cropDragRef.current) return;
+      const point = getCanvasPoint(event);
+      if (point) handleCropMove(point);
+      return;
+    }
+    handlePenMove(event);
+  };
+  const handleCanvasPointerUp = () => {
+    if (mode === "crop") {
+      cropDragRef.current = null;
+      return;
+    }
+    handlePenUp();
+  };
+
   const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (!image) return;
-    if (mode === "pen") return; // pen is handled by drag (mouse down/move)
+    if (mode === "pen" || mode === "crop") return; // pen & crop are handled by drag (mouse down/move)
 
     const canvas = canvasEl;
     if (!canvas) return;
@@ -3162,7 +3332,10 @@ function ImageEditorDialog({
                 <div className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
                   Tools
                 </div>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <Button type="button" variant={mode === "crop" ? "default" : "outline"} className="px-2 text-[12px]" onClick={() => setMode("crop")}>
+                    ✂ Crop
+                  </Button>
                   <Button type="button" variant={mode === "text" ? "default" : "outline"} className="px-2 text-[12px]" onClick={() => setMode("text")}>
                     Add Text
                   </Button>
@@ -3173,7 +3346,54 @@ function ImageEditorDialog({
                     Erase Pen
                   </Button>
                 </div>
-                {mode === "text" ? (
+                {mode === "crop" ? (
+                  <div className="space-y-3 rounded-2xl border border-border/70 bg-card/40 p-3">
+                    <div className="text-xs text-muted-foreground">
+                      Drag on the image to draw a crop, or drag the handles/box to adjust. Fine-tune with the
+                      exact pixel boxes below, then Apply.
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(["x", "y", "width", "height"] as Array<keyof CropSelection>).map((field) => (
+                        <label key={field} className="block space-y-1 text-xs">
+                          <span className="uppercase tracking-wide text-muted-foreground">
+                            {field === "width" ? "W" : field === "height" ? "H" : field.toUpperCase()} (px)
+                          </span>
+                          <Input
+                            type="number"
+                            value={crop ? Math.round(crop[field]) : 0}
+                            onChange={(event) => setCropField(field, Number(event.target.value))}
+                            disabled={!crop}
+                            className="h-9"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-xs uppercase tracking-wide text-muted-foreground">Aspect ratio</span>
+                      <div className="grid grid-cols-5 gap-1.5">
+                        {([["Free", null], ["1:1", 1], ["4:3", 4 / 3], ["3:2", 3 / 2], ["16:9", 16 / 9]] as Array<[string, number | null]>).map(([label, value]) => (
+                          <Button
+                            key={label}
+                            type="button"
+                            variant={cropAspect === value ? "default" : "outline"}
+                            className="h-8 px-0 text-[11px]"
+                            onClick={() => setCropAspect(value)}
+                          >
+                            {label}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button type="button" variant="outline" className="h-9" onClick={() => setCrop(null)}>
+                        Reset box
+                      </Button>
+                      <Button type="button" className="h-9" onClick={applyCrop} disabled={!crop}>
+                        Apply Crop
+                      </Button>
+                    </div>
+                  </div>
+                ) : mode === "text" ? (
                   <div className="space-y-2 rounded-2xl border border-border/70 bg-card/40 p-3">
                     <Input
                       value={textValue}
@@ -3315,15 +3535,21 @@ function ImageEditorDialog({
             <div className="min-h-0 flex-1 overflow-auto p-4 sm:p-5">
               <div className="flex min-h-full items-start justify-center">
                 {image ? (
-                  <canvas
-                    ref={setCanvasEl}
-                    onClick={handleCanvasClick}
-                    onMouseDown={handlePenDown}
-                    onMouseMove={handlePenMove}
-                    onMouseUp={handlePenUp}
-                    onMouseLeave={handlePenUp}
-                    className="max-h-[60vh] max-w-full cursor-crosshair rounded-2xl border border-white/10 bg-white shadow-2xl lg:max-h-[72vh]"
-                  />
+                  <div className="relative inline-block">
+                    <canvas
+                      ref={setCanvasEl}
+                      onClick={handleCanvasClick}
+                      onMouseDown={handleCanvasPointerDown}
+                      onMouseMove={handleCanvasPointerMove}
+                      onMouseUp={handleCanvasPointerUp}
+                      onMouseLeave={handleCanvasPointerUp}
+                      className="block max-h-[60vh] max-w-full cursor-crosshair rounded-2xl border border-white/10 bg-white shadow-2xl lg:max-h-[72vh]"
+                    />
+                    <canvas
+                      ref={setOverlayEl}
+                      className="pointer-events-none absolute left-0 top-0 h-full w-full rounded-2xl"
+                    />
+                  </div>
                 ) : (
                   <div className="rounded-2xl border border-dashed border-white/10 px-6 py-10 text-sm text-slate-400">
                     Select a vendor image to edit.
