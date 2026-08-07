@@ -301,6 +301,9 @@ type ImageTextLayer = {
   text: string;
   color: string;
   size: number;
+  // Text rotation in degrees (0 = horizontal). Used so a vertical mm label converts to a vertical
+  // inch label in the same orientation. Rotation is around the text's (x, y) top-left anchor.
+  rotation?: number;
 };
 
 type ImageEraseLayer = {
@@ -311,6 +314,7 @@ type ImageEraseLayer = {
   height: number;
   color: string;
   shape?: "rect" | "circle";
+  rotation?: number; // rotate the cover box (deg) so it hugs rotated text instead of crossing lines
 };
 
 // A drawn line or arrow — to redraw dimension leaders/arrows erased while editing unit labels.
@@ -2916,7 +2920,16 @@ function ImageEditorDialog({
       }
 
       editor.eraseLayers.forEach((layer) => {
+        context.save();
         context.fillStyle = layer.color;
+        if (layer.rotation) {
+          // Rotate a tight cover around the label's centre so it hugs vertical text, not the lines.
+          const cx = layer.x + layer.width / 2;
+          const cy = layer.y + layer.height / 2;
+          context.translate(cx, cy);
+          context.rotate((layer.rotation * Math.PI) / 180);
+          context.translate(-cx, -cy);
+        }
         if (layer.shape === "circle") {
           context.beginPath();
           context.arc(layer.x + layer.width / 2, layer.y + layer.height / 2, layer.width / 2, 0, Math.PI * 2);
@@ -2924,6 +2937,7 @@ function ImageEditorDialog({
         } else {
           context.fillRect(layer.x, layer.y, layer.width, layer.height);
         }
+        context.restore();
       });
 
       editor.shapeLayers.forEach((layer) => {
@@ -2931,10 +2945,18 @@ function ImageEditorDialog({
       });
 
       editor.textLayers.forEach((layer) => {
+        context.save();
         context.fillStyle = layer.color;
         context.font = `700 ${layer.size}px Arial`;
         context.textBaseline = "top";
-        context.fillText(layer.text, layer.x, layer.y);
+        if (layer.rotation) {
+          context.translate(layer.x, layer.y);
+          context.rotate((layer.rotation * Math.PI) / 180);
+          context.fillText(layer.text, 0, 0);
+        } else {
+          context.fillText(layer.text, layer.x, layer.y);
+        }
+        context.restore();
       });
     };
 
@@ -3114,14 +3136,22 @@ function ImageEditorDialog({
   // ---- Move / edit placed text -------------------------------------------
   const textLayerBounds = (layer: ImageTextLayer) => {
     const ctx = canvasEl?.getContext("2d");
-    let width = layer.size * Math.max(1, layer.text.length) * 0.5;
+    let textW = layer.size * Math.max(1, layer.text.length) * 0.5;
     if (ctx) {
       ctx.save();
       ctx.font = `700 ${layer.size}px Arial`;
-      width = ctx.measureText(layer.text).width;
+      textW = ctx.measureText(layer.text).width;
       ctx.restore();
     }
-    return { x: layer.x, y: layer.y, width, height: layer.size };
+    // For a -90° (vertical) label anchored at (x, y), the visible box is `size` wide and `textW`
+    // tall, extending UPWARD from the anchor. Horizontal text keeps the simple top-left box.
+    if (layer.rotation === -90) {
+      return { x: layer.x, y: layer.y - textW, width: layer.size, height: textW };
+    }
+    if (layer.rotation === 90) {
+      return { x: layer.x - layer.size, y: layer.y, width: layer.size, height: textW };
+    }
+    return { x: layer.x, y: layer.y, width: textW, height: layer.size };
   };
   const selectedTextLayer = editor.textLayers.find((layer) => layer.id === selectedTextId) ?? null;
   const handleTextDown = (point: { x: number; y: number }) => {
@@ -3412,18 +3442,26 @@ function ImageEditorDialog({
           const y = (Math.min(ymin, ymax) / 1000) * H;
           const w = Math.max(10, (Math.abs(xmax - xmin) / 1000) * W);
           const h = Math.max(10, (Math.abs(ymax - ymin) / 1000) * H);
-          const pad = h * 0.3;
           const text = String(edit.replacement);
-          // Size the replacement to FIT the original label's box — by height AND width — so a longer
-          // value (e.g. "592mm" -> "23.32in.") never balloons past the label. ~0.55 is Arial's mean
-          // glyph-width-to-font-size ratio. Then vertically centre it in the box.
-          const size = Math.max(
-            9,
-            Math.round(Math.min(h * 0.82, (w * 0.94) / Math.max(1, text.length * 0.55))),
-          );
-          // White box over the old text (dimension drawings are on white), then the new text.
+          const approx = (s: number) => text.length * s * 0.55; // Arial mean glyph width
+          // A tall, narrow label is VERTICAL text (e.g. a mm dimension on a side). Convert it to a
+          // VERTICAL inch label in the same orientation, and keep the cover box tight so it hugs the
+          // text column instead of painting over the dimension lines beside it.
+          const vertical = h > w * 1.3;
+          // Tight cover: hug the detected text box, not the surrounding leader lines.
+          const pad = Math.max(1.5, Math.min(w, h) * 0.12);
           eraseLayers.push({ id: `ai-erase-${stamp}-${i}`, x: x - pad, y: y - pad, width: w + pad * 2, height: h + pad * 2, color: "#ffffff" });
-          textLayers.push({ id: `ai-text-${stamp}-${i}`, x, y: y + Math.max(0, (h - size) / 2), text, color: "#111827", size });
+          if (vertical) {
+            // Size to the box read sideways: font height fits the WIDTH, text length fits the HEIGHT.
+            const size = Math.max(9, Math.round(Math.min(w * 0.82, (h * 0.94) / Math.max(1, text.length * 0.55))));
+            // Rotate -90° (reads bottom-to-top). Anchor so the rotated text stays centred in the box.
+            const tx = x + (w - size) / 2;
+            const ty = y + h / 2 + approx(size) / 2;
+            textLayers.push({ id: `ai-text-${stamp}-${i}`, x: tx, y: ty, text, color: "#111827", size, rotation: -90 });
+          } else {
+            const size = Math.max(9, Math.round(Math.min(h * 0.82, (w * 0.94) / Math.max(1, text.length * 0.55))));
+            textLayers.push({ id: `ai-text-${stamp}-${i}`, x, y: y + Math.max(0, (h - size) / 2), text, color: "#111827", size });
+          }
         });
         return { ...current, eraseLayers, textLayers };
       });
