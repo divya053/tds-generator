@@ -309,6 +309,21 @@ router.post("/ai-content", async (req, res) => {
   }
 });
 
+router.post("/learn-vendor", async (req, res) => {
+  try {
+    const flaskRes = await fetch(`${FLASK_URL}/learn-vendor`, {
+      method: "POST",
+      body: JSON.stringify(req.body ?? {}),
+      headers: { "Content-Type": "application/json" },
+    });
+    const body = await flaskRes.text();
+    res.status(flaskRes.status).type("application/json").send(body);
+  } catch (err) {
+    req.log.error({ err }, "Learn-vendor request failed");
+    res.status(500).json({ error: "Learn-vendor request failed", detail: String(err) });
+  }
+});
+
 router.post("/ai-image-edit", async (req, res) => {
   try {
     const flaskRes = await fetch(`${FLASK_URL}/ai-image-edit`, {

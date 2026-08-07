@@ -6831,6 +6831,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
   const [vendorImagePicker, setVendorImagePicker] = useState<
     { kind: "product" | "accessory" | "dimension" | "custom"; id: string } | null
   >(null);
+  const [learningVendor, setLearningVendor] = useState(false);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -9107,6 +9108,42 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     </Card>
   );
 
+  // "Learn this vendor" — teach the extractor this vendor's format so future PDFs from the same
+  // vendor extract every detail the same way. Sends the vendor name + this sheet's source text.
+  const learnThisVendor = async () => {
+    const guess = normalizeText((spec as { vendorInfo?: { vendorName?: string } }).vendorInfo?.vendorName ?? "") || draft.title;
+    const vendorName = typeof window !== "undefined" ? window.prompt("Remember this vendor's format under which name?", guess) : guess;
+    if (!vendorName || !normalizeText(vendorName)) return;
+    const sourceText = spec.sourceText ?? "";
+    if (!isSpecified(sourceText)) {
+      toast.error("No vendor text to learn from — re-extract this PDF first.");
+      return;
+    }
+    setLearningVendor(true);
+    const toastId = toast.loading("Learning this vendor's format…");
+    try {
+      const res = await fetch(apiUrl("/api/learn-vendor"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vendorName: normalizeText(vendorName), sourceText }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; vendor?: string; source?: string; totalProfiles?: number; error?: string; detail?: string }
+        | null;
+      if (!res.ok || !data?.ok) throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
+      toast.success(
+        `Learned "${data.vendor}" (${data.source === "ai" ? "AI profile" : "keyword profile"}). ` +
+          `${data.totalProfiles ?? ""} vendor formats remembered.`,
+        { id: toastId },
+      );
+    } catch (err) {
+      toast.error(`Couldn't learn this vendor: ${err instanceof Error ? err.message : String(err)}`, { id: toastId });
+    } finally {
+      setLearningVendor(false);
+    }
+  };
+
   const renderVendorPanel = (className?: string) => (
     <Card className={cn("flex h-full min-h-0 flex-col overflow-hidden", className)}>
       <div className="shrink-0 border-b border-border/60 px-5 py-4">
@@ -9128,6 +9165,17 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               <ExternalLink className="h-3.5 w-3.5 text-primary" />
               Open Original PDF
             </a>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={learningVendor || !isSpecified(spec.sourceText ?? "")}
+              onClick={learnThisVendor}
+              className="inline-flex h-auto items-center gap-2 rounded-xl border-border/70 px-3 py-2 text-xs font-semibold text-foreground hover:border-primary/40 hover:bg-primary/5"
+              title="Teach the extractor this vendor's format so future PDFs from the same vendor extract every detail the same way."
+            >
+              <Sparkles className="h-3.5 w-3.5 text-primary" />
+              {learningVendor ? "Learning…" : "Learn this vendor"}
+            </Button>
           </div>
         </div>
       </div>

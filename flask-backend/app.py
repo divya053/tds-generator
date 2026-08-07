@@ -1618,6 +1618,60 @@ def _summarize_vendor_format(text: str) -> str:
     return " ".join(parts)
 
 
+ENABLE_VENDOR_AI_PROFILE = os.environ.get("ENABLE_VENDOR_AI_PROFILE", "1").strip() not in ("0", "false", "no")
+
+_VENDOR_PROFILE_SYS = """You build a reusable EXTRACTION GUIDE for ONE lighting vendor's spec-sheet FORMAT
+(never the specific product's values). Given the vendor's spec text, describe how THIS vendor lays out
+their sheets so an extractor can capture EVERY detail next time. Return ONLY JSON:
+{
+  "overview": "1-2 sentences on this vendor's sheet layout and where key data sits",
+  "fields": ["EVERY parameter this vendor documents, e.g. Power, Voltage, Current, Power Factor, THD, Surge Protection, Lumen Output, Efficacy, CCT, CRI, Beam Angle, Distribution, Dimming, Operating Temp, IP, IK, L70/Lifespan, Warranty, Driver, Housing, Finish, EPA, BUG, Dimensions, Weight, Certifications"],
+  "tables": [{"name": "table name", "columns": ["col1","col2","..."]}],
+  "terminology": ["vendor label = plain meaning, for any non-obvious/branded labels"],
+  "units": "units this vendor prints (mm/cm/inch, etc.)",
+  "quirks": ["structure/format notes: selectable-wattage/CCT notation, ordering / part-number decoder columns, accessory & mounting list, photometric/performance table, multi-size or multi-model layout, mixed languages"]
+}
+Describe FORMAT and STRUCTURE only; do NOT copy specific numeric values."""
+
+
+def _flatten_ai_profile(data: dict[str, Any]) -> str:
+    parts: list[str] = []
+    if isinstance(data.get("overview"), str) and data["overview"].strip():
+        parts.append(data["overview"].strip())
+    fields = [str(f).strip() for f in (data.get("fields") or []) if str(f).strip()]
+    if fields:
+        parts.append("Fields provided: " + ", ".join(fields[:32]) + ".")
+    for table in (data.get("tables") or [])[:6]:
+        if not isinstance(table, dict):
+            continue
+        cols = ", ".join(str(c).strip() for c in (table.get("columns") or [])[:14] if str(c).strip())
+        name = str(table.get("name", "")).strip()
+        if name or cols:
+            parts.append(f'Table "{name}": columns [{cols}].')
+    terms = [str(t).strip() for t in (data.get("terminology") or []) if str(t).strip()]
+    if terms:
+        parts.append("Terminology: " + "; ".join(terms[:14]) + ".")
+    if isinstance(data.get("units"), str) and data["units"].strip():
+        parts.append("Units: " + data["units"].strip() + ".")
+    quirks = [str(q).strip() for q in (data.get("quirks") or []) if str(q).strip()]
+    if quirks:
+        parts.append("Patterns: " + "; ".join(quirks[:12]) + ".")
+    return " ".join(parts)
+
+
+def _ai_vendor_profile(vendor: str, text: str) -> str:
+    """One-time AI pass capturing this vendor's exact format. Returns rich hints, or "" on failure."""
+    if not ENABLE_VENDOR_AI_PROFILE or not GEMINI_API_KEY:
+        return ""
+    try:
+        data = _gemini_generate(_VENDOR_PROFILE_SYS, f"Vendor: {vendor}\n\nVendor spec text:\n{text[:MAX_PROMPT_CHARS]}")
+    except Exception as exc:
+        print(f"[vendor-profiles] AI profile for {vendor} failed: {exc}", flush=True)
+        return ""
+    hints = _flatten_ai_profile(data) if isinstance(data, dict) else ""
+    return normalize_whitespace(hints)
+
+
 def _build_or_load_vendor_profile(vendor: str, vendor_dir: str) -> dict[str, Any] | None:
     cache_path = os.path.join(vendor_dir, ".profile.json")
     if os.path.exists(cache_path):
@@ -1641,10 +1695,13 @@ def _build_or_load_vendor_profile(vendor: str, vendor_dir: str) -> dict[str, Any
         text = ""
     if not normalize_whitespace(text):
         return None
+    # Prefer a rich AI-captured format guide; fall back to the deterministic keyword scan.
+    ai_hints = _ai_vendor_profile(vendor, text)
     profile = {
         "vendor": vendor,
         "matchTokens": _vendor_match_tokens(vendor, text),
-        "hints": _summarize_vendor_format(text),
+        "hints": ai_hints or _summarize_vendor_format(text),
+        "source": "ai" if ai_hints else "keywords",
     }
     try:
         with open(cache_path, "w", encoding="utf-8") as handle:
@@ -1697,6 +1754,36 @@ def _load_vendor_profiles() -> list[dict[str, Any]]:
     _vendor_profiles_cache = profiles
     print(f"[vendor-profiles] built {len(profiles)} learned vendor profile(s)", flush=True)
     return profiles
+
+
+def _save_vendor_profiles(profiles: list[dict[str, Any]]) -> None:
+    try:
+        with open(PROFILE_STORE, "w", encoding="utf-8") as handle:
+            json.dump(profiles, handle, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print(f"[vendor-profiles] could not save store: {exc}", flush=True)
+
+
+def learn_vendor_from_text(vendor: str, text: str) -> dict[str, Any]:
+    """Add or update a vendor profile from a live upload (the 'Learn this vendor' action)."""
+    vendor = normalize_whitespace(vendor) or "Vendor"
+    ai_hints = _ai_vendor_profile(vendor, text)
+    profile = {
+        "vendor": vendor,
+        "matchTokens": _vendor_match_tokens(vendor, text),
+        "hints": ai_hints or _summarize_vendor_format(text),
+        "source": "ai" if ai_hints else "keywords",
+    }
+    profiles = list(_load_vendor_profiles())
+    idx = next((i for i, p in enumerate(profiles) if p.get("vendor", "").lower() == vendor.lower()), -1)
+    if idx >= 0:
+        profiles[idx] = profile
+    else:
+        profiles.append(profile)
+    global _vendor_profiles_cache
+    _vendor_profiles_cache = profiles
+    _save_vendor_profiles(profiles)
+    return profile
 
 
 def detect_vendor_profile(document_text: str) -> dict[str, Any] | None:
@@ -2362,6 +2449,36 @@ def post_process_extraction(model_output: dict[str, Any], source_text: str, sour
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.route("/learn-vendor", methods=["POST"])
+def learn_vendor():
+    """Add/update a vendor profile from the current sheet ('Learn this vendor' button)."""
+    body = request.get_json(silent=True) or {}
+    vendor = normalize_whitespace(str(body.get("vendorName", "")))
+    text = str(body.get("sourceText", ""))
+    if not vendor:
+        return jsonify({"error": "vendorName is required"}), 400
+    if not normalize_whitespace(text):
+        return jsonify({"error": "sourceText is empty — nothing to learn"}), 400
+    try:
+        profile = learn_vendor_from_text(vendor, text)
+    except Exception as exc:  # never 500 the UI over a learning hiccup
+        print(f"[learn-vendor] failed: {exc}", flush=True)
+        return jsonify({"error": "Could not learn this vendor", "detail": str(exc)}), 500
+    return jsonify({
+        "ok": True,
+        "vendor": profile["vendor"],
+        "source": profile.get("source", "keywords"),
+        "hints": profile.get("hints", ""),
+        "totalProfiles": len(_load_vendor_profiles()),
+    })
+
+
+@app.route("/vendor-profiles", methods=["GET"])
+def vendor_profiles():
+    profs = _load_vendor_profiles()
+    return jsonify({"count": len(profs), "vendors": [p.get("vendor") for p in profs]})
 
 
 AI_DESCRIPTION_SYSTEM = (
