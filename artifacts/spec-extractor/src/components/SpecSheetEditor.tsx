@@ -5762,9 +5762,14 @@ function buildOrderingCode(columns: OrderingColumn[], selection: Record<string, 
 function OrderingDecoderTable({
   columns,
   selection,
+  rowRange,
 }: {
   columns: OrderingColumn[];
   selection: Record<string, string>;
+  // When the decoder is taller than one page it is split into vertical slices: each slice renders
+  // only the entries in [rowRange.start, rowRange.end) so a long POWER column CONTINUES onto the next
+  // page instead of clipping. Undefined = render every entry (single-page tables).
+  rowRange?: { start: number; end: number };
 }) {
   const ordered = ORDERING_GROUP_ORDER.flatMap((group) => columns.filter((column) => column.group === group));
   const groupSpans = ORDERING_GROUP_ORDER.map((group) => ({
@@ -5850,6 +5855,7 @@ function OrderingDecoderTable({
               <div className="flex flex-col gap-3">
                 {column.entries
                   .filter((entry) => isSpecified(entry.code) || isSpecified(entry.description))
+                  .slice(rowRange?.start ?? 0, rowRange?.end ?? undefined)
                   .map((entry, index) => (
                     <div key={index} className="leading-[1.3]">
                       <div className="text-[7px] font-bold text-black [overflow-wrap:anywhere]">
@@ -6156,13 +6162,14 @@ const PAGE_CONTENT_BUDGET = 812; // usable px per page 2+ (844 content area minu
 const SHEET_BLOCK_GAP = 20; // gap-5 between stacked blocks
 const DIM_ROW_HEIGHT = 250; // one row of up to two dimension drawings (h-[190px] image + labels)
 const SINGLE_DIM_HEIGHT = 360; // tall slot for a lone dimension (matches imageHeightClass h-[360px])
+const ORDERING_ENTRIES_PER_PAGE = 28; // decoder entries (tallest column) that fit one page under the heading + header
 
 // `group` lets the packer keep multi-block sections (e.g. Dimensions rows) in order and contiguous
 // while still back-filling standalone sections into earlier gaps. Sections listed in SEQUENCE_GROUPS
 // act as a barrier: nothing after them is pulled up until every one of their blocks is placed.
 type SheetBlock = { key: string; group: string; height: number; node: React.ReactNode };
 
-const SEQUENCE_GROUPS = new Set(["specs", "dims"]);
+const SEQUENCE_GROUPS = new Set(["specs", "dims", "ordering"]);
 
 function estimateSpecsHeight(draft: EditorDraft) {
   const rows = draft.specGroups
@@ -6170,15 +6177,6 @@ function estimateSpecsHeight(draft: EditorDraft) {
     .reduce((sum, group) => sum + Math.max(1, group.options.length), 0);
   const note = isSpecified(draft.specsNote) ? 30 : 0;
   return 46 + 40 + Math.max(1, rows) * 23 + note;
-}
-
-function estimateOrderingHeight(draft: EditorDraft) {
-  const maxEntries = draft.orderingColumns.reduce((max, column) => {
-    const count = column.entries.filter((entry) => isSpecified(entry.code) || isSpecified(entry.description)).length;
-    return Math.max(max, count);
-  }, 1);
-  const note = isSpecified(draft.orderingNote) ? 30 : 0;
-  return 46 + 66 + (26 + maxEntries * 22) + note;
 }
 
 function estimateAccessoriesHeight(draft: EditorDraft) {
@@ -6291,22 +6289,43 @@ function buildSheetBlocks(
     });
   });
 
-  // Product Ordering Information — placed above Dimensions.
-  blocks.push({
-    key: "ordering",
-    group: "ordering",
-    height: estimateOrderingHeight(draft),
-    node: (
-      <section>
-        <SheetPageHeading
-          title="Product Ordering Information"
-          trailing={isSpecified(draft.orderingExample) ? `Typical order example: ${draft.orderingExample}` : undefined}
-        />
-        <OrderingDecoderTable columns={draft.orderingColumns} selection={draft.orderingSelection} />
-        {isSpecified(draft.orderingNote) && <SheetNote>{draft.orderingNote}</SheetNote>}
-      </section>
-    ),
-  });
+  // Product Ordering Information — placed above Dimensions. The decoder's tallest column (usually
+  // POWER) can list dozens of options; when that exceeds one page the table is sliced into vertical
+  // chunks that CONTINUE onto the next page(s) instead of clipping. Headers repeat on every chunk;
+  // only the first shows the "Product Ordering Information" heading (the rest say "… (cont.)") and the
+  // note follows the last chunk. Chunks share the "ordering" sequence group so they stay contiguous.
+  const orderingMaxEntries = draft.orderingColumns.reduce((max, column) => {
+    const count = column.entries.filter((entry) => isSpecified(entry.code) || isSpecified(entry.description)).length;
+    return Math.max(max, count);
+  }, 0);
+  const orderingChunkCount = Math.max(1, Math.ceil(orderingMaxEntries / ORDERING_ENTRIES_PER_PAGE));
+  for (let chunkIndex = 0; chunkIndex < orderingChunkCount; chunkIndex += 1) {
+    const first = chunkIndex === 0;
+    const last = chunkIndex === orderingChunkCount - 1;
+    const start = chunkIndex * ORDERING_ENTRIES_PER_PAGE;
+    const end = start + ORDERING_ENTRIES_PER_PAGE;
+    const chunkRows = Math.min(ORDERING_ENTRIES_PER_PAGE, Math.max(1, orderingMaxEntries - start));
+    const showNote = last && isSpecified(draft.orderingNote);
+    blocks.push({
+      key: `ordering-${chunkIndex}`,
+      group: "ordering",
+      height: (first ? 46 : 24) + 66 + (26 + chunkRows * 22) + (showNote ? 30 : 0),
+      node: (
+        <section>
+          <SheetPageHeading
+            title={first ? "Product Ordering Information" : "Product Ordering Information (cont.)"}
+            trailing={first && isSpecified(draft.orderingExample) ? `Typical order example: ${draft.orderingExample}` : undefined}
+          />
+          <OrderingDecoderTable
+            columns={draft.orderingColumns}
+            selection={draft.orderingSelection}
+            rowRange={orderingChunkCount > 1 ? { start, end } : undefined}
+          />
+          {showNote && <SheetNote>{draft.orderingNote}</SheetNote>}
+        </section>
+      ),
+    });
+  }
 
   // Dimensions — one block per row of (up to) two drawings; only the first shows the heading.
   const dims = draft.dimensionItems.filter(dimensionItemHasContent);
