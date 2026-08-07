@@ -3367,10 +3367,11 @@ function ImageEditorDialog({
     onSave(canvas.toDataURL("image/png"));
   };
 
-  const runAiImageEdit = async () => {
+  const runAiImageEdit = async (promptOverride?: string) => {
     const canvas = canvasEl;
-    const prompt = normalizeText(aiPrompt);
+    const prompt = normalizeText(promptOverride ?? aiPrompt);
     if (!canvas || !image || !prompt || aiBusy) return;
+    if (promptOverride) setAiPrompt(promptOverride);
     setAiBusy(true);
     setAiError(null);
     const toastId = toast.loading("AI reading the image…");
@@ -3453,10 +3454,29 @@ function ImageEditorDialog({
                 <div className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
                   AI Edit
                 </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { label: "mm → inches", prompt: "Convert every dimension shown in millimeters (mm) to inches (1 in = 25.4 mm), rounded to 2 decimals, and replace each mm label with the inch value followed by \"in\". Do not change any value already in inches. Keep the same position and format." },
+                    { label: "cm → inches", prompt: "Convert every dimension shown in centimeters (cm) to inches (1 in = 2.54 cm), rounded to 2 decimals, and replace each cm label with the inch value followed by \"in\". Do not change any value already in inches. Keep the same position and format." },
+                    { label: "mm & cm → inches", prompt: "Convert every dimension shown in millimeters (mm) or centimeters (cm) to inches (1 in = 25.4 mm, 1 in = 2.54 cm), rounded to 2 decimals, and replace each with the inch value followed by \"in\". Leave values already in inches unchanged. Keep the same position and format." },
+                  ].map((preset) => (
+                    <Button
+                      key={preset.label}
+                      type="button"
+                      variant="outline"
+                      onClick={() => runAiImageEdit(preset.prompt)}
+                      disabled={!image || aiBusy}
+                      className="h-8 rounded-lg border-primary/40 bg-primary/5 px-2.5 text-[12px] text-primary hover:border-primary hover:bg-primary/10"
+                      title={preset.prompt}
+                    >
+                      {preset.label}
+                    </Button>
+                  ))}
+                </div>
                 <Textarea
                   value={aiPrompt}
                   onChange={(event) => setAiPrompt(event.target.value)}
-                  placeholder="Describe the change — e.g. “Convert every dimension shown in mm to inches (1 in = 25.4 mm), keep the same format and 2 decimals”."
+                  placeholder="Or type your own — e.g. “Convert every dimension shown in mm to inches (1 in = 25.4 mm), keep the same format and 2 decimals”."
                   className="min-h-[76px] text-[13px]"
                   disabled={aiBusy}
                 />
