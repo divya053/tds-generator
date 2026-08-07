@@ -87,7 +87,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v19"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v20"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -1540,7 +1540,196 @@ def call_ollama(document_text: str) -> dict[str, Any]:
     return json.loads(ensure_json_string(content))
 
 
+# ---- Vendor-pattern learning ------------------------------------------------
+# The "Training Data/<Vendor>/" folders each hold a real Vendor.pdf (+ its IKIO TDS). We learn a
+# lightweight PROFILE per vendor (which fields/tables that vendor provides + how to recognize them),
+# cache it to disk, and — when an uploaded PDF matches a known vendor — inject that profile into the
+# extraction prompt so the model extracts EVERY detail that vendor is known to include.
+TRAINING_DIR = os.environ.get(
+    "TRAINING_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Training Data")
+).strip()
+
+# (label shown to the model, [keywords/hints to look for in the vendor text, any language])
+_VENDOR_FIELD_HINTS: list[tuple[str, list[str]]] = [
+    ("Power / Wattage", ["watt", "power", "功率"]),
+    ("Voltage", ["voltage", "vac", "120-277", "347", "电压"]),
+    ("Current", ["current", "amp", "电流"]),
+    ("Power Factor", ["power factor", "功率因数", "pf>"]),
+    ("THD", ["thd", "harmonic", "总谐波"]),
+    ("Surge Protection", ["surge", "kv", "浪涌"]),
+    ("Lumen Output", ["lumen", "流明"]),
+    ("Efficacy", ["lm/w", "efficacy", "光效"]),
+    ("CCT (selectable)", ["cct", "kelvin", "3000k", "3cct", "5cct", "色温", "selectable"]),
+    ("CRI", ["cri", "显色", " ra"]),
+    ("Beam Angle", ["beam", "光束角"]),
+    ("Light Distribution / IES type", ["distribution", "type iii", "type v", " ies"]),
+    ("Dimming", ["dimming", "0-10v", "dali", "triac", "调光"]),
+    ("Operating Temperature", ["operating temp", "ambient", "工作温度"]),
+    ("IP Rating", ["ip6", "ip5", "ingress", "防护"]),
+    ("IK Rating", ["ik0", "ik1", "impact"]),
+    ("Lifespan (L70)", ["l70", "50000", "50,000", "lifespan", "寿命"]),
+    ("Warranty", ["warranty", "质保", "year warranty"]),
+    ("Driver", ["driver", "isolated", "驱动"]),
+    ("Housing / Finish", ["housing", "finish", "powder", "外壳", "die-cast"]),
+    ("EPA", ["epa", "effective projected"]),
+    ("BUG Rating", ["bug ", "backlight", "uplight"]),
+    ("Dimensions", ["dimension", "diameter", "尺寸", "mm)"]),
+    ("Certifications", ["dlc", "etl", " ul ", "cul", "rohs", "fcc"]),
+]
+_VENDOR_CUE_HINTS: list[tuple[str, list[str]]] = [
+    ("power/CCT is field-SELECTABLE (switchable) — capture every selectable step", ["selectable", "switchable", "adjustable", "switch", "可调"]),
+    ("has an ORDERING / part-number decoder — capture every column & code", ["ordering", "how to order", "part number", "order example", "catalog"]),
+    ("lists ACCESSORIES / mounting / sensor options — capture each one", ["accessor", "mounting", "bracket", "sensor", "photocell", "配件", "选配"]),
+    ("has a PHOTOMETRIC / performance-data table — capture it as an extra table", ["photometric", "performance data", "lumen output table", "光度"]),
+    ("offers an EMERGENCY battery / backup option", ["emergency", "battery backup"]),
+    ("Zhaga / DALI / 0-10V controls present", ["zhaga", "dali", "0-10v"]),
+    ("multiple SIZES / models with their own wattage-lumen sets", ["model", "size", "series"]),
+]
+
+_vendor_profiles_cache: list[dict[str, Any]] | None = None
+
+
+def _vendor_match_tokens(vendor: str, text: str) -> list[str]:
+    tokens: set[str] = set()
+    for word in re.split(r"[\s/&-]+", vendor):
+        if len(word) >= 3:
+            tokens.add(word.lower())
+    low = text.lower()
+    for domain in re.findall(r"\b([a-z0-9][a-z0-9-]{2,}\.(?:com|net|cn|tech|co))\b", low):
+        tokens.add(domain)
+    for host in re.findall(r"[a-z0-9._%+-]+@([a-z0-9.-]+\.[a-z]{2,})", low):
+        tokens.add(host)
+    # Distinctive model prefixes (e.g. MAL08, XCLA, SB08) — uppercase-run + digits.
+    for model in re.findall(r"\b([A-Z]{2,}[A-Z0-9]{0,6}\d{1,4})\b", text):
+        if len(model) >= 4:
+            tokens.add(model.lower())
+    return sorted(tokens)[:40]
+
+
+def _summarize_vendor_format(text: str) -> str:
+    low = f" {text.lower()} "
+    fields = [label for label, keys in _VENDOR_FIELD_HINTS if any(k in low for k in keys)]
+    cues = [note for note, keys in _VENDOR_CUE_HINTS if any(k in low for k in keys)]
+    parts: list[str] = []
+    if fields:
+        parts.append("Fields this vendor typically provides: " + ", ".join(fields) + ".")
+    if cues:
+        parts.append("Notable patterns: " + "; ".join(cues) + ".")
+    return " ".join(parts)
+
+
+def _build_or_load_vendor_profile(vendor: str, vendor_dir: str) -> dict[str, Any] | None:
+    cache_path = os.path.join(vendor_dir, ".profile.json")
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, encoding="utf-8") as handle:
+                data = json.load(handle)
+            if data.get("matchTokens"):
+                return data
+        except Exception:
+            pass
+    vendor_pdf = os.path.join(vendor_dir, "Vendor.pdf")
+    if not os.path.exists(vendor_pdf):
+        return None
+    # FAST text-only read (pdfplumber, no OCR/tables) — profiles only need labels/tokens, and this
+    # keeps profile-building quick so the first extraction isn't blocked. Cached to .profile.json.
+    text = ""
+    try:
+        with pdfplumber.open(vendor_pdf) as pdf:
+            text = "\n".join((page.extract_text() or "") for page in pdf.pages[:8])
+    except Exception:
+        text = ""
+    if not normalize_whitespace(text):
+        return None
+    profile = {
+        "vendor": vendor,
+        "matchTokens": _vendor_match_tokens(vendor, text),
+        "hints": _summarize_vendor_format(text),
+    }
+    try:
+        with open(cache_path, "w", encoding="utf-8") as handle:
+            json.dump(profile, handle, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return profile
+
+
+# Prebuilt, COMMITTED store so profiles load instantly and work on the VPS (which has no Training
+# Data PDFs). Rebuilt from the PDFs only when this file is missing (local dev), then written here.
+PROFILE_STORE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor_profiles.json")
+
+
+def _load_vendor_profiles() -> list[dict[str, Any]]:
+    global _vendor_profiles_cache
+    if _vendor_profiles_cache is not None:
+        return _vendor_profiles_cache
+    # 1) Fast path — the committed prebuilt store (no PDFs needed).
+    if os.path.exists(PROFILE_STORE):
+        try:
+            with open(PROFILE_STORE, encoding="utf-8") as handle:
+                data = json.load(handle)
+            if isinstance(data, list) and data:
+                _vendor_profiles_cache = data
+                print(f"[vendor-profiles] loaded {len(data)} profile(s) from store", flush=True)
+                return data
+        except Exception:
+            pass
+    # 2) Build from the Training Data folder (local dev), then persist the store.
+    profiles: list[dict[str, Any]] = []
+    base = os.path.abspath(TRAINING_DIR)
+    if os.path.isdir(base):
+        for vendor in sorted(os.listdir(base)):
+            vendor_dir = os.path.join(base, vendor)
+            if not os.path.isdir(vendor_dir):
+                continue
+            try:
+                profile = _build_or_load_vendor_profile(vendor, vendor_dir)
+            except Exception as exc:
+                print(f"[vendor-profiles] skip {vendor}: {exc}", flush=True)
+                profile = None
+            if profile:
+                profiles.append(profile)
+        try:
+            with open(PROFILE_STORE, "w", encoding="utf-8") as handle:
+                json.dump(profiles, handle, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+    _vendor_profiles_cache = profiles
+    print(f"[vendor-profiles] built {len(profiles)} learned vendor profile(s)", flush=True)
+    return profiles
+
+
+def detect_vendor_profile(document_text: str) -> dict[str, Any] | None:
+    """Return the best-matching learned vendor profile for this upload, or None."""
+    low = f" {document_text.lower()} "
+    best: dict[str, Any] | None = None
+    best_score = 0
+    for profile in _load_vendor_profiles():
+        score = 0
+        for token in profile.get("matchTokens", []):
+            if not token:
+                continue
+            # Domains/emails/models are strong signals; a generic short word is weak.
+            weight = 3 if ("." in token or any(ch.isdigit() for ch in token)) else 1
+            if token in low:
+                score += weight
+        if score > best_score:
+            best_score, best = score, profile
+    # Require a reasonably confident match (a domain/model hit, or several word hits).
+    return best if best_score >= 3 else None
+
+
 def build_user_message(document_text: str) -> str:
+    profile = detect_vendor_profile(document_text)
+    learned = ""
+    if profile and normalize_whitespace(profile.get("hints", "")):
+        learned = (
+            f"\nLEARNED VENDOR PROFILE — this looks like a {profile['vendor']} spec sheet, a vendor "
+            f"format we have seen before. {profile['hints']} Extract EVERY one of these fields and "
+            f"tables that appears in THIS document, using this vendor's own terminology and layout; "
+            f"do not miss a section this vendor is known to include. Still read only THIS document's "
+            f"values — never carry values over from another sheet.\n"
+        )
     return f"""Analyze this vendor lighting specification sheet content.
 
 Source-first instructions:
@@ -1548,7 +1737,7 @@ Source-first instructions:
 - Preserve fixture-specific availability and power/lumen relationships.
 - Use the vendor product family/title, cleaned but not creatively renamed.
 - Use only supported claims from the source text.
-
+{learned}
 Vendor source text:
 {document_text[:MAX_PROMPT_CHARS]}
 """

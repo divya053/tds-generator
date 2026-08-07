@@ -1,0 +1,75 @@
+[
+  {
+    "vendor": "EDIPAI",
+    "matchTokens": [
+      "edipai",
+      "ip65",
+      "xxkg2"
+    ],
+    "hints": "Fields this vendor typically provides: Power / Wattage, Voltage, Current, Efficacy, CCT (selectable), CRI, Dimming, Operating Temperature, IP Rating, Lifespan (L70), Warranty, Driver, Housing / Finish, EPA, Dimensions, Certifications. Notable patterns: power/CCT is field-SELECTABLE (switchable) — capture every selectable step; lists ACCESSORIES / mounting / sensor options — capture each one; offers an EMERGENCY battery / backup option; Zhaga / DALI / 0-10V controls present; multiple SIZES / models with their own wattage-lumen sets."
+  },
+  {
+    "vendor": "HD Lighting",
+    "matchTokens": [
+      "fl18",
+      "hdled.com",
+      "ik08",
+      "ip66",
+      "lighting"
+    ],
+    "hints": "Fields this vendor typically provides: Power / Wattage, Voltage, Current, Lumen Output, CRI, Beam Angle, Light Distribution / IES type, Dimming, IP Rating, IK Rating, Warranty, Driver, EPA. Notable patterns: lists ACCESSORIES / mounting / sensor options — capture each one; Zhaga / DALI / 0-10V controls present."
+  },
+  {
+    "vendor": "KOK",
+    "matchTokens": [
+      "kok",
+      "mm08",
+      "mm57"
+    ],
+    "hints": "Fields this vendor typically provides: Power / Wattage, Voltage, Current, Efficacy, CCT (selectable), CRI, Dimming, Driver, Dimensions. Notable patterns: power/CCT is field-SELECTABLE (switchable) — capture every selectable step; Zhaga / DALI / 0-10V controls present."
+  },
+  {
+    "vendor": "LEDSION",
+    "matchTokens": [
+      "bxxhk5da1",
+      "ffll1c75",
+      "ledsion",
+      "ledsion.com",
+      "tx75236"
+    ],
+    "hints": "Fields this vendor typically provides: Power / Wattage, Voltage, Current, Power Factor, Lumen Output, Efficacy, CCT (selectable), CRI, Beam Angle, Light Distribution / IES type, Dimming, Operating Temperature, Warranty, Driver, Housing / Finish, EPA, Dimensions, Certifications. Notable patterns: power/CCT is field-SELECTABLE (switchable) — capture every selectable step; has an ORDERING / part-number decoder — capture every column & code; lists ACCESSORIES / mounting / sensor options — capture each one; multiple SIZES / models with their own wattage-lumen sets."
+  },
+  {
+    "vendor": "OKT",
+    "matchTokens": [
+      "okt",
+      "oktlighting.com"
+    ],
+    "hints": "Fields this vendor typically provides: Power / Wattage, Voltage, Current, Lumen Output, Efficacy, CCT (selectable), CRI, Beam Angle, Light Distribution / IES type, Dimming, Operating Temperature, Housing / Finish, Dimensions, Certifications. Notable patterns: power/CCT is field-SELECTABLE (switchable) — capture every selectable step; has an ORDERING / part-number decoder — capture every column & code; lists ACCESSORIES / mounting / sensor options — capture each one; Zhaga / DALI / 0-10V controls present; multiple SIZES / models with their own wattage-lumen sets."
+  },
+  {
+    "vendor": "RZ Lighting",
+    "matchTokens": [
+      "ac120",
+      "ip65",
+      "lighting",
+      "rzledlighting.com",
+      "sb08"
+    ],
+    "hints": "Fields this vendor typically provides: Power / Wattage, Voltage, Power Factor, THD, Surge Protection, Lumen Output, Efficacy, CCT (selectable), CRI, Light Distribution / IES type, Dimming, Operating Temperature, IP Rating, Warranty, Housing / Finish, EPA, Dimensions, Certifications. Notable patterns: power/CCT is field-SELECTABLE (switchable) — capture every selectable step; lists ACCESSORIES / mounting / sensor options — capture each one; Zhaga / DALI / 0-10V controls present; multiple SIZES / models with their own wattage-lumen sets."
+  },
+  {
+    "vendor": "Venas",
+    "matchTokens": [
+      "ac120",
+      "al1050",
+      "dmx512",
+      "ik09",
+      "ip66",
+      "uxyzcc1",
+      "uxyzcc2",
+      "venas"
+    ],
+    "hints": "Fields this vendor typically provides: Power / Wattage, Voltage, Power Factor, THD, Surge Protection, Lumen Output, Efficacy, CCT (selectable), CRI, Beam Angle, Light Distribution / IES type, Dimming, Operating Temperature, IP Rating, IK Rating, Lifespan (L70), Warranty, Housing / Finish, EPA, Dimensions, Certifications. Notable patterns: lists ACCESSORIES / mounting / sensor options — capture each one; Zhaga / DALI / 0-10V controls present; multiple SIZES / models with their own wattage-lumen sets."
+  }
+]
