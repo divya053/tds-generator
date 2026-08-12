@@ -2743,35 +2743,6 @@ function buildDimensionItemsFromSpec(spec: ExtendedExtractedSpec): DimensionItem
     }));
 }
 
-// Seed a custom section (heading + image) for each figure/diagram section the vendor sheet shows —
-// Photometric Diagram, Light Distribution, Isolux, Mounting, Wiring, etc. Each is auto-filled with a
-// distinct harvested "diagram" image (polar curve / figure) so images show WITHOUT the user having to
-// pick each one; any left over stay empty for the user to Suggest/Crop. The caption becomes the body.
-function buildCustomSectionsFromSpec(spec: ExtendedExtractedSpec): CustomSection[] {
-  const list = Array.isArray(spec.diagramSections) ? spec.diagramSections : [];
-  // Distinct diagram figures the extractor harvested (polar curves, isolux, dimension drawings),
-  // in page order — assigned 1:1 to the sections (no repeats, so a shown image is never misleading).
-  const diagramImageIds = (spec.sourceImages ?? [])
-    .map((image) => image.id)
-    .filter((id) => isLibraryImageId(id) && libraryImageKind(id) === "diagram");
-  const seen = new Set<string>();
-  const sections: CustomSection[] = [];
-  for (const entry of list) {
-    const heading = isSpecified(entry?.title) ? String(entry.title).trim() : "";
-    if (!heading) continue;
-    const key = heading.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    sections.push({
-      id: `diagram-init-${sections.length}`,
-      heading,
-      bodyText: isSpecified(entry?.caption) ? String(entry.caption).trim() : "",
-      imageId: diagramImageIds[sections.length] ?? null,
-    });
-  }
-  return sections.slice(0, 8);
-}
-
 // Raw backend category-enum values (lowercase) that should be replaced with the canonical fixture
 // category ("Indoor Lighting", …) — used to auto-clean older saved drafts that stored the enum.
 const RAW_CATEGORY_ENUMS = new Set([
@@ -2830,7 +2801,9 @@ function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendation
     orderingNote: "Please ensure power compatibility with this specific fixture size when selecting this option.",
     accessoryRows: buildAccessoryRowsFromSpec(spec),
     dimensionItems: buildDimensionItemsFromSpec(spec),
-    customSections: buildCustomSectionsFromSpec(spec),
+    // Custom sections start empty — the sheet is NOT auto-populated with vendor "Photometric Diagram"
+    // sections (they cluttered the sheet and auto-picked wrong images). Add one manually if needed.
+    customSections: [],
     extraTables: buildExtraTablesFromSpec(spec),
     imagePlacements: {},
   };
@@ -6949,6 +6922,17 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
       }
       if (cancelled) return;
       if (saved) {
+        // Migration: strip the auto-seeded "Photometric Diagram" sections (id "diagram-init-…") that
+        // an earlier build injected — they cluttered the sheet and auto-picked the wrong image. Any
+        // section the user added by hand (id "sec-…") is preserved, along with all other edits.
+        if (Array.isArray(saved.customSections)) {
+          saved = {
+            ...saved,
+            customSections: saved.customSections.filter(
+              (section) => !String(section?.id ?? "").startsWith("diagram-init-"),
+            ),
+          };
+        }
         // Merge over the fresh baseline so fields added in newer versions keep defaults.
         setDraft({ ...fresh, ...saved });
         // The saved draft already holds the user's category / sub-category — mark its fixture
