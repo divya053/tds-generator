@@ -2743,11 +2743,17 @@ function buildDimensionItemsFromSpec(spec: ExtendedExtractedSpec): DimensionItem
     }));
 }
 
-// Seed a custom section (heading + empty image slot) for each figure/diagram section the vendor sheet
-// shows — Photometric Diagram, Light Distribution, Isolux, Mounting, Wiring, etc. The user then drops
-// or "Suggests" the matching diagram image; the caption becomes the section's body line.
+// Seed a custom section (heading + image) for each figure/diagram section the vendor sheet shows —
+// Photometric Diagram, Light Distribution, Isolux, Mounting, Wiring, etc. Each is auto-filled with a
+// distinct harvested "diagram" image (polar curve / figure) so images show WITHOUT the user having to
+// pick each one; any left over stay empty for the user to Suggest/Crop. The caption becomes the body.
 function buildCustomSectionsFromSpec(spec: ExtendedExtractedSpec): CustomSection[] {
   const list = Array.isArray(spec.diagramSections) ? spec.diagramSections : [];
+  // Distinct diagram figures the extractor harvested (polar curves, isolux, dimension drawings),
+  // in page order — assigned 1:1 to the sections (no repeats, so a shown image is never misleading).
+  const diagramImageIds = (spec.sourceImages ?? [])
+    .map((image) => image.id)
+    .filter((id) => isLibraryImageId(id) && libraryImageKind(id) === "diagram");
   const seen = new Set<string>();
   const sections: CustomSection[] = [];
   for (const entry of list) {
@@ -2760,7 +2766,7 @@ function buildCustomSectionsFromSpec(spec: ExtendedExtractedSpec): CustomSection
       id: `diagram-init-${sections.length}`,
       heading,
       bodyText: isSpecified(entry?.caption) ? String(entry.caption).trim() : "",
-      imageId: null,
+      imageId: diagramImageIds[sections.length] ?? null,
     });
   }
   return sections.slice(0, 8);

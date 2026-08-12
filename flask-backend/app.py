@@ -88,7 +88,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v21"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v22"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -613,20 +613,27 @@ def _classify_vendor_image(image) -> str:
     max_dim = max(width, height)
     is_square = 0.6 <= aspect <= 1.7
     num_colours = len(quant)
+    # Line/figure DRAWING first (photometric polar-candela curve, isolux plot, dimension figure):
+    # a near-white frame with thin dark/coloured lines — high brightness, very low saturation, and a
+    # SPREAD of levels (curve + grid + labels give many quantized colours). Catch these BEFORE the
+    # badge test so small square polar curves aren't mistaken for a certification icon just because
+    # white dominates the frame.
+    looks_line_art = mean_bright > 0.8 and mean_sat < 0.12
+    if looks_line_art and num_colours >= 6:
+        return "diagram"
     # Certification badge / brand logo — kept CONSERVATIVE so real accessory/mounting thumbnails
     # (metal brackets, sensors — which are textured, many-coloured) are NOT dropped. Only catch:
-    #  - a small square that is VERY uniform / very flat (a true icon): 3CCT, IP65, UL, Photocell…
+    #  - a small square that is VERY flat / uniform (a true icon): 3CCT, IP65, UL, Photocell…
     #  - a FLAT logo (<=10 colours) that is very dark or very light: the black "UL CERTIFIED" mark
     #  - a highly SATURATED, limited-palette logo at any size: the red/blue "RZ" brand mark
     if (
-        (is_square and max_dim < 300 and (top_frac > 0.6 or num_colours <= 16))
+        (is_square and max_dim < 300 and top_frac > 0.72 and num_colours <= 12)
         or (is_square and num_colours <= 10 and (mean_bright < 0.35 or mean_bright > 0.94))
         or (mean_sat > 0.55 and num_colours < 26)
     ):
         return "badge"
-    # Line-drawing dimension figure: mostly white with thin dark lines (near-grayscale), and large
-    # or clearly wide/tall (not a small square icon).
-    if mean_bright > 0.8 and mean_sat < 0.1 and (max_dim >= 360 or aspect > 1.6 or aspect < 0.62):
+    # Looser diagram catch: a clearly large or wide/tall near-grayscale line drawing.
+    if looks_line_art and (max_dim >= 300 or aspect > 1.5 or aspect < 0.66):
         return "diagram"
     return "photo"
 
