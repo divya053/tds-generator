@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import traceback
 import tempfile
 import time
 from typing import Any
@@ -2398,6 +2399,10 @@ def derive_name_from_text(source_text: str) -> str:
 
 
 def post_process_extraction(model_output: dict[str, Any], source_text: str, source_pages: list[dict[str, Any]], notes: list[str]) -> dict[str, Any]:
+    # Defensive: a non-dict model_output (bare list/scalar from the model) would crash every
+    # `.get(...)` below. Recover the first embedded object, else treat as empty.
+    if not isinstance(model_output, dict):
+        model_output = next((x for x in model_output if isinstance(x, dict)), {}) if isinstance(model_output, list) else {}
     technical_specs = normalize_technical_specs(model_output.get("technicalSpecs"))
 
     product_name = (
@@ -2761,6 +2766,17 @@ def process_pdf():
             ), 422
 
         raw_result = call_llm(extracted_text, source_pages)
+        # Gemini occasionally returns a bare JSON array (or scalar) instead of the expected object.
+        # Coerce to a dict here so review/diagnostics/post-processing never hit
+        # "'list' object has no attribute 'get'" and 500 the whole extraction.
+        if not isinstance(raw_result, dict):
+            recovered = next((x for x in raw_result if isinstance(x, dict)), {}) if isinstance(raw_result, list) else {}
+            print(
+                f"[extract] model returned {type(raw_result).__name__}, not an object — "
+                f"recovered {'first object' if recovered else 'empty object'}.",
+                flush=True,
+            )
+            raw_result = recovered
         # Second "reviewer agent" pass: cross-check and correct before mapping into the form.
         reviewed_result = review_extraction(raw_result, extracted_text)
 
@@ -2825,7 +2841,9 @@ def process_pdf():
     except json.JSONDecodeError as exc:
         return jsonify({"error": "Failed to parse model output as JSON", "detail": str(exc)}), 500
     except Exception as exc:  # pragma: no cover - surfaced to caller
-        print(f"Error: {exc}", file=sys.stderr)
+        # Full traceback so an unexpected model-output shape (e.g. a field that came back as a
+        # list where a dict was expected) can be pinpointed instead of a bare one-line message.
+        print(f"Error: {exc}\n{traceback.format_exc()}", file=sys.stderr, flush=True)
         return jsonify({"error": "Processing failed", "detail": str(exc)}), 500
     finally:
         try:
