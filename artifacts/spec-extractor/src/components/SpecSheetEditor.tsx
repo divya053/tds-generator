@@ -192,6 +192,7 @@ type ExtendedExtractedSpec = ExtractedSpec & {
   accessories?: ExtractedCodeEntry[];
   dimensions?: ExtractedDimension[];
   extraTables?: { title?: string; headers?: string[]; rows?: string[][] }[];
+  diagramSections?: { title?: string; caption?: string }[];
 };
 
 type QualificationBadgeId =
@@ -1014,7 +1015,9 @@ function sortVendorImagesFor(
   images: SourceImage[],
   target: "product" | "accessory" | "dimension" | "custom",
 ) {
-  const preferDiagram = target === "dimension";
+  // Dimension and custom (photometric / distribution / mounting) sections are line-drawing figures —
+  // surface "diagram" images first; product/accessory want real photos first.
+  const preferDiagram = target === "dimension" || target === "custom";
   const rank = (id: string) => {
     const kind = libraryImageKind(id);
     if (preferDiagram) return kind === "diagram" ? 0 : kind === "photo" ? 1 : 2;
@@ -2740,6 +2743,29 @@ function buildDimensionItemsFromSpec(spec: ExtendedExtractedSpec): DimensionItem
     }));
 }
 
+// Seed a custom section (heading + empty image slot) for each figure/diagram section the vendor sheet
+// shows — Photometric Diagram, Light Distribution, Isolux, Mounting, Wiring, etc. The user then drops
+// or "Suggests" the matching diagram image; the caption becomes the section's body line.
+function buildCustomSectionsFromSpec(spec: ExtendedExtractedSpec): CustomSection[] {
+  const list = Array.isArray(spec.diagramSections) ? spec.diagramSections : [];
+  const seen = new Set<string>();
+  const sections: CustomSection[] = [];
+  for (const entry of list) {
+    const heading = isSpecified(entry?.title) ? String(entry.title).trim() : "";
+    if (!heading) continue;
+    const key = heading.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sections.push({
+      id: `diagram-init-${sections.length}`,
+      heading,
+      bodyText: isSpecified(entry?.caption) ? String(entry.caption).trim() : "",
+      imageId: null,
+    });
+  }
+  return sections.slice(0, 8);
+}
+
 // Raw backend category-enum values (lowercase) that should be replaced with the canonical fixture
 // category ("Indoor Lighting", …) — used to auto-clean older saved drafts that stored the enum.
 const RAW_CATEGORY_ENUMS = new Set([
@@ -2798,7 +2824,7 @@ function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendation
     orderingNote: "Please ensure power compatibility with this specific fixture size when selecting this option.",
     accessoryRows: buildAccessoryRowsFromSpec(spec),
     dimensionItems: buildDimensionItemsFromSpec(spec),
-    customSections: [],
+    customSections: buildCustomSectionsFromSpec(spec),
     extraTables: buildExtraTablesFromSpec(spec),
     imagePlacements: {},
   };
@@ -8930,6 +8956,18 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                         onChange={(value) => updateCustomSection(index, { imageId: value })}
                       />
                     </div>
+                    {vendorLibraryImages.length > 0 && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setVendorImagePicker({ kind: "custom", id: section.id })}
+                        className="h-10 shrink-0 gap-1 rounded-xl border-primary/40 bg-primary/5 px-3 text-[12px] text-primary"
+                        title="Pick a suggested diagram from the vendor PDF"
+                      >
+                        <Sparkles className="h-3.5 w-3.5" />
+                        Suggest
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       variant="outline"

@@ -53,11 +53,13 @@ type ExtractedPayload = {
   accessories?: { code?: string; description?: string }[];
   dimensions?: { label?: string; width?: string; height?: string; depth?: string }[];
   extraTables?: { title?: string; headers?: string[]; rows?: string[][] }[];
+  diagramSections?: { title?: string; caption?: string }[];
 };
 
 type CodeEntry = { code?: string; description?: string };
 type DimensionEntry = { label?: string; width?: string; height?: string; depth?: string };
 type ExtraTableEntry = { title?: string; headers?: string[]; rows?: string[][] };
+type DiagramSectionEntry = { title?: string; caption?: string };
 
 type StoredExtraction = {
   id: number;
@@ -79,6 +81,7 @@ type StoredExtraction = {
   accessories: CodeEntry[];
   dimensions: DimensionEntry[];
   extraTables: ExtraTableEntry[];
+  diagramSections: DiagramSectionEntry[];
   notes: string[];
   vendorInfo: { vendorName: string; vendorContact: string };
   sourceImages: SourceAsset[];
@@ -277,6 +280,7 @@ router.post("/extract", upload.single("file"), async (req, res) => {
       accessories: Array.isArray(extracted.accessories) ? extracted.accessories : [],
       dimensions: Array.isArray(extracted.dimensions) ? extracted.dimensions : [],
       extraTables: Array.isArray(extracted.extraTables) ? extracted.extraTables : [],
+      diagramSections: Array.isArray(extracted.diagramSections) ? extracted.diagramSections : [],
       notes: normalizeStringArray(extracted.notes),
       vendorInfo: extracted.vendorInfo ?? { vendorName: "", vendorContact: "" },
       sourceImages: normalizeSourceAssets(extracted.sourceImages),

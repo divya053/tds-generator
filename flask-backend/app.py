@@ -88,7 +88,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v20"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v21"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -170,6 +170,10 @@ Return ONLY valid JSON with this exact structure:
   "extraTables": [
     {"title": "Photometric Performance", "headers": ["Model", "Watts", "3000K", "4000K", "5000K"],
      "rows": [["MAL08100W", "100W", "14540lm", "15800lm", "15000lm"]]}
+  ],
+  "diagramSections": [
+    {"title": "Photometric Diagram", "caption": "Polar light distribution / candela curve"},
+    {"title": "Light Distribution", "caption": "Beam distribution figure"}
   ],
   "variantOverview": {
     "parameters": ["Fixture Type", "Power", "Lumen Output", "CCT", "Efficacy"],
@@ -2369,6 +2373,67 @@ def normalize_extra_tables(value: Any) -> list[dict[str, Any]]:
     return tables
 
 
+# Figure/diagram sections a vendor sheet commonly shows as an image (no table) — we surface each as a
+# heading with an empty image slot in the IKIO sheet so the user can drop/suggest the matching diagram.
+# (canonical title, [regex cues to detect the heading in the source text]).
+_DIAGRAM_SECTION_PATTERNS: list[tuple[str, str, list[str]]] = [
+    ("Photometric Diagram", "Polar light distribution / candela curve",
+     [r"photometric", r"candela", r"polar\s+(?:curve|diagram|distribution)", r"光度"]),
+    ("Light Distribution", "Light distribution / beam figure",
+     [r"light\s+distribution", r"luminous\s+intensity\s+distribution", r"distribution\s+curve", r"配光"]),
+    ("Isolux Diagram", "Isolux / illuminance plot",
+     [r"isolux", r"iso[-\s]?lux", r"illuminance\s+(?:plot|diagram|chart)", r"lux\s+level\s+diagram"]),
+    ("Beam Angle", "Beam angle diagram",
+     [r"beam\s+angle\s+(?:diagram|figure|chart)", r"beam\s+spread\s+diagram"]),
+    ("Mounting / Installation", "Mounting / installation diagram",
+     [r"mounting\s+(?:diagram|detail|method|instruction)", r"installation\s+(?:diagram|detail|guide|instruction)", r"安装"]),
+    ("Wiring Diagram", "Wiring / connection diagram",
+     [r"wiring\s+diagram", r"connection\s+diagram", r"接线"]),
+]
+
+
+def normalize_diagram_sections(value: Any) -> list[dict[str, str]]:
+    """Clean the model's diagramSections into [{title, caption}], deduped and capped."""
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    if isinstance(value, list):
+        for entry in value:
+            if not isinstance(entry, dict):
+                continue
+            title = normalize_whitespace(str(entry.get("title", "")))
+            if not title:
+                continue
+            key = title.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({"title": title, "caption": normalize_whitespace(str(entry.get("caption", "")))})
+    return result[:8]
+
+
+def detect_diagram_sections(source_text: str) -> list[dict[str, str]]:
+    """Deterministic backstop: scan the vendor text for figure/diagram headings (photometric, light
+    distribution, isolux, mounting, wiring, …). Diagrams are visual so the model often skips them;
+    this guarantees the heading + image slot still appears in our sheet."""
+    text = source_text or ""
+    found: list[dict[str, str]] = []
+    for title, caption, cues in _DIAGRAM_SECTION_PATTERNS:
+        if any(re.search(cue, text, re.I) for cue in cues):
+            found.append({"title": title, "caption": caption})
+    return found
+
+
+def merge_diagram_sections(model_value: Any, source_text: str) -> list[dict[str, str]]:
+    """Union the model's diagramSections with the deterministic text-detected ones, deduped by title."""
+    merged = normalize_diagram_sections(model_value)
+    seen = {entry["title"].lower() for entry in merged}
+    for entry in detect_diagram_sections(source_text):
+        if entry["title"].lower() not in seen:
+            seen.add(entry["title"].lower())
+            merged.append(entry)
+    return merged[:8]
+
+
 def normalize_dimensions_list(value: Any) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     if isinstance(value, list):
@@ -2428,6 +2493,7 @@ def post_process_extraction(model_output: dict[str, Any], source_text: str, sour
         "accessories": normalize_accessories(model_output.get("accessories")),
         "dimensions": normalize_dimensions_list(model_output.get("dimensions")),
         "extraTables": normalize_extra_tables(model_output.get("extraTables")),
+        "diagramSections": merge_diagram_sections(model_output.get("diagramSections"), source_text),
         "technicalSpecs": technical_specs,
         "categorySpecificSpecs": normalize_technical_specs(model_output.get("categorySpecificSpecs")),
         "notes": normalize_string_list(model_output.get("notes"), "Generated from vendor PDF source.", 8) + notes,
