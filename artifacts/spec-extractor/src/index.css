@@ -68,6 +68,17 @@
   font-family: Arial, Helvetica, sans-serif !important;
 }
 
+/* Force the browser to keep ALL sheet background colors/fills when saving to PDF — the header accent
+   bar, table row fills and the dark footer bar. Declared always-on (not only inside @media print) and
+   directly on the sheet + every descendant so it wins regardless of Chrome's "Background graphics"
+   checkbox (which defaults to OFF and otherwise strips every fill, leaving a washed-out sheet). */
+.sheet-print-root,
+.sheet-print-root * {
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  color-adjust: exact !important;
+}
+
 @page {
   size: letter;
   margin: 0;

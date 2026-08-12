@@ -7782,7 +7782,10 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
       document.body.appendChild(printRoot);
       document.body.classList.add("printing");
 
+      let cleaned = false;
       const cleanup = () => {
+        if (cleaned) return; // idempotent — afterprint + fallback must not double-run
+        cleaned = true;
         document.body.classList.remove("printing");
         printRoot.remove();
         window.removeEventListener("afterprint", cleanup);
@@ -7796,7 +7799,10 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
 
       window.setTimeout(() => {
         window.print();
-        window.setTimeout(cleanup, 1000);
+        // Fallback ONLY if `afterprint` never fires (some embedded webviews). Long enough that it can
+        // never remove the print content while the user is still in the Save-as-PDF dialog — the old
+        // 1s timer could blank the printout wherever window.print() is non-blocking.
+        window.setTimeout(cleanup, 120000);
       }, 60);
     } catch (error) {
       console.error("PDF export failed", error);
