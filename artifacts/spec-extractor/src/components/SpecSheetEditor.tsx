@@ -704,9 +704,19 @@ function formatVoltage(value: string) {
   const cleaned = String(value ?? "")
     .replace(/\d+(?:\.\d+)?(?:\s*[/–-]\s*\d+(?:\.\d+)?)*\s*hz\b/gi, " ") // drop frequency
     .replace(/\d+(?:\.\d+)?\s*a\b/gi, " "); // drop current (amps)
-  const nums = [...cleaned.matchAll(/\d+(?:\.\d+)?/g)].map((m) => m[0]);
-  const unique = [...new Set(nums)];
-  return unique.length ? `${unique.join("-")}V` : value;
+  // Keep DISTINCT selectable voltage ranges apart with " | " (e.g. "100-277 | 200-480V") instead of
+  // running every number together as "100-277-200-480V". A "-" (or "–") joins a single min-max range;
+  // "|", ",", "/", "or"/"and" separate two independent ranges.
+  const segments = cleaned.split(/\s*[|,/]\s*|\s+(?:or|and)\s+/i).map((s) => s.trim()).filter(Boolean);
+  const toRange = (seg: string) => [...new Set([...seg.matchAll(/\d+(?:\.\d+)?/g)].map((m) => m[0]))].join("-");
+  let ranges = segments.map(toRange).filter(Boolean);
+  // No explicit separator but four numbers => two min-max ranges ("100-277 200-480" -> two ranges).
+  if (ranges.length === 1) {
+    const nums = ranges[0].split("-");
+    if (nums.length === 4) ranges = [`${nums[0]}-${nums[1]}`, `${nums[2]}-${nums[3]}`];
+  }
+  const unique = [...new Set(ranges)];
+  return unique.length ? `${unique.join(" | ")}V` : value;
 }
 
 function isThdLabel(label: string) {
@@ -4981,11 +4991,16 @@ function SheetPageOne({
     .filter((row) => isSpecified(row.label) && isSpecified(row.value))
     .filter((row) => !isExcludedOverviewLabel(row.label))
     .map((row) => {
-      // A hand-edited value always wins — never overwrite it with the auto-computed figure.
-      if (!row.manual && normalizeSpecKey(row.label) === "efficacy" && isSpecified(computedEfficacy)) {
+      // A hand-edited value always wins — show EXACTLY what the user typed (no auto-compute AND no
+      // reformatting). This is why an edit "wasn't reflecting": normalizeOverviewRowValue re-derived
+      // the display value (e.g. formatVoltage turned "100-277 | 200-480V" into "100-277-200-480V").
+      if (row.manual) {
+        return row;
+      }
+      if (normalizeSpecKey(row.label) === "efficacy" && isSpecified(computedEfficacy)) {
         return { ...row, value: computedEfficacy };
       }
-      if (!row.manual && isPowerSelectableOverviewLabel(row.label) && isSpecified(computedPower)) {
+      if (isPowerSelectableOverviewLabel(row.label) && isSpecified(computedPower)) {
         return { ...row, value: computedPower };
       }
       return { ...row, value: normalizeOverviewRowValue(row.label, row.value) };
