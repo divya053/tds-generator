@@ -57,6 +57,9 @@ type OverviewRow = {
   // true once the user has hand-edited this value — auto-recompute (Efficacy/Power) then leaves it
   // alone so a manual override sticks instead of being overwritten on every render.
   manual?: boolean;
+  // true once the user has hand-edited this row's LABEL — the head then renders EXACTLY as typed
+  // (no Title-Casing, canonical remap, or auto "(Selectable)" suffix).
+  labelManual?: boolean;
 };
 
 // ---- Page 2: Product Specifications ----
@@ -5203,7 +5206,11 @@ function SheetPageOne({
                             paddingBottom: `${overviewPadYpx}px`,
                           }}
                         >
-                          {renderOverviewHead(overviewHeadWithSelectable(formatOverviewLabel(row.label), row.label, row.value))}
+                          {renderOverviewHead(
+                            row.labelManual
+                              ? row.label // hand-edited head: show EXACTLY as typed
+                              : overviewHeadWithSelectable(formatOverviewLabel(row.label), row.label, row.value),
+                          )}
                         </td>
                         <td
                           className={cn(
@@ -7340,7 +7347,12 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
       ...current,
       overviewRows: current.overviewRows.map((row, rowIndex) =>
         rowIndex === index
-          ? { ...row, [field]: value, ...(field === "value" ? { manual: true } : {}) }
+          ? {
+              ...row,
+              [field]: value,
+              ...(field === "value" ? { manual: true } : {}),
+              ...(field === "label" ? { labelManual: true } : {}),
+            }
           : row,
       ),
     }));
