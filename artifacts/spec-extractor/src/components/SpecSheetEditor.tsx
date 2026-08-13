@@ -262,7 +262,28 @@ type EditorDraft = {
   // image (product, dimensions, accessories, custom sections) around its box and resize it. An
   // absent id = centered at 100% (default).
   imagePlacements: Record<string, ImagePlacement>;
+  // Predefined sheet sections the user has removed (key -> true = hidden). Hiding a section drops it
+  // AND its page(s) from the preview/PDF. Absent/false = shown. See SHEET_SECTION_TOGGLES.
+  hiddenSections?: Record<string, boolean>;
 };
+
+// The predefined sheet sections the user can remove (each hides the section and its page(s)). Page-1
+// blocks (overview/description/features/…) key off "page1:<id>"; the standalone pages use their block
+// group. The Overview and the header/footer are core and intentionally not removable.
+const SHEET_SECTION_TOGGLES: { key: string; label: string }[] = [
+  { key: "page1:description", label: "Product Description" },
+  { key: "page1:features", label: "Features" },
+  { key: "page1:applications", label: "Application Areas" },
+  { key: "page1:warranty", label: "Warranty" },
+  { key: "specs", label: "Product Specifications" },
+  { key: "ordering", label: "Product Ordering Information" },
+  { key: "dims", label: "Dimensions" },
+  { key: "accessories", label: "Accessories Ordering Information" },
+];
+
+function isSectionHidden(draft: EditorDraft, key: string): boolean {
+  return Boolean(draft.hiddenSections?.[key]);
+}
 
 // Manual placement of a sheet image: translate offset (px, relative to its centered position in the
 // preview) plus a scale multiplier. Applied as a CSS transform so it carries into the PDF export
@@ -5001,12 +5022,14 @@ function SheetPageOne({
   const overviewFontPx = manualOverviewFontPx ?? overviewAutoFontPx;
   const overviewPadYpx = Math.max(1.5, overviewFontPx * 0.5);
   const normalizedDescription = normalizePreviewDescription(draft.description);
-  const visibleDescription = isSpecified(normalizedDescription);
+  // Page-1 sections the user removed via the "Sheet sections" controls drop entirely.
+  const visibleDescription = isSpecified(normalizedDescription) && !isSectionHidden(draft, "page1:description");
   // Cap the sheet's Features list to 4 points so it never overflows behind the footer.
-  const visibleFeatures = features.filter(isSpecified).slice(0, 4);
-  const visibleApplications = applicationAreas.filter(isSpecified);
-  const visibleWarrantyLabel = isSpecified(draft.warrantyLabel);
-  const visibleWarrantyCopy = isSpecified(draft.warrantyCopy);
+  const visibleFeatures = isSectionHidden(draft, "page1:features") ? [] : features.filter(isSpecified).slice(0, 4);
+  const visibleApplications = isSectionHidden(draft, "page1:applications") ? [] : applicationAreas.filter(isSpecified);
+  const warrantyHidden = isSectionHidden(draft, "page1:warranty");
+  const visibleWarrantyLabel = isSpecified(draft.warrantyLabel) && !warrantyHidden;
+  const visibleWarrantyCopy = isSpecified(draft.warrantyCopy) && !warrantyHidden;
   const showWarrantyBlock = visibleWarrantyLabel || visibleWarrantyCopy;
   const visibleQualificationIds = draft.selectedQualificationIds;
   const showDlcNote = visibleQualificationIds.some(
@@ -6275,7 +6298,7 @@ function buildSheetBlocks(
     }
     if (current.length > 0 || specChunks.length === 0) specChunks.push(current);
   }
-  specChunks.forEach((chunk, chunkIndex) => {
+  if (!isSectionHidden(draft, "specs")) specChunks.forEach((chunk, chunkIndex) => {
     const first = chunkIndex === 0;
     const last = chunkIndex === specChunks.length - 1;
     const rows = chunk.reduce((sum, group) => sum + Math.max(1, group.options.length), 0);
@@ -6304,7 +6327,7 @@ function buildSheetBlocks(
     return Math.max(max, count);
   }, 0);
   const orderingChunkCount = Math.max(1, Math.ceil(orderingMaxEntries / ORDERING_ENTRIES_PER_PAGE));
-  for (let chunkIndex = 0; chunkIndex < orderingChunkCount; chunkIndex += 1) {
+  if (!isSectionHidden(draft, "ordering")) for (let chunkIndex = 0; chunkIndex < orderingChunkCount; chunkIndex += 1) {
     const first = chunkIndex === 0;
     const last = chunkIndex === orderingChunkCount - 1;
     const start = chunkIndex * ORDERING_ENTRIES_PER_PAGE;
@@ -6333,8 +6356,10 @@ function buildSheetBlocks(
   }
 
   // Dimensions — one block per row of (up to) two drawings; only the first shows the heading.
-  const dims = draft.dimensionItems.filter(dimensionItemHasContent);
-  if (dims.length === 0) {
+  const dims = isSectionHidden(draft, "dims") ? [] : draft.dimensionItems.filter(dimensionItemHasContent);
+  if (isSectionHidden(draft, "dims")) {
+    // Section removed by the user — emit nothing (no empty-dimensions placeholder either).
+  } else if (dims.length === 0) {
     blocks.push({
       key: "dims-empty",
       group: "dims",
@@ -6377,7 +6402,7 @@ function buildSheetBlocks(
   }
 
   // Accessories Ordering Information
-  const accessories = draft.accessoryRows.filter(accessoryRowHasContent);
+  const accessories = isSectionHidden(draft, "accessories") ? [] : draft.accessoryRows.filter(accessoryRowHasContent);
   if (accessories.length > 0) {
     const half = Math.max(1, Math.ceil(accessories.length / 2));
     blocks.push({
@@ -7087,6 +7112,14 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
 
   const updateDraft = <K extends keyof EditorDraft>(key: K, value: EditorDraft[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  // Show/remove a predefined sheet section (and its page(s)) — see SHEET_SECTION_TOGGLES.
+  const setSectionHidden = (key: string, hidden: boolean) => {
+    setDraft((current) => ({
+      ...current,
+      hiddenSections: { ...(current.hiddenSections ?? {}), [key]: hidden },
+    }));
   };
 
   // Persist a dragged/resized image placement on the sheet (keyed by source-image id). Applies to
@@ -9007,6 +9040,50 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
                 <Plus className="mr-2 h-4 w-4" />
                 Add Section
               </Button>
+            </div>
+          </section>
+
+          {/* Sheet Sections — remove any predefined section (and its page) the vendor sheet doesn't need. */}
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-muted-foreground">
+                Sheet Sections
+              </h2>
+              <Badge variant="outline">
+                {SHEET_SECTION_TOGGLES.filter((s) => !isSectionHidden(draft, s.key)).length}/{SHEET_SECTION_TOGGLES.length} shown
+              </Badge>
+            </div>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              Turn off any section you don't need — it (and its page) is removed from the generated sheet
+              and the PDF. Turn it back on anytime. Overview, header and footer are always kept.
+            </p>
+            <div className="space-y-2">
+              {SHEET_SECTION_TOGGLES.map((s) => {
+                const hidden = isSectionHidden(draft, s.key);
+                return (
+                  <div
+                    key={s.key}
+                    className="flex items-center justify-between gap-2 rounded-xl border border-border/70 bg-card/40 px-3 py-2"
+                  >
+                    <span className={cn("text-[13px] font-medium", hidden ? "text-muted-foreground line-through" : "text-foreground")}>
+                      {s.label}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setSectionHidden(s.key, !hidden)}
+                      className={cn(
+                        "h-8 shrink-0 gap-1 rounded-lg px-3 text-[11px] font-semibold",
+                        hidden ? "border-primary/40 bg-primary/5 text-primary" : "text-muted-foreground",
+                      )}
+                      title={hidden ? "Add this section back to the sheet" : "Remove this section (and its page) from the sheet"}
+                    >
+                      {hidden ? <Plus className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                      {hidden ? "Add back" : "Remove"}
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
           </section>
 
