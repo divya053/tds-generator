@@ -4538,7 +4538,9 @@ function formatOverviewLabel(value: string) {
 
 /** For Power / CCT heads, append "(Selectable)" ONLY when the value is a multi-option list (dash-
  *  joined, e.g. "40W - 60W" or "3000K - 4000K"); a single value gets no "(Selectable)". Any pre-baked
- *  "(Selectable)" on the head is stripped first so it's driven purely by the value. */
+ *  "(Selectable)" on the head is stripped first so it's driven purely by the value.
+ *  For CCT the "(Selectable)" REPLACES the "(CCT)" acronym bracket when selectable — so it reads
+ *  "Color Temperature (Selectable)" (selectable) or "Color Temperature (CCT)" (fixed), never both. */
 function overviewHeadWithSelectable(head: string, label: string, value: string) {
   // Strip any pre-baked "(Selectable)" so the suffix is driven purely by the value.
   const base = head.replace(/\s*\(selectable\)\s*$/i, "").trim();
@@ -4547,11 +4549,17 @@ function overviewHeadWithSelectable(head: string, label: string, value: string) 
   if (!isPower && !isCct) return head;
   // Multi-option when the value has 2+ tokens, whether dash-joined with spaces ("40W - 60W") or
   // without ("10W-12W-15W"), or slash/pipe/newline separated.
-  const optionCount = String(value ?? "")
-    .split(/\s*[-–—/|]\s*|\n/)
-    .map((token) => token.trim())
-    .filter(Boolean).length;
-  return optionCount > 1 ? `${base} (Selectable)` : base;
+  const selectable =
+    String(value ?? "")
+      .split(/\s*[-–—/|]\s*|\n/)
+      .map((token) => token.trim())
+      .filter(Boolean).length > 1;
+  if (isCct) {
+    // Drop the "(CCT)" acronym bracket; show "(Selectable)" only when selectable, else keep "(CCT)".
+    const withoutAcronym = base.replace(/\s*\(\s*cct\s*\)\s*/i, " ").replace(/\s+/g, " ").trim();
+    return selectable ? `${withoutAcronym} (Selectable)` : base;
+  }
+  return selectable ? `${base} (Selectable)` : base;
 }
 
 /** Render an overview head with the bracketed portion in normal (non-bold) weight — the head cell
