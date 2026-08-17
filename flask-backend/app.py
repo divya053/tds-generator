@@ -88,7 +88,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v24"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v25"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -363,6 +363,12 @@ Rules:
 - NEVER COMPUTE A LUMEN: only report lumen numbers that are PRINTED in the vendor table. Never multiply watts × efficacy
   to fill a missing lumen (that produces untested figures like 18W × 154 = 2772 that don't match the real table). If a
   setting's lumen truly isn't printed, omit that setting rather than inventing a value.
+- EFFICACY — READ THE LPW COLUMN, NEVER COMPUTE: Efficacy must be the vendor's PRINTED efficacy — the "LPW", "lm/W", or
+  "Efficacy" column of the performance table — copied EXACTLY as shown. Report it as the list/range actually printed
+  (e.g. "140lm/W - 154lm/W" across settings, using ONE consistent CCT column such as 4000K), or a single value if only
+  one is given. NEVER derive efficacy by dividing lumens by watts — a real LED is ~40–220 lm/W, so a computed figure
+  like 22000lm ÷ 30W = 733 lm/W is impossible and must never appear. If the sheet prints no efficacy at all, leave it
+  blank rather than computing one.
 - DISTINCT SIZES / LENGTHS (very important): if the fixture comes in multiple physical SIZES or LENGTHS and EACH
   size has its OWN single wattage and its OWN lumen output — common for tri-proof / linear / batten / strip / vapor-tight
   fixtures, e.g. 2ft/4ft/5ft (or 600mm/1200mm/1500mm) = 20W/36W/45W = 2600-2800lm / 4680-5040lm / 5850-6300lm — then

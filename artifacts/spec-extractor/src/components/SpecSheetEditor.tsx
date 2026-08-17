@@ -1651,12 +1651,11 @@ function efficacyFromWattsLumens(powerText: string, lumenText: string) {
       .filter((value) => Number.isFinite(value) && value > 0)
       .map((value) => String(value)),
   ).map(Number);
-  // Keep only PHYSICALLY POSSIBLE efficacies (real LEDs are ~40-220 lm/W). A value outside this
-  // band means the power/lumen pair was misaligned by the extraction, not a true efficacy — drop it
-  // so the sheet never shows an impossible figure like "228 lm/W". Fall back to the raw set only if
-  // filtering would leave nothing.
-  const plausible = allValues.filter((value) => value >= 40 && value <= 220);
-  const values = plausible.length > 0 ? plausible : allValues;
+  // Keep only PHYSICALLY POSSIBLE efficacies (real LEDs are ~40-220 lm/W). A value outside this band
+  // means the power/lumen pair was misaligned by the extraction, not a true efficacy — drop it so the
+  // sheet never shows an impossible figure like "733 lm/W". If NOTHING is plausible, return blank
+  // rather than falling back to the impossible set.
+  const values = allValues.filter((value) => value >= 40 && value <= 220);
   if (values.length === 0) return "";
   if (values.length === 1) return `${values[0]} lm/W`;
   if (values.length <= 8) return `${values.join(" - ")} lm/W`;
@@ -1771,15 +1770,17 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
   };
 
   const templateRows = template.map((row, index) => {
-    // Efficacy is ALWAYS computed from this fixture's own Power & Lumen (lumens / power) — never
-    // copied from the vendor's stated efficacy. If power/lumen aren't available it stays blank.
+    // Efficacy shows the vendor's PRINTED efficacy (the LPW column) exactly as extracted. Only if the
+    // vendor stated none do we fall back to a computed figure — and that fallback is clamped to
+    // physically-possible values, so an impossible number is never shown.
     const isEfficacyRow = normalizeSpecKey(row.label) === "efficacy";
     return {
       id: `template-${index}-${normalizeSpecKey(row.label)}`,
       label: row.label,
       included: true,
       value: isEfficacyRow
-        ? deriveEfficacyFromPowerLumen(spec)
+        ? formatOverviewValue(row.label, getOverviewValue(spec, ["Efficacy", "Efficacy (lm/W)"])) ||
+          deriveEfficacyFromPowerLumen(spec)
         : buildVariantOverviewValue(row.label) ||
           formatOverviewValue(row.label, getOverviewValue(spec, row.keys)) ||
           deriveEstimatedOverviewValue(spec, row.label),
@@ -4980,14 +4981,9 @@ function SheetPageOne({
   // Compute it from the DRAFT's own Power/Lumen rows (the values actually on the sheet), because a
   // reconstructed spec may not carry variantOverview/technicalSpecs; fall back to the spec if the
   // draft rows are absent.
-  const draftOverviewRowValue = (match: (label: string) => boolean) =>
-    draft.overviewRows.find((row) => isSpecified(row.value) && match(row.label))?.value ?? "";
-  const draftPowerText = draftOverviewRowValue(isPowerSelectableOverviewLabel);
-  const draftLumenText = draftOverviewRowValue(
-    (label) => normalizeSpecKey(label) === "lumen output" || normalizeSpecKey(label) === "lumens",
-  );
-  const computedEfficacy =
-    efficacyFromWattsLumens(draftPowerText, draftLumenText) || deriveEfficacyFromPowerLumen(spec);
+  // Efficacy is NOT computed — we show the vendor's printed efficacy (the LPW column) exactly as
+  // extracted. Deriving it from power ÷ lumen produced impossible values (e.g. 22000lm ÷ 30W = 733
+  // lm/W) whenever the lumen and power lists weren't perfectly aligned, so that calculation is gone.
   // Power: when the fixture has MULTIPLE variants, recompute the row so each variant's selectable
   // powers show on their OWN line (never every wattage merged into one line) — this self-corrects
   // drafts saved before the per-variant rule. For a single selectable fixture we leave the stored
@@ -5008,8 +5004,12 @@ function SheetPageOne({
       if (row.manual) {
         return row;
       }
-      if (normalizeSpecKey(row.label) === "efficacy" && isSpecified(computedEfficacy)) {
-        return { ...row, value: computedEfficacy };
+      if (normalizeSpecKey(row.label) === "efficacy") {
+        // Show the vendor's PRINTED efficacy (the LPW column), exactly as extracted — never a value
+        // computed from lumens ÷ watts. This also self-corrects older drafts that stored a computed
+        // (often impossible) efficacy. Falls back to the stored value only if the vendor stated none.
+        const vendorEfficacy = formatOverviewValue("Efficacy", getOverviewValue(spec, ["Efficacy", "Efficacy (lm/W)"]));
+        return { ...row, value: isSpecified(vendorEfficacy) ? vendorEfficacy : normalizeOverviewRowValue(row.label, row.value) };
       }
       if (isPowerSelectableOverviewLabel(row.label) && isSpecified(computedPower)) {
         return { ...row, value: computedPower };
