@@ -88,7 +88,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v25"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v26"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -1627,13 +1627,49 @@ def _vendor_match_tokens(vendor: str, text: str) -> list[str]:
     return sorted(tokens)[:40]
 
 
+_HEADING_KEYWORDS = [
+    "performance data", "performance", "electrical data", "electrical", "photometric", "light distribution",
+    "lumen output", "lumen", "dimension", "mounting", "installation", "wiring", "ordering information",
+    "ordering", "order information", "accessor", "product data", "specification", "technical data",
+    "features", "application", "warranty", "certification", "package", "packaging", "shipping", "beam",
+]
+
+
+def _extract_section_headings(text: str) -> list[str]:
+    """The section HEADINGS a vendor sheet uses (PERFORMANCE DATA, ELECTRICAL DATA, DIMENSIONS,
+    PHOTOMETRIC, ORDERING INFORMATION, MOUNTING, ACCESSORIES …). Captures a short line that is either
+    ALL-CAPS or matches a known section keyword — including headings that sit above an image or a table
+    — so a same-vendor upload knows which sections/tables to recreate."""
+    headings: list[str] = []
+    seen: set[str] = set()
+    for raw in (text or "").splitlines():
+        line = normalize_whitespace(raw)
+        if not (3 <= len(line) <= 48):
+            continue
+        if sum(1 for c in line if c.isalpha()) < 3:
+            continue
+        low = line.lower()
+        is_caps = line == line.upper() and any(c.isalpha() for c in line)
+        is_known = any(k in low for k in _HEADING_KEYWORDS)
+        if not (is_caps or is_known):
+            continue
+        key = re.sub(r"[^a-z0-9]+", " ", low).strip()
+        if key and key not in seen:
+            seen.add(key)
+            headings.append(line if is_caps else line.title())
+    return headings[:14]
+
+
 def _summarize_vendor_format(text: str) -> str:
     low = f" {text.lower()} "
     fields = [label for label, keys in _VENDOR_FIELD_HINTS if any(k in low for k in keys)]
     cues = [note for note, keys in _VENDOR_CUE_HINTS if any(k in low for k in keys)]
+    headings = _extract_section_headings(text)
     parts: list[str] = []
     if fields:
         parts.append("Fields this vendor typically provides: " + ", ".join(fields) + ".")
+    if headings:
+        parts.append("Section headings this vendor uses (recreate each section/table): " + ", ".join(headings) + ".")
     if cues:
         parts.append("Notable patterns: " + "; ".join(cues) + ".")
     return " ".join(parts)
@@ -1807,13 +1843,39 @@ def learn_vendor_from_text(vendor: str, text: str) -> dict[str, Any]:
     return profile
 
 
+# Generic company words that must NOT identify a vendor on their own — only distinctive brand words do.
+_VENDOR_NAME_STOPWORDS = {
+    "lighting", "light", "lights", "led", "leds", "international", "co", "ltd", "inc", "llc",
+    "company", "technology", "technologies", "electronic", "electronics", "industrial",
+    "industries", "group", "limited", "corporation", "corp", "manufacturing", "mfg", "optoelectronics",
+    "opto", "the", "and", "usa", "america", "series", "vendor", "solutions", "products", "product",
+}
+
+
+def _distinctive_name_words(vendor: str) -> list[str]:
+    """The identifying words of a vendor's COMPANY NAME (folder) — brand words, not generic suffixes."""
+    words: list[str] = []
+    for word in re.split(r"[\s/&,.\-]+", (vendor or "").lower()):
+        if len(word) >= 3 and word not in _VENDOR_NAME_STOPWORDS:
+            words.append(word)
+    return words
+
+
 def detect_vendor_profile(document_text: str) -> dict[str, Any] | None:
-    """Return the best-matching learned vendor profile for this upload, or None."""
+    """Return the best-matching learned vendor profile for this upload, or None. The vendor's COMPANY
+    NAME (the Training Data folder / the name given to 'Learn this vendor') is the PRIMARY signal: a
+    distinctive brand word present anywhere in the document identifies the vendor on its own."""
     low = f" {document_text.lower()} "
     best: dict[str, Any] | None = None
     best_score = 0
     for profile in _load_vendor_profiles():
         score = 0
+        # Company-name match (folder / learned name) — strong on its own so single/two-word vendor
+        # names (Venas, EDIPAI, OKT, LEDSION…) are recognised without needing a domain/model hit.
+        for word in _distinctive_name_words(profile.get("vendor", "")):
+            if re.search(r"\b" + re.escape(word) + r"\b", low):
+                score += 4
+                break
         for token in profile.get("matchTokens", []):
             if not token:
                 continue
@@ -1823,7 +1885,7 @@ def detect_vendor_profile(document_text: str) -> dict[str, Any] | None:
                 score += weight
         if score > best_score:
             best_score, best = score, profile
-    # Require a reasonably confident match (a domain/model hit, or several word hits).
+    # Require a reasonably confident match (a company-name hit, a domain/model hit, or several words).
     return best if best_score >= 3 else None
 
 
@@ -2364,20 +2426,20 @@ def normalize_extra_tables(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     tables: list[dict[str, Any]] = []
-    for entry in value[:3]:
+    for entry in value[:8]:  # cover multi-page performance/electrical tables (was 3)
         if not isinstance(entry, dict):
             continue
         title = normalize_whitespace(str(entry.get("title", ""))) or "Additional Data"
-        headers = [normalize_whitespace(str(h)) for h in (entry.get("headers") or []) if isinstance(entry.get("headers"), list)][:12]
+        headers = [normalize_whitespace(str(h)) for h in (entry.get("headers") or []) if isinstance(entry.get("headers"), list)][:16]
         headers = [h for h in headers if h]
         raw_rows = entry.get("rows") or []
         rows: list[list[str]] = []
         if isinstance(raw_rows, list):
             col_count = len(headers) if headers else 0
-            for raw_row in raw_rows[:40]:
+            for raw_row in raw_rows[:120]:  # a full multi-setting table can be long (was 40)
                 if not isinstance(raw_row, list):
                     continue
-                cells = [normalize_whitespace(str(c)) for c in raw_row][:12]
+                cells = [normalize_whitespace(str(c)) for c in raw_row][:16]
                 if col_count:
                     cells = (cells + [""] * col_count)[:col_count]
                 if any(cells):
