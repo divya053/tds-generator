@@ -196,6 +196,7 @@ type ExtendedExtractedSpec = ExtractedSpec & {
   dimensions?: ExtractedDimension[];
   extraTables?: { title?: string; headers?: string[]; rows?: string[][] }[];
   diagramSections?: { title?: string; caption?: string }[];
+  detectedVendor?: { vendor?: string; source?: string; applied?: boolean } | null;
 };
 
 type QualificationBadgeId =
@@ -9302,9 +9303,17 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
     const guess = normalizeText((spec as { vendorInfo?: { vendorName?: string } }).vendorInfo?.vendorName ?? "") || draft.title;
     const vendorName = typeof window !== "undefined" ? window.prompt("Remember this vendor's format under which name?", guess) : guess;
     if (!vendorName || !normalizeText(vendorName)) return;
-    const sourceText = spec.sourceText ?? "";
+    // Prefer the raw vendor text; if this sheet was extracted before source text was stored, fall back
+    // to a synthesized text from the extracted fields so learning still works (button never dead).
+    let sourceText = spec.sourceText ?? "";
     if (!isSpecified(sourceText)) {
-      toast.error("No vendor text to learn from — re-extract this PDF first.");
+      const specLines = (getAllSpecs(spec) ?? []).map((s) => `${s.parameter}: ${s.specification}`);
+      sourceText = [normalizeText(vendorName), spec.productName, getCategoryLabel(spec), ...specLines]
+        .filter((v) => isSpecified(String(v ?? "")))
+        .join("\n");
+    }
+    if (!isSpecified(sourceText)) {
+      toast.error("Nothing to learn from on this sheet — re-extract the PDF, then try again.");
       return;
     }
     setLearningVendor(true);
@@ -9356,7 +9365,7 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
             <Button
               type="button"
               variant="outline"
-              disabled={learningVendor || !isSpecified(spec.sourceText ?? "")}
+              disabled={learningVendor}
               onClick={learnThisVendor}
               className="inline-flex h-auto items-center gap-2 rounded-xl border-border/70 px-3 py-2 text-xs font-semibold text-foreground hover:border-primary/40 hover:bg-primary/5"
               title="Teach the extractor this vendor's format so future PDFs from the same vendor extract every detail the same way."
@@ -9365,6 +9374,20 @@ export function SpecSheetEditor({ spec }: { spec: ExtendedExtractedSpec }) {
               {learningVendor ? "Learning…" : "Learn this vendor"}
             </Button>
           </div>
+          {spec.detectedVendor?.vendor ? (
+            <div className="flex items-center gap-2 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
+              <Check className="h-4 w-4 shrink-0 text-primary" />
+              <span className="font-semibold text-foreground">Recognized as “{spec.detectedVendor.vendor}”</span>
+              <span className="text-muted-foreground">
+                — learned pattern applied{spec.detectedVendor.source === "ai" ? " (AI profile)" : ""}.
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2 text-xs text-muted-foreground">
+              <Sparkles className="h-3.5 w-3.5 shrink-0" />
+              Not a learned vendor yet — click “Learn this vendor” to teach its format (applies to the next same-vendor upload).
+            </div>
+          )}
         </div>
       </div>
       <div className="min-h-0 flex-1 p-5">

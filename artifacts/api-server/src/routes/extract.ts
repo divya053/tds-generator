@@ -54,6 +54,7 @@ type ExtractedPayload = {
   dimensions?: { label?: string; width?: string; height?: string; depth?: string }[];
   extraTables?: { title?: string; headers?: string[]; rows?: string[][] }[];
   diagramSections?: { title?: string; caption?: string }[];
+  detectedVendor?: { vendor?: string; source?: string; applied?: boolean } | null;
 };
 
 type CodeEntry = { code?: string; description?: string };
@@ -84,6 +85,7 @@ type StoredExtraction = {
   diagramSections: DiagramSectionEntry[];
   notes: string[];
   vendorInfo: { vendorName: string; vendorContact: string };
+  detectedVendor: { vendor: string; source: string; applied: boolean } | null;
   sourceImages: SourceAsset[];
   sourcePages: SourceAsset[];
   createdAt: string;
@@ -283,6 +285,14 @@ router.post("/extract", upload.single("file"), async (req, res) => {
       diagramSections: Array.isArray(extracted.diagramSections) ? extracted.diagramSections : [],
       notes: normalizeStringArray(extracted.notes),
       vendorInfo: extracted.vendorInfo ?? { vendorName: "", vendorContact: "" },
+      detectedVendor:
+        extracted.detectedVendor && typeof extracted.detectedVendor === "object"
+          ? {
+              vendor: String(extracted.detectedVendor.vendor ?? ""),
+              source: String(extracted.detectedVendor.source ?? ""),
+              applied: Boolean(extracted.detectedVendor.applied),
+            }
+          : null,
       sourceImages: normalizeSourceAssets(extracted.sourceImages),
       sourcePages: normalizeSourceAssets(extracted.sourcePages),
       createdAt,

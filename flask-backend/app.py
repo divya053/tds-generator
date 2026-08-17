@@ -2576,6 +2576,12 @@ def post_process_extraction(model_output: dict[str, Any], source_text: str, sour
         "categorySpecificSpecs": normalize_technical_specs(model_output.get("categorySpecificSpecs")),
         "notes": normalize_string_list(model_output.get("notes"), "Generated from vendor PDF source.", 8) + notes,
         "vendorInfo": normalize_vendor_info(model_output.get("vendorInfo")),
+        # Which learned vendor profile (if any) this upload was recognized as — surfaced so the editor
+        # can SHOW that the vendor pattern was applied (previously invisible).
+        "detectedVendor": (
+            lambda p: {"vendor": p["vendor"], "source": p.get("source", "keywords"), "applied": bool(normalize_whitespace(p.get("hints", "")))}
+            if p else None
+        )(detect_vendor_profile(source_text)),
         "sourceImages": [],
         "sourcePages": source_pages,
         # Raw extracted PDF text (capped) so the editor can flag which values are
