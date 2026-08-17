@@ -1602,6 +1602,8 @@ _VENDOR_CUE_HINTS: list[tuple[str, list[str]]] = [
     ("has an ORDERING / part-number decoder — capture every column & code", ["ordering", "how to order", "part number", "order example", "catalog"]),
     ("lists ACCESSORIES / mounting / sensor options — capture each one", ["accessor", "mounting", "bracket", "sensor", "photocell", "配件", "选配"]),
     ("has a PHOTOMETRIC / performance-data table — capture it as an extra table", ["photometric", "performance data", "lumen output table", "光度"]),
+    ("includes PHOTOMETRIC / LIGHT-DISTRIBUTION DIAGRAMS (polar candela curves, Type I-V beams, isolux) — expect a distribution-diagram section", ["polar", "candela", "light distribution", "isolux", "light throw", "beam angle diagram", "type iii", "type iv", "配光"]),
+    ("includes DIMENSION DIAGRAMS / mechanical drawings with measurements (mm/inch) — expect a dimensions figure section", ["dimension drawing", "mm/inch", "mm / inch", "mounting diagram", "installation drawing", "mechanical drawing", "尺寸", "外形尺寸"]),
     ("offers an EMERGENCY battery / backup option", ["emergency", "battery backup"]),
     ("Zhaga / DALI / 0-10V controls present", ["zhaga", "dali", "0-10v"]),
     ("multiple SIZES / models with their own wattage-lumen sets", ["model", "size", "series"]),
@@ -1684,9 +1686,10 @@ their sheets so an extractor can capture EVERY detail next time. Return ONLY JSO
   "overview": "1-2 sentences on this vendor's sheet layout and where key data sits",
   "fields": ["EVERY parameter this vendor documents, e.g. Power, Voltage, Current, Power Factor, THD, Surge Protection, Lumen Output, Efficacy, CCT, CRI, Beam Angle, Distribution, Dimming, Operating Temp, IP, IK, L70/Lifespan, Warranty, Driver, Housing, Finish, EPA, BUG, Dimensions, Weight, Certifications"],
   "tables": [{"name": "table name", "columns": ["col1","col2","..."]}],
+  "diagrams": ["figure/diagram SECTIONS this vendor shows as IMAGES (not tables), e.g. Photometric / polar candela curve, Light distribution (Type I-V), Isolux, Dimension drawing (mm/inch), Mounting / Installation diagram, Wiring diagram — list each so the extractor expects them next time"],
   "terminology": ["vendor label = plain meaning, for any non-obvious/branded labels"],
   "units": "units this vendor prints (mm/cm/inch, etc.)",
-  "quirks": ["structure/format notes: selectable-wattage/CCT notation, ordering / part-number decoder columns, accessory & mounting list, photometric/performance table, multi-size or multi-model layout, mixed languages"]
+  "quirks": ["structure/format notes: selectable-wattage/CCT notation, ordering / part-number decoder columns, accessory & mounting list, photometric/performance table, PHOTOMETRIC & DIMENSION DIAGRAMS, multi-size or multi-model layout, mixed languages"]
 }
 Describe FORMAT and STRUCTURE only; do NOT copy specific numeric values."""
 
@@ -1705,6 +1708,9 @@ def _flatten_ai_profile(data: dict[str, Any]) -> str:
         name = str(table.get("name", "")).strip()
         if name or cols:
             parts.append(f'Table "{name}": columns [{cols}].')
+    diagrams = [str(d).strip() for d in (data.get("diagrams") or []) if str(d).strip()]
+    if diagrams:
+        parts.append("Diagram sections (images) this vendor includes — expect and capture each: " + ", ".join(diagrams[:10]) + ".")
     terms = [str(t).strip() for t in (data.get("terminology") or []) if str(t).strip()]
     if terms:
         parts.append("Terminology: " + "; ".join(terms[:14]) + ".")
