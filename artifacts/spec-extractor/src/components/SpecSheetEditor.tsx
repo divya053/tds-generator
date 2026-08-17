@@ -2730,6 +2730,35 @@ function buildAccessoryRowsFromSpec(spec: ExtendedExtractedSpec): AccessoryRow[]
     }));
 }
 
+/** Build the vendor's figure/diagram sections, CONSOLIDATED to one per type (Photometric, Dimensions,
+ *  Mounting, Wiring) so the sheet isn't cluttered with "Diagram T2/T3/T4". The image slot is left EMPTY:
+ *  photometric polar curves are usually VECTOR graphics that can't be auto-extracted, so the user fills
+ *  each with one Crop from the vendor PDF (which rasterizes the page and captures vector content). */
+function buildCustomSectionsFromSpec(spec: ExtendedExtractedSpec): CustomSection[] {
+  const list = Array.isArray(spec.diagramSections) ? spec.diagramSections : [];
+  const typeOf = (title: string): string => {
+    const t = title.toLowerCase();
+    if (/photometric|candela|polar|distribution|isolux|beam|light\s*throw/.test(t)) return "Photometric Diagrams";
+    if (/dimension|mechanical|drawing|mm.?\/.?in/.test(t)) return "Dimensions";
+    if (/mount|install/.test(t)) return "Mounting / Installation";
+    if (/wiring|connection/.test(t)) return "Wiring Diagram";
+    return title.trim();
+  };
+  const grouped = new Map<string, string>();
+  for (const entry of list) {
+    const title = isSpecified(entry?.title) ? String(entry.title).trim() : "";
+    if (!title) continue;
+    const type = typeOf(title);
+    if (!grouped.has(type)) grouped.set(type, isSpecified(entry?.caption) ? String(entry.caption).trim() : "");
+  }
+  return [...grouped.entries()].slice(0, 4).map(([heading, caption], index) => ({
+    id: `vdiagram-${index}`,
+    heading,
+    bodyText: caption,
+    imageId: null, // filled by the user via Crop (vector curves can't be auto-harvested)
+  }));
+}
+
 /** US convention: the electrical column is "Power" (in W), never "Wattage". Rename a header that is
  *  essentially "Wattage"/"Watts" (optionally with a unit in parentheses) to "Power". Compound headers
  *  (e.g. "Wattage Package") are left alone. */
@@ -2836,9 +2865,10 @@ function buildEditorDraft(spec: ExtendedExtractedSpec, productNameRecommendation
     orderingNote: "Please ensure power compatibility with this specific fixture size when selecting this option.",
     accessoryRows: buildAccessoryRowsFromSpec(spec),
     dimensionItems: buildDimensionItemsFromSpec(spec),
-    // Custom sections start empty — the sheet is NOT auto-populated with vendor "Photometric Diagram"
-    // sections (they cluttered the sheet and auto-picked wrong images). Add one manually if needed.
-    customSections: [],
+    // One consolidated section per diagram type the vendor shows (Photometric, Dimensions, …) with an
+    // EMPTY image slot — the head appears so the section is "covered"; the user Crops the actual
+    // (often vector) diagram from the PDF. No auto-picked images, so it never shows the wrong one.
+    customSections: buildCustomSectionsFromSpec(spec),
     extraTables: buildExtraTablesFromSpec(spec),
     imagePlacements: {},
   };
