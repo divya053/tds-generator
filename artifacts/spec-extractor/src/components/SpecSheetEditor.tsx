@@ -1770,17 +1770,16 @@ function buildOverviewRows(spec: ExtendedExtractedSpec): OverviewRow[] {
   };
 
   const templateRows = template.map((row, index) => {
-    // Efficacy shows the vendor's PRINTED efficacy (the LPW column) exactly as extracted. Only if the
-    // vendor stated none do we fall back to a computed figure — and that fallback is clamped to
-    // physically-possible values, so an impossible number is never shown.
+    // Efficacy is derived from this fixture's own aligned Power & Lumen (lumens / power), which equals
+    // the vendor's printed LPW. It is clamped to physically-possible values (40-220), so an impossible
+    // or misaligned figure is never shown — it stays blank instead. Never a cross-variant summary.
     const isEfficacyRow = normalizeSpecKey(row.label) === "efficacy";
     return {
       id: `template-${index}-${normalizeSpecKey(row.label)}`,
       label: row.label,
       included: true,
       value: isEfficacyRow
-        ? formatOverviewValue(row.label, getOverviewValue(spec, ["Efficacy", "Efficacy (lm/W)"])) ||
-          deriveEfficacyFromPowerLumen(spec)
+        ? deriveEfficacyFromPowerLumen(spec)
         : buildVariantOverviewValue(row.label) ||
           formatOverviewValue(row.label, getOverviewValue(spec, row.keys)) ||
           deriveEstimatedOverviewValue(spec, row.label),
@@ -4981,9 +4980,19 @@ function SheetPageOne({
   // Compute it from the DRAFT's own Power/Lumen rows (the values actually on the sheet), because a
   // reconstructed spec may not carry variantOverview/technicalSpecs; fall back to the spec if the
   // draft rows are absent.
-  // Efficacy is NOT computed — we show the vendor's printed efficacy (the LPW column) exactly as
-  // extracted. Deriving it from power ÷ lumen produced impossible values (e.g. 22000lm ÷ 30W = 733
-  // lm/W) whenever the lumen and power lists weren't perfectly aligned, so that calculation is gone.
+  const draftOverviewRowValue = (match: (label: string) => boolean) =>
+    draft.overviewRows.find((row) => isSpecified(row.value) && match(row.label))?.value ?? "";
+  const draftPowerText = draftOverviewRowValue(isPowerSelectableOverviewLabel);
+  const draftLumenText = draftOverviewRowValue(
+    (label) => normalizeSpecKey(label) === "lumen output" || normalizeSpecKey(label) === "lumens",
+  );
+  // Efficacy = derived from the DISPLAYED, aligned Power & Lumen — which reproduces the vendor's
+  // PRINTED LPW exactly (e.g. 4400lm / 30W = 147 lm/W, 1850lm / 12W = 154 lm/W). It is clamped to
+  // physically-possible values (40-220), so a MISALIGNED pair (one variant's lumens against another's
+  // watts) collapses to blank instead of an impossible figure like 733 lm/W. This also tracks the SAME
+  // variant shown in Power/Lumen, unlike the vendor's cross-variant "best per package" efficacy summary.
+  const computedEfficacy =
+    efficacyFromWattsLumens(draftPowerText, draftLumenText) || deriveEfficacyFromPowerLumen(spec);
   // Power: when the fixture has MULTIPLE variants, recompute the row so each variant's selectable
   // powers show on their OWN line (never every wattage merged into one line) — this self-corrects
   // drafts saved before the per-variant rule. For a single selectable fixture we leave the stored
@@ -5005,11 +5014,9 @@ function SheetPageOne({
         return row;
       }
       if (normalizeSpecKey(row.label) === "efficacy") {
-        // Show the vendor's PRINTED efficacy (the LPW column), exactly as extracted — never a value
-        // computed from lumens ÷ watts. This also self-corrects older drafts that stored a computed
-        // (often impossible) efficacy. Falls back to the stored value only if the vendor stated none.
-        const vendorEfficacy = formatOverviewValue("Efficacy", getOverviewValue(spec, ["Efficacy", "Efficacy (lm/W)"]));
-        return { ...row, value: isSpecified(vendorEfficacy) ? vendorEfficacy : normalizeOverviewRowValue(row.label, row.value) };
+        // Efficacy from the aligned Power & Lumen shown above (= the vendor's printed LPW). Blank when
+        // not physically possible, so an impossible/misaligned figure (e.g. 733 lm/W) never appears.
+        return { ...row, value: computedEfficacy };
       }
       if (isPowerSelectableOverviewLabel(row.label) && isSpecified(computedPower)) {
         return { ...row, value: computedPower };
