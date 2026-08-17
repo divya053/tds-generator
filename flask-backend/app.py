@@ -88,7 +88,7 @@ DOCTR_READY = None
 # LLM quota + time). Cache-busting: bump CACHE_VERSION when the pipeline output changes.
 ENABLE_EXTRACTION_CACHE = os.environ.get("ENABLE_EXTRACTION_CACHE", "1").strip().lower() not in {"0", "false", "no"}
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extraction_cache")
-CACHE_VERSION = "v23"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
+CACHE_VERSION = "v24"  # bump when the extraction prompt/normalization changes so cached PDFs re-run
 
 
 def _extraction_cache_path(pdf_bytes: bytes) -> str:
@@ -353,6 +353,16 @@ Rules:
   "up to X" summary, and never take the lumen figure from a marketing sentence (e.g. "scalable from 6,600 to 61,000
   lumens" or "replaces up to 1000W") — always read the individual per-model / per-step lumen numbers from the table.
   If the table lists 6400/9300/12000/16000 lm for a model, output exactly those, not "6,400–16,000 lm".
+- PERFORMANCE-DATA TABLE WITH MULTIPLE CCT COLUMNS (critical): many sheets give a PERFORMANCE / PHOTOMETRIC table
+  with one row per setting (e.g. LV1..LV4, or a system-watt) and SEPARATE lumen columns for each CCT (3000K, 4000K,
+  5000K), often each with its own LPW/efficacy sub-column. Read the LUMENS column of ONE consistent CCT (prefer the
+  middle value, e.g. 4000K) and output one lumen per power setting, aligned 1:1 and in the SAME order as the Power
+  list. Do NOT mix CCTs within the list, do NOT read the LPW/efficacy column as a lumen, and include EVERY setting's
+  row (e.g. all of LV1..LV4), not just the highest. Example rows LV1 30W→4400lm, LV2 24W→3600lm, LV3 18W→2750lm,
+  LV4 12W→1850lm (the 4000K column) become Power "12W/18W/24W/30W", Lumen Output "1850/2750/3600/4400 lm".
+- NEVER COMPUTE A LUMEN: only report lumen numbers that are PRINTED in the vendor table. Never multiply watts × efficacy
+  to fill a missing lumen (that produces untested figures like 18W × 154 = 2772 that don't match the real table). If a
+  setting's lumen truly isn't printed, omit that setting rather than inventing a value.
 - DISTINCT SIZES / LENGTHS (very important): if the fixture comes in multiple physical SIZES or LENGTHS and EACH
   size has its OWN single wattage and its OWN lumen output — common for tri-proof / linear / batten / strip / vapor-tight
   fixtures, e.g. 2ft/4ft/5ft (or 600mm/1200mm/1500mm) = 20W/36W/45W = 2600-2800lm / 4680-5040lm / 5850-6300lm — then
@@ -1310,11 +1320,13 @@ def _pl_sep(cell: Any) -> str:
 
 
 def repair_power_lumen_efficacy(variant_overview: dict[str, Any]) -> dict[str, Any]:
-    """Deterministic backstop (no model): keep Power ↔ Lumen ↔ Efficacy consistent per step, since
-    lumen ≈ watts × efficacy. Fixes dropped/added-zero lumen errors (e.g. 1600 where 16000 fits) and
-    fills a genuinely missing lumen from watts × efficacy. Only acts when watts AND a PLAUSIBLE
-    efficacy (40–260 lm/W) are present, and never overrides a lumen that already matches — so real
-    tested values are left untouched."""
+    """Deterministic backstop (no model): correct only CLEAR magnitude errors in the vendor's own
+    tested lumen values — a dropped or extra zero (e.g. 1600 where 16000 fits, or 44000 where 4400
+    fits) — since lumen ≈ watts × efficacy. It NEVER fabricates a missing lumen from watts × efficacy
+    (that produced precise-looking but untested figures like 18W × 154 = 2772 that don't match the
+    printed performance table). Missing lumens are left blank for the real values / the user. Only
+    acts when watts AND a PLAUSIBLE efficacy (40–260 lm/W) are present, and never overrides a lumen
+    that already matches — real tested values are untouched."""
     params = variant_overview.get("parameters", []) or []
     matrix = variant_overview.get("matrix", []) or []
     if "Power" not in params or "Lumen Output" not in params or "Efficacy" not in params:
@@ -1341,9 +1353,7 @@ def repair_power_lumen_efficacy(variant_overview: dict[str, Any]) -> dict[str, A
             expected = watt * eff
             actual = new_lumens[i] if i < len(new_lumens) else None
             if actual is None or actual <= 0:
-                new_lumens[i] = round(expected)
-                changed = True
-                continue
+                continue  # do NOT fabricate a missing lumen from watts×efficacy — leave real values only
             ratio = actual / expected if expected else 0
             if 0.06 < ratio < 0.16:       # dropped a zero (~ /10)
                 new_lumens[i] = round(actual * 10)
