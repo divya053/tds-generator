@@ -4422,18 +4422,34 @@ function enumerateVariantGroups(spec: ExtendedExtractedSpec): VariantGroup[] {
     .filter((group) => group.options.length > 0);
 }
 
+/** Current for the CHOSEN variant only: I = P / V per selected power at the lowest (worst-case) line
+ *  voltage, one value per power. Keeps it aligned to the selected variant instead of the full
+ *  cross-variant / cross-voltage estimate. Blank if power or voltage can't be read. */
+function estimateVariantCurrent(powerText: string, voltageText: string): string {
+  const watts = extractNumericValues(powerText, /(\d+(?:\.\d+)?)\s*(?:w|watt|watts)\b/gi);
+  const volts = extractNumericValues(voltageText, /(\d+(?:\.\d+)?)/g).filter((v) => v >= 90 && v <= 600);
+  if (watts.length === 0 || volts.length === 0) return "";
+  const vNom = Math.min(...volts); // lowest voltage -> highest (worst-case) current per power
+  const amps = uniquePreserveOrder(watts.map((w) => (w / vNom).toFixed(2)));
+  if (amps.length === 0) return "";
+  return `${amps.map((a) => `${a} A`).join(" - ")} (estimated)`;
+}
+
 /** Narrow a draft to a chosen set of powers (one = single, many = a selectable subset). The Power /
- *  Lumen / Efficacy / CCT overview rows and the spec table reflect only those; the rest is kept. */
+ *  Lumen / Efficacy / CCT / Current overview rows and the spec table reflect only those; the rest is kept. */
 function makeVariantDraft(draft: EditorDraft, group: VariantGroup, options: VariantOption[]): EditorDraft {
   const powerValue = options.map((o) => o.power).filter(isSpecified).join(" - ");
   const lumenValue = options.map((o) => o.lumen).filter(isSpecified).join(" - ");
   const effs = [...new Set(options.map((o) => o.efficacy).filter(isSpecified))];
   const efficacyValue = effs.length <= 1 ? effs[0] ?? "" : effs.join(" - ");
+  const voltageValue = draft.overviewRows.find((row) => normalizeSpecKey(row.label) === "voltage")?.value ?? "";
+  const currentValue = estimateVariantCurrent(powerValue, voltageValue);
   const overviewRows = draft.overviewRows.map((row) => {
     const key = normalizeSpecKey(row.label);
     if (key === "power" || key === "power selectable" || key === "max power") return { ...row, value: powerValue };
     if (key === "lumen output" || key === "lumens") return { ...row, value: lumenValue };
     if (key === "efficacy") return { ...row, value: efficacyValue };
+    if (key === "current" && isSpecified(currentValue) && !row.manual) return { ...row, value: currentValue };
     if (isCctLabel(row.label)) {
       const cct = extractCctValue(group.cct);
       return isSpecified(cct) ? { ...row, value: cct } : row;
