@@ -59,7 +59,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 GROQ_TIMEOUT_SECONDS = int(os.environ.get("GROQ_TIMEOUT_SECONDS", "120").strip())
 
 GEMINI_URL = os.environ.get("GEMINI_URL", "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash").strip()
 # Image-capable model used for the in-editor "AI Edit" (e.g. converting mm dimensions to inches).
 GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image").strip()
 # Sibling image models to fail over to when the primary is overloaded (429/503) through all retries.
@@ -1957,7 +1957,7 @@ _GEMINI_TRANSIENT_STATUS = {429, 500, 502, 503, 504}
 # Google overloads specific model endpoints independently, so a healthy sibling usually succeeds.
 GEMINI_FALLBACK_MODELS = [
     m.strip()
-    for m in os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-flash-lite-latest,gemini-3-flash-preview").split(",")
+    for m in os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-flash-latest,gemini-flash-lite-latest").split(",")
     if m.strip()
 ]
 
